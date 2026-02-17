@@ -525,6 +525,158 @@ def _history_variations(hist, current_price=None):
     return {"variation_7d": var_7d, "variation_30d": var_30d}
 
 
+def _history_config(range_key: str):
+    key = (range_key or "1y").lower()
+    configs = {
+        "1d": {"period": "5d", "interval": "30m", "date_fmt": "%H:%M"},
+        "7d": {"period": "10d", "interval": "1h", "date_fmt": "%d/%m"},
+        "30d": {"period": "2mo", "interval": "1d", "date_fmt": "%d/%m"},
+        "6m": {"period": "6mo", "interval": "1d", "date_fmt": "%d/%m"},
+        "1y": {"period": "1y", "interval": "1d", "date_fmt": "%d/%m/%y"},
+        "5y": {"period": "5y", "interval": "1wk", "date_fmt": "%d/%m/%y"},
+    }
+    return key if key in configs else "1y", configs.get(key, configs["1y"])
+
+
+def _extract_close_series(hist):
+    if hist is None:
+        return None
+    try:
+        if "Close" in hist:
+            closes = hist["Close"]
+        else:
+            return None
+    except Exception:
+        return None
+
+    # Em algumas versoes/formatos, o "Close" pode vir como DataFrame.
+    try:
+        if hasattr(closes, "columns"):
+            columns = list(getattr(closes, "columns", []))
+            if not columns:
+                return None
+            closes = closes[columns[0]]
+    except Exception:
+        return None
+    return closes
+
+
+def _fetch_chart_points(symbol: str, range_key: str):
+    range_map = {
+        "1d": ("5d", "30m"),
+        "7d": ("10d", "1h"),
+        "30d": ("1mo", "1d"),
+        "6m": ("6mo", "1d"),
+        "1y": ("1y", "1d"),
+        "5y": ("5y", "1wk"),
+    }
+    r, i = range_map.get(range_key, ("1y", "1d"))
+    payload = _http_get_json(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={r}&interval={i}"
+    )
+    if not payload:
+        return []
+    try:
+        result = payload.get("chart", {}).get("result", [])
+        if not result:
+            return []
+        item = result[0] or {}
+        timestamps = item.get("timestamp") or []
+        quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]
+        closes = quote.get("close") or []
+    except Exception:
+        return []
+
+    points = []
+    for ts, close in zip(timestamps, closes):
+        close_value = _to_number(close)
+        if close_value is None:
+            continue
+        try:
+            dt = datetime.fromtimestamp(int(ts))
+        except Exception:
+            continue
+        points.append((dt, float(close_value)))
+    return points
+
+
+def get_asset_price_history(ticker: str, range_key: str = "1y"):
+    normalized_key, cfg = _history_config(range_key)
+    result = {
+        "range_key": normalized_key,
+        "labels": [],
+        "prices": [],
+        "change_pct": None,
+    }
+
+    usdbrl = _get_usdbrl_rate() if _is_usd_quoted_ticker(ticker) else None
+
+    for symbol in _candidate_yahoo_symbols(ticker):
+        points = []
+
+        if yf is not None:
+            try:
+                hist = yf.download(
+                    symbol,
+                    period=cfg["period"],
+                    interval=cfg["interval"],
+                    progress=False,
+                    threads=False,
+                    auto_adjust=False,
+                )
+            except Exception:
+                hist = None
+
+            closes = _extract_close_series(hist)
+            if closes is not None:
+                try:
+                    close_series = closes.dropna()
+                except Exception:
+                    close_series = closes
+                try:
+                    for idx, value in close_series.items():
+                        close_value = _to_number(value)
+                        if close_value is None:
+                            continue
+                        dt = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else idx
+                        points.append((dt, float(close_value)))
+                except Exception:
+                    points = []
+
+        if not points:
+            points = _fetch_chart_points(symbol, normalized_key)
+
+        if not points:
+            continue
+
+        prices = []
+        labels = []
+        for dt, price in points:
+            price_value = float(price)
+            if usdbrl is not None and usdbrl > 0:
+                price_value *= usdbrl
+            prices.append(round(price_value, 2))
+            try:
+                labels.append(dt.strftime(cfg["date_fmt"]))
+            except Exception:
+                labels.append(str(dt))
+
+        if not prices:
+            continue
+
+        first = prices[0]
+        last = prices[-1]
+        change_pct = ((last / first) - 1) * 100 if first not in (None, 0) else None
+        return {
+            "range_key": normalized_key,
+            "labels": labels,
+            "prices": prices,
+            "change_pct": change_pct,
+        }
+
+    return result
+
+
 def _fetch_yahoo_info(ticker: str):
     if yf is None:
         return {}

@@ -86,6 +86,8 @@ def ensure_schema_upgrades():
         db.execute("ALTER TABLE assets ADD COLUMN variation_7d REAL NOT NULL DEFAULT 0")
     if "variation_30d" not in asset_cols:
         db.execute("ALTER TABLE assets ADD COLUMN variation_30d REAL NOT NULL DEFAULT 0")
+    if "logo_url" not in asset_cols:
+        db.execute("ALTER TABLE assets ADD COLUMN logo_url TEXT NOT NULL DEFAULT ''")
 
     db.execute(
         """

@@ -12,6 +12,7 @@ from .services import (
     import_transactions_csv,
     get_asset,
     get_asset_incomes,
+    get_asset_price_history,
     get_asset_position_summary,
     get_asset_transactions,
     get_income_totals_by_ticker,
@@ -141,6 +142,7 @@ def atualizar_yahoo():
 @main_bp.route("/ativo/<ticker>")
 def ativo(ticker):
     selected_portfolio_ids = _selected_portfolio_ids()
+    chart_range = (request.args.get("range") or "1y").lower()
     sync = request.args.get("sync")
     sync_message = None
     sync_status = None
@@ -161,12 +163,25 @@ def ativo(ticker):
     transactions = get_asset_transactions(ticker, selected_portfolio_ids)
     incomes = get_asset_incomes(ticker, selected_portfolio_ids)
     position = get_asset_position_summary(ticker, selected_portfolio_ids)
+    price_history = get_asset_price_history(ticker, chart_range)
+    chart_ranges = [
+        {"key": "1d", "label": "1 DIA"},
+        {"key": "7d", "label": "7 DIAS"},
+        {"key": "30d", "label": "30 DIAS"},
+        {"key": "6m", "label": "6 MESES"},
+        {"key": "1y", "label": "1 ANO"},
+        {"key": "5y", "label": "5 ANOS"},
+    ]
+    range_label_map = {item["key"]: item["label"] for item in chart_ranges}
+    price_history["range_label"] = range_label_map.get(price_history.get("range_key"), "PERIODO")
     return render_template(
         "ativo.html",
         asset=asset,
         transactions=transactions,
         incomes=incomes,
         position=position,
+        price_history=price_history,
+        chart_ranges=chart_ranges,
         sync_message=sync_message,
         sync_status=sync_status,
         **_base_context(selected_portfolio_ids),
@@ -314,12 +329,42 @@ def renda_fixa():
     elif remove_error == "none":
         error = "Selecione ao menos um registro de renda fixa para remover."
 
+    fixed_incomes = get_fixed_incomes(selected_portfolio_ids, sort_by=sort_by, sort_dir=sort_dir)
+    prefixado_items = [item for item in fixed_incomes if (item.get("rate_type") or "").upper() == "FIXO"]
+    posfixado_items = [item for item in fixed_incomes if (item.get("rate_type") or "").upper() != "FIXO"]
+
+    def _group_summary(items):
+        return {
+            "count": len(items),
+            "applied_total": round(sum(float(item.get("active_applied_value", 0.0)) for item in items), 2),
+            "current_total": round(sum(float(item.get("current_gross_value", 0.0)) for item in items), 2),
+            "income_total": round(sum(float(item.get("current_income", 0.0)) for item in items), 2),
+            "total_received": round(sum(float(item.get("total_received", 0.0)) for item in items), 2),
+            "rendimento_recebido_total": round(sum(float(item.get("rendimento", 0.0)) for item in items), 2),
+        }
+
+    fixed_income_groups = [
+        {
+            "key": "prefixado",
+            "title": "Juros Prefixado",
+            "items": prefixado_items,
+            "summary": _group_summary(prefixado_items),
+        },
+        {
+            "key": "posfixado",
+            "title": "Juros Pos-fixado",
+            "items": posfixado_items,
+            "summary": _group_summary(posfixado_items),
+        },
+    ]
+
     return render_template(
         "renda_fixa.html",
         error=error,
         remove_message=remove_message,
         summary=get_fixed_income_summary(selected_portfolio_ids),
-        fixed_incomes=get_fixed_incomes(selected_portfolio_ids, sort_by=sort_by, sort_dir=sort_dir),
+        fixed_incomes=fixed_incomes,
+        fixed_income_groups=fixed_income_groups,
         sort_by=sort_by,
         sort_dir=sort_dir,
         **_base_context(selected_portfolio_ids),
@@ -382,6 +427,26 @@ def graficos():
         "labels": [item["ticker"] for item in top_positions],
         "values": [round(float(item.get("value", 0.0)), 2) for item in top_positions],
     }
+    allocation_by_group_charts = []
+    for key in ("br_stocks", "us_stocks", "fiis", "crypto"):
+        items = portfolio["grouped_positions"].get(key, [])
+        if not items:
+            continue
+        group_total = sum(float(item.get("value", 0.0)) for item in items)
+        if group_total <= 0:
+            continue
+        allocation_by_group_charts.append(
+            {
+                "id": f"chart-allocation-{key}",
+                "title": f"Composicao por ativo - {category_labels[key]}",
+                "labels": [item["ticker"] for item in items],
+                "values": [round(float(item.get("value", 0.0)), 2) for item in items],
+                "weights": [
+                    round((float(item.get("value", 0.0)) / group_total) * 100, 2)
+                    for item in items
+                ],
+            }
+        )
 
     cards_chart = {
         "labels": ["Patrimonio", "Investido em aberto", "Proventos totais"],
@@ -509,6 +574,7 @@ def graficos():
         "graficos.html",
         category_chart=category_chart,
         top_assets_chart=top_assets_chart,
+        allocation_by_group_charts=allocation_by_group_charts,
         cards_chart=cards_chart,
         result_by_category_chart=result_by_category_chart,
         classes_chart=classes_chart,

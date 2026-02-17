@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from flask import Flask
+from flask import Flask, request
 
 from .db import init_app as init_db_app
 from .market_sync import start_market_sync, trigger_market_sync_if_due
@@ -28,6 +28,9 @@ def create_app() -> Flask:
 
     @app.before_request
     def _ensure_market_sync():
-        trigger_market_sync_if_due(app)
+        endpoint = request.endpoint or ""
+        if endpoint == "static":
+            return
+        trigger_market_sync_if_due(app, blocking=True)
 
     return app

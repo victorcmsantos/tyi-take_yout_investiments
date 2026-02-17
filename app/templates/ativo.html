@@ -16,6 +16,33 @@
   {% endif %}
 </section>
 
+<section class="card detail">
+  <div class="asset-chart-head">
+    <h2>Cotacao {{ asset.ticker }}</h2>
+    <div class="asset-chart-ranges">
+      {% for opt in chart_ranges %}
+      <a
+        href="{{ url_for('main.ativo', ticker=asset.ticker, portfolio_id=selected_portfolio_ids, range=opt.key) }}"
+        class="asset-chart-range {% if price_history.range_key == opt.key %}active{% endif %}"
+      >{{ opt.label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  <p>
+    <strong>R$ {{ '%.2f'|format(asset.price) }}</strong>
+    {% if price_history.change_pct is not none %}
+    <span class="{{ 'up' if price_history.change_pct >= 0 else 'down' }}">{{ '%.2f'|format(price_history.change_pct) }}% ({{ price_history.range_label }})</span>
+    {% endif %}
+  </p>
+  {% if price_history.labels %}
+  <div class="asset-chart-wrap">
+    <canvas id="asset-price-chart"></canvas>
+  </div>
+  {% else %}
+  <p class="alert-warning">Nao foi possivel carregar historico para este periodo.</p>
+  {% endif %}
+</section>
+
 <section class="grid grid-4">
   <article class="card">
     <h3>Preco</h3>
@@ -81,6 +108,50 @@
   <p>Variacao no dia: <strong class="{{ 'up' if asset.variation_day >= 0 else 'down' }}">{{ asset.variation_day }}%</strong></p>
   <p>Valor de mercado: R$ {{ asset.market_cap_bi }} bi</p>
 </section>
+
+{% if price_history.labels %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  const priceLabels = {{ price_history.labels|tojson }};
+  const priceValues = {{ price_history.prices|tojson }};
+  const ctx = document.getElementById("asset-price-chart");
+  if (ctx) {
+    new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: priceLabels,
+        datasets: [{
+          label: "Cotacao",
+          data: priceValues,
+          borderColor: "#a57f39",
+          backgroundColor: "rgba(165, 127, 57, 0.12)",
+          fill: true,
+          tension: 0.2,
+          pointRadius: 0
+        }]
+      },
+      options: {
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `R$ ${Number(ctx.raw || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            }
+          }
+        },
+        scales: {
+          y: {
+            ticks: {
+              callback: (value) => `R$ ${Number(value || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            }
+          }
+        }
+      }
+    });
+  }
+</script>
+{% endif %}
 
 <section class="table-wrap">
   <table>

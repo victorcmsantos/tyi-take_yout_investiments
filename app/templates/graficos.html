@@ -22,6 +22,15 @@
     </div>
   </article>
 
+  {% for chart in allocation_by_group_charts %}
+  <article class="card chart-card chart-card-donut">
+    <h3>{{ chart.title }}</h3>
+    <div class="chart-canvas-wrap">
+      <canvas id="{{ chart.id }}"></canvas>
+    </div>
+  </article>
+  {% endfor %}
+
   <article class="card chart-card">
     <h3>Consolidado da carteira</h3>
     <div class="chart-canvas-wrap">
@@ -168,6 +177,7 @@
 
   const categoryData = {{ category_chart|tojson }};
   const topAssetsData = {{ top_assets_chart|tojson }};
+  const allocationByGroupCharts = {{ allocation_by_group_charts|tojson }};
   const cardsData = {{ cards_chart|tojson }};
   const resultByCategoryData = {{ result_by_category_chart|tojson }};
   const classesData = {{ classes_chart|tojson }};
@@ -224,6 +234,71 @@
             ticks: {
               callback: (value) => brl(value)
             }
+          }
+        }
+      }
+    });
+  }
+
+  for (const allocationByAssetData of allocationByGroupCharts) {
+    if (!allocationByAssetData.values || allocationByAssetData.values.length === 0) {
+      continue;
+    }
+    const canvas = document.getElementById(allocationByAssetData.id);
+    if (!canvas) {
+      continue;
+    }
+    const palette = [
+      "#3498db", "#2ecc71", "#f1c40f", "#e67e22", "#e74c3c", "#9b59b6",
+      "#1abc9c", "#34495e", "#ff7f50", "#6a89cc", "#78e08f", "#f6b93b",
+      "#eb2f06", "#60a3bc", "#b8e994", "#82ccdd", "#3c6382", "#fa983a",
+    ];
+    const colors = allocationByAssetData.values.map((_, idx) => palette[idx % palette.length]);
+
+    new Chart(canvas, {
+      type: "doughnut",
+      data: {
+        labels: allocationByAssetData.labels,
+        datasets: [{
+          label: "Patrimonio",
+          data: allocationByAssetData.values,
+          backgroundColor: colors,
+          borderWidth: 1
+        }]
+      },
+      options: {
+        ...baseTooltip,
+        maintainAspectRatio: false,
+        layout: {
+          padding: { top: 28, right: 36, bottom: 28, left: 36 }
+        },
+        plugins: {
+          ...baseTooltip.plugins,
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const i = ctx.dataIndex;
+                const weight = allocationByAssetData.weights[i] || 0;
+                return `${ctx.label}: ${brl(ctx.raw)} (${weight.toFixed(2)}%)`;
+              }
+            }
+          },
+          datalabels: {
+            color: "#2d3748",
+            anchor: "end",
+            align: "end",
+            offset: 6,
+            clamp: true,
+            clip: false,
+            formatter: (_, ctx) => {
+              const i = ctx.dataIndex;
+              const label = allocationByAssetData.labels[i];
+              const value = allocationByAssetData.values[i] || 0;
+              const weight = allocationByAssetData.weights[i] || 0;
+              return `${label} | ${brlCompact(value)} | ${weight.toFixed(2)}%`;
+            },
+            font: { size: 9, weight: "600" }
           }
         }
       }

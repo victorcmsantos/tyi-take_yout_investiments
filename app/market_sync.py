@@ -28,7 +28,7 @@ def _sync_loop(app, stop_event: Event):
         stop_event.wait(interval)
 
 
-def trigger_market_sync_if_due(app, force: bool = False):
+def trigger_market_sync_if_due(app, force: bool = False, blocking: bool = False):
     if not app.config.get("MARKET_SYNC_ENABLED", True):
         return False
 
@@ -41,6 +41,15 @@ def trigger_market_sync_if_due(app, force: bool = False):
         return False
     if not force and (now - last_run) < interval:
         return False
+
+    if blocking:
+        app.extensions["market_sync_manual_running"] = True
+        try:
+            _run_sync_once(app)
+            app.extensions["market_sync_last_run"] = time.time()
+        finally:
+            app.extensions["market_sync_manual_running"] = False
+        return True
 
     def _worker():
         app.extensions["market_sync_manual_running"] = True

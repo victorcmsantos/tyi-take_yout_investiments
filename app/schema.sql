@@ -13,6 +13,7 @@ CREATE TABLE assets (
   ticker TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   sector TEXT NOT NULL,
+  logo_url TEXT NOT NULL DEFAULT '',
   price REAL NOT NULL,
   dy REAL NOT NULL DEFAULT 0,
   pl REAL NOT NULL DEFAULT 0,

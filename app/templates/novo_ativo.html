@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Adicionar Ativo | Invest Portal{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <h1>Adicionar novo ativo</h1>
+  <p>Cadastre um ativo para ele aparecer no dashboard e nos setores.</p>
+</section>
+
+<section class="card form-card">
+  {% if error %}
+  <p class="alert-error">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" class="asset-form">
+    <label for="ticker">Ticker</label>
+    <input id="ticker" name="ticker" type="text" placeholder="Ex: BBAS3" required>
+
+    <label for="name">Nome</label>
+    <input id="name" name="name" type="text" placeholder="Ex: Banco do Brasil ON" required>
+
+    <label for="sector">Setor</label>
+    <input id="sector" name="sector" type="text" placeholder="Ex: Bancos" required>
+
+    <div class="form-grid">
+      <div>
+        <label for="price">Preco (R$)</label>
+        <input id="price" name="price" type="text" placeholder="Ex: 28.50" required>
+      </div>
+      <div>
+        <label for="dy">DY (%)</label>
+        <input id="dy" name="dy" type="text" placeholder="Ex: 8.4" required>
+      </div>
+      <div>
+        <label for="pl">P/L</label>
+        <input id="pl" name="pl" type="text" placeholder="Ex: 6.2" required>
+      </div>
+      <div>
+        <label for="pvp">P/VP</label>
+        <input id="pvp" name="pvp" type="text" placeholder="Ex: 1.15" required>
+      </div>
+      <div>
+        <label for="variation_day">Variacao dia (%)</label>
+        <input id="variation_day" name="variation_day" type="text" placeholder="Ex: 1.2 ou -0.4" required>
+      </div>
+      <div>
+        <label for="market_cap_bi">Valor de mercado (bi)</label>
+        <input id="market_cap_bi" name="market_cap_bi" type="text" placeholder="Ex: 135.6" required>
+      </div>
+    </div>
+
+    <button type="submit" class="btn-primary">Salvar ativo</button>
+  </form>
+</section>
+{% endblock %}

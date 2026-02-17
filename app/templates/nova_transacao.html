@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+{% block title %}Nova Transacao | Invest Portal{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <h1>Lancar transacao</h1>
+  <p>Adicione compra ou venda. Se o ticker nao existir, ele sera criado automaticamente.</p>
+</section>
+
+<section class="card form-card">
+  {% if error %}
+  <p class="alert-error">{{ error }}</p>
+  {% endif %}
+  {% if import_message %}
+  <p class="alert-success">{{ import_message }}</p>
+  {% endif %}
+  {% if remove_message %}
+  <p class="alert-success">{{ remove_message }}</p>
+  {% endif %}
+  {% if import_errors %}
+  <p class="alert-warning">Algumas linhas nao foram importadas:</p>
+  <ul class="import-errors">
+    {% for item in import_errors %}
+    <li>{{ item }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <form method="post" class="asset-form">
+    {% for pid in selected_portfolio_ids %}
+    <input type="hidden" name="portfolio_id" value="{{ pid }}">
+    {% endfor %}
+    <input type="hidden" name="action" value="manual">
+    <div class="form-grid">
+      <div>
+        <label for="target_portfolio_id">Carteira destino</label>
+        <select id="target_portfolio_id" name="target_portfolio_id" required>
+          {% for item in portfolios %}
+          <option value="{{ item.id }}" {% if item.id == target_portfolio_id %}selected{% endif %}>{{ item.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="tx_type">Tipo</label>
+        <select id="tx_type" name="tx_type" required>
+          <option value="buy">Compra</option>
+          <option value="sell">Venda</option>
+        </select>
+      </div>
+      <div>
+        <label for="ticker">Ticker</label>
+        <input id="ticker" name="ticker" type="text" placeholder="Ex: BBAS3" required>
+      </div>
+      <div>
+        <label for="shares">Quantidade</label>
+        <input id="shares" name="shares" type="number" min="0.00000001" step="any" placeholder="Ex: 100 ou 0.015" required>
+      </div>
+      <div>
+        <label for="price">Preco da operacao (R$)</label>
+        <input id="price" name="price" type="text" placeholder="Ex: 28.50" required>
+      </div>
+      <div>
+        <label for="date">Data da transacao</label>
+        <input id="date" name="date" type="date" required>
+      </div>
+      <div>
+        <label for="name">Nome do ativo (opcional, se for ticker novo)</label>
+        <input id="name" name="name" type="text" placeholder="Ex: Banco do Brasil ON">
+      </div>
+      <div>
+        <label for="sector">Setor (opcional, se for ticker novo)</label>
+        <input id="sector" name="sector" type="text" placeholder="Ex: Bancos">
+      </div>
+    </div>
+
+    <button type="submit" class="btn-primary">Salvar transacao</button>
+  </form>
+</section>
+
+<section class="card form-card">
+  <h3>Importar transacoes por CSV</h3>
+  <p>Colunas aceitas: ticker, tipo/tx_type, quantidade/shares, preco/price, data/date, nome/name, setor/sector, valor/amount. Tipo tambem pode ser dividendo, jcp e aluguel.</p>
+
+  <form method="post" enctype="multipart/form-data" class="asset-form">
+    {% for pid in selected_portfolio_ids %}
+    <input type="hidden" name="portfolio_id" value="{{ pid }}">
+    {% endfor %}
+    <input type="hidden" name="action" value="import_csv">
+    <div class="form-grid">
+      <div>
+        <label for="target_portfolio_id_csv">Carteira destino</label>
+        <select id="target_portfolio_id_csv" name="target_portfolio_id" required>
+          {% for item in portfolios %}
+          <option value="{{ item.id }}" {% if item.id == target_portfolio_id %}selected{% endif %}>{{ item.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="csv_file">Arquivo CSV</label>
+        <input id="csv_file" name="csv_file" type="file" accept=".csv,text/csv" required>
+      </div>
+    </div>
+
+    <button type="submit" class="btn-primary">Importar CSV</button>
+  </form>
+</section>
+
+<section class="card form-card" id="renda-fixa-form">
+  <h3>Lancar renda fixa</h3>
+  <p>Cadastre CDB/LCI/LCA e outros titulos. Para FIXO+IPCA e FIXO+CDI, preencha os dois percentuais do tipo selecionado.</p>
+  {% if fixed_income_error %}
+  <p class="alert-error">{{ fixed_income_error }}</p>
+  {% endif %}
+  {% if fixed_income_message %}
+  <p class="alert-success">{{ fixed_income_message }}</p>
+  {% endif %}
+  {% if fixed_income_import_errors %}
+  <p class="alert-warning">Algumas linhas de renda fixa nao foram importadas:</p>
+  <ul class="import-errors">
+    {% for item in fixed_income_import_errors %}
+    <li>{{ item }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <form method="post" class="asset-form">
+    {% for pid in selected_portfolio_ids %}
+    <input type="hidden" name="portfolio_id" value="{{ pid }}">
+    {% endfor %}
+    <input type="hidden" name="action" value="fixed_income">
+    <div class="form-grid">
+      <div>
+        <label for="target_portfolio_id_fixed">Carteira destino</label>
+        <select id="target_portfolio_id_fixed" name="target_portfolio_id" required>
+          {% for item in portfolios %}
+          <option value="{{ item.id }}" {% if item.id == target_portfolio_id %}selected{% endif %}>{{ item.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="distributor">Distribuidor</label>
+        <input id="distributor" name="distributor" type="text" placeholder="Ex: Inter" required>
+      </div>
+      <div>
+        <label for="issuer">Emissor</label>
+        <input id="issuer" name="issuer" type="text" placeholder="Ex: Banco XPTO" required>
+      </div>
+      <div>
+        <label for="investment_type">Investimento</label>
+        <input id="investment_type" name="investment_type" type="text" placeholder="Ex: CDB" required>
+      </div>
+      <div>
+        <label for="rate_type">Tipo de taxa</label>
+        <select id="rate_type" name="rate_type" required>
+          <option value="FIXO">FIXO</option>
+          <option value="FIXO+IPCA">FIXO+IPCA</option>
+          <option value="IPCA">IPCA</option>
+          <option value="CDI">CDI</option>
+          <option value="FIXO+CDI">FIXO+CDI</option>
+        </select>
+      </div>
+      <div>
+        <label for="juros_fixo">Juros Fixo (%)</label>
+        <input id="juros_fixo" name="juros_fixo" type="text" placeholder="Ex: 7.50">
+      </div>
+      <div>
+        <label for="ipca">IPCA (%)</label>
+        <input id="ipca" name="ipca" type="text" placeholder="Ex: 5.00">
+      </div>
+      <div>
+        <label for="cdi">CDI (%)</label>
+        <input id="cdi" name="cdi" type="text" placeholder="Ex: 11.80">
+      </div>
+      <div>
+        <label for="date_aporte">Data aporte</label>
+        <input id="date_aporte" name="date_aporte" type="date" required>
+      </div>
+      <div>
+        <label for="maturity_date">Data final</label>
+        <input id="maturity_date" name="maturity_date" type="date" required>
+      </div>
+      <div>
+        <label for="aporte">Aporte (R$)</label>
+        <input id="aporte" name="aporte" type="text" placeholder="Ex: 10000.00" required>
+      </div>
+      <div>
+        <label for="reinvested">Reinvestido (R$)</label>
+        <input id="reinvested" name="reinvested" type="text" placeholder="Ex: 250.00">
+      </div>
+    </div>
+
+    <button type="submit" class="btn-primary">Salvar renda fixa</button>
+  </form>
+
+  <hr>
+
+  <h3>Importar renda fixa por CSV</h3>
+  <p>Ordem padrao de colunas: Distribuidor, Emissor, Investimento, tipo, data aporte, aporte, Reinvestido, data final, Juros Fixo, IPCA, CDI.</p>
+
+  <form method="post" enctype="multipart/form-data" class="asset-form">
+    {% for pid in selected_portfolio_ids %}
+    <input type="hidden" name="portfolio_id" value="{{ pid }}">
+    {% endfor %}
+    <input type="hidden" name="action" value="import_fixed_income_csv">
+    <div class="form-grid">
+      <div>
+        <label for="target_portfolio_id_fixed_csv">Carteira destino</label>
+        <select id="target_portfolio_id_fixed_csv" name="target_portfolio_id" required>
+          {% for item in portfolios %}
+          <option value="{{ item.id }}" {% if item.id == target_portfolio_id %}selected{% endif %}>{{ item.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="fixed_income_csv_file">Arquivo CSV</label>
+        <input id="fixed_income_csv_file" name="fixed_income_csv_file" type="file" accept=".csv,text/csv" required>
+      </div>
+    </div>
+
+    <button type="submit" class="btn-primary">Importar renda fixa</button>
+  </form>
+</section>
+
+<section class="table-wrap">
+  <form method="post" action="{{ url_for('main.remover_transacoes') }}">
+    {% for pid in selected_portfolio_ids %}
+    <input type="hidden" name="portfolio_id" value="{{ pid }}">
+    {% endfor %}
+  <table>
+    <thead>
+      <tr>
+        <th>Sel.</th>
+        <th>Carteira</th>
+        <th>Ticker</th>
+        <th>Tipo</th>
+        <th>Qtd</th>
+        <th>Preco</th>
+        <th>Total</th>
+        <th>Data</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for tx in transactions %}
+      <tr>
+        <td><input type="checkbox" name="transaction_ids" value="{{ tx.id }}"></td>
+        <td>{{ tx.portfolio_name }}</td>
+        <td>{{ tx.ticker }}</td>
+        <td>{{ "Compra" if tx.tx_type == "buy" else "Venda" }}</td>
+        <td>{{ tx.shares }}</td>
+        <td>R$ {{ '%.2f'|format(tx.price) }}</td>
+        <td>R$ {{ '%.2f'|format(tx.total_value) }}</td>
+        <td>{{ tx.date | date_br }}</td>
+      </tr>
+      {% endfor %}
+      {% if not transactions %}
+      <tr>
+        <td colspan="8">Sem transacoes para as carteiras selecionadas.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+  <div class="table-actions">
+    <button type="submit" class="btn-danger">Remover selecionadas</button>
+  </div>
+  </form>
+</section>
+{% endblock %}

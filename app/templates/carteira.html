@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Renda Variavel | Invest Portal{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <h1>Minha renda variavel</h1>
+  <p>Consolidada automaticamente a partir das suas transacoes.</p>
+  <form method="post" action="{{ url_for('main.carteira_atualizar_yahoo', portfolio_id=selected_portfolio_ids) }}" class="inline-form">
+    {% for pid in selected_portfolio_ids %}
+    <input type="hidden" name="portfolio_id" value="{{ pid }}">
+    {% endfor %}
+    <button type="submit" class="btn-primary">Forcar atualizacao Yahoo agora</button>
+  </form>
+  {% if sync_message %}
+  <p class="{% if sync_status == 'ok' %}alert-success{% else %}alert-warning{% endif %}">{{ sync_message }}</p>
+  {% endif %}
+</section>
+
+<section class="grid grid-4">
+  <article class="card">
+    <h3>Patrimonio</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(portfolio.total_value) }}</p>
+  </article>
+  <article class="card">
+    <h3>Valor investido em aberto</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(portfolio.invested_value) }}</p>
+  </article>
+  <article class="card">
+    <h3>Resultado em aberto (R$)</h3>
+    <p class="highlight {{ 'up' if portfolio.open_pnl_value >= 0 else 'down' }}">
+      R$ {{ '%.2f'|format(portfolio.open_pnl_value) }}
+    </p>
+  </article>
+  <article class="card">
+    <h3>Resultado em aberto (%)</h3>
+    <p class="highlight {{ 'up' if portfolio.open_pnl_pct >= 0 else 'down' }}">
+      {{ '%.2f'|format(portfolio.open_pnl_pct) }}%
+    </p>
+  </article>
+  <article class="card">
+    <h3>Dividendos mensais estimados</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(portfolio.monthly_dividends) }}</p>
+  </article>
+  <article class="card">
+    <h3>Proventos totais recebidos</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(portfolio.total_incomes) }}</p>
+  </article>
+</section>
+
+{% set categories = [
+  ('Acoes BR', 'br_stocks'),
+  ('Acoes US', 'us_stocks'),
+  ('Cripto', 'crypto'),
+  ('FIIs', 'fiis')
+] %}
+
+{% macro sort_link(label, field, category_key, sort_by, sort_dir, selected_portfolio_ids) -%}
+<a href="{{ url_for('main.carteira', portfolio_id=selected_portfolio_ids, sort_by=field, sort_dir='asc' if sort_by != field or sort_dir == 'desc' else 'desc') }}#cat-{{ category_key }}">{{ label }}{% if sort_by == field %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a>
+{%- endmacro %}
+
+{% for label, key in categories %}
+<section class="hero" id="cat-{{ key }}">
+  <h2>{{ label }}</h2>
+  <p>Total da categoria: R$ {{ '%.2f'|format(portfolio.group_totals[key]) }}</p>
+</section>
+
+<section class="grid grid-4">
+  <article class="card">
+    <h3>Patrimonio</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(portfolio.group_summaries[key].total_value) }}</p>
+  </article>
+  <article class="card">
+    <h3>Valor investido em aberto</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(portfolio.group_summaries[key].invested_value) }}</p>
+  </article>
+  <article class="card">
+    <h3>Resultado em aberto (R$)</h3>
+    <p class="highlight {{ 'up' if portfolio.group_summaries[key].open_pnl_value >= 0 else 'down' }}">
+      R$ {{ '%.2f'|format(portfolio.group_summaries[key].open_pnl_value) }}
+    </p>
+  </article>
+  <article class="card">
+    <h3>Resultado em aberto (%)</h3>
+    <p class="highlight {{ 'up' if portfolio.group_summaries[key].open_pnl_pct >= 0 else 'down' }}">
+      {{ '%.2f'|format(portfolio.group_summaries[key].open_pnl_pct) }}%
+    </p>
+  </article>
+  <article class="card">
+    <h3>Proventos totais recebidos</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(portfolio.group_summaries[key].total_incomes) }}</p>
+  </article>
+</section>
+
+<section class="table-wrap">
+  <div class="desktop-only">
+  <table>
+    <thead>
+      <tr>
+        <th>{{ sort_link('Ticker', 'ticker', key, sort_by, sort_dir, selected_portfolio_ids) }}</th>
+        <th>{{ sort_link('Ativo', 'name', key, sort_by, sort_dir, selected_portfolio_ids) }}</th>
+        <th>{{ sort_link('Qtd', 'shares', key, sort_by, sort_dir, selected_portfolio_ids) }}</th>
+        <th>{{ sort_link('Preco', 'price', key, sort_by, sort_dir, selected_portfolio_ids) }}</th>
+        <th>{{ sort_link('Preco medio', 'avg_price', key, sort_by, sort_dir, selected_portfolio_ids) }}</th>
+        <th>{{ sort_link('Investido', 'invested_value', key, sort_by, sort_dir, selected_portfolio_ids) }}</th>
+        <th>{{ sort_link('Total', 'value', key, sort_by, sort_dir, selected_portfolio_ids) }}</th>
+        <th>{{ sort_link('Proventos', 'total_incomes', key, sort_by, sort_dir, selected_portfolio_ids) }}</th>
+        <th>{{ sort_link('Aberto (R$)', 'open_pnl_value', key, sort_by, sort_dir, selected_portfolio_ids) }}</th>
+        <th>{{ sort_link('Aberto (%)', 'open_pnl_pct', key, sort_by, sort_dir, selected_portfolio_ids) }}</th>
+        <th>{{ sort_link('Peso', 'weight', key, sort_by, sort_dir, selected_portfolio_ids) }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in portfolio.grouped_positions[key] %}
+      <tr>
+        <td><a href="{{ url_for('main.ativo', ticker=item.ticker, portfolio_id=selected_portfolio_ids) }}">{{ item.ticker }}</a></td>
+        <td>{{ item.name }}</td>
+        <td>{{ item.shares }}</td>
+        <td>R$ {{ '%.2f'|format(item.price) }}</td>
+        <td>R$ {{ '%.2f'|format(item.avg_price) }}</td>
+        <td>R$ {{ '%.2f'|format(item.invested_value) }}</td>
+        <td>R$ {{ '%.2f'|format(item.value) }}</td>
+        <td>R$ {{ '%.2f'|format(item.total_incomes) }}</td>
+        <td class="{{ 'up' if item.open_pnl_value >= 0 else 'down' }}">R$ {{ '%.2f'|format(item.open_pnl_value) }}</td>
+        <td class="{{ 'up' if item.open_pnl_pct >= 0 else 'down' }}">{{ '%.2f'|format(item.open_pnl_pct) }}%</td>
+        <td>{{ item.weight }}%</td>
+      </tr>
+      {% endfor %}
+      {% if not portfolio.grouped_positions[key] %}
+      <tr>
+        <td colspan="11">Sem ativos nessa categoria.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
+
+  <div class="mobile-only position-cards">
+    {% for item in portfolio.grouped_positions[key] %}
+    <article class="position-card">
+      <div class="position-card-head">
+        <a href="{{ url_for('main.ativo', ticker=item.ticker, portfolio_id=selected_portfolio_ids) }}">{{ item.ticker }}</a>
+        <span>{{ item.name }}</span>
+      </div>
+      <p><strong>Qtd:</strong> {{ item.shares }}</p>
+      <p><strong>Preco:</strong> R$ {{ '%.2f'|format(item.price) }}</p>
+      <p><strong>Preco medio:</strong> R$ {{ '%.2f'|format(item.avg_price) }}</p>
+      <p><strong>Investido:</strong> R$ {{ '%.2f'|format(item.invested_value) }}</p>
+      <p><strong>Total:</strong> R$ {{ '%.2f'|format(item.value) }}</p>
+      <p><strong>Proventos:</strong> R$ {{ '%.2f'|format(item.total_incomes) }}</p>
+      <p class="{{ 'up' if item.open_pnl_value >= 0 else 'down' }}"><strong>Aberto (R$):</strong> R$ {{ '%.2f'|format(item.open_pnl_value) }}</p>
+      <p class="{{ 'up' if item.open_pnl_pct >= 0 else 'down' }}"><strong>Aberto (%):</strong> {{ '%.2f'|format(item.open_pnl_pct) }}%</p>
+      <p><strong>Peso:</strong> {{ item.weight }}%</p>
+    </article>
+    {% endfor %}
+    {% if not portfolio.grouped_positions[key] %}
+    <p class="empty-mobile">Sem ativos nessa categoria.</p>
+    {% endif %}
+  </div>
+</section>
+{% endfor %}
+{% endblock %}

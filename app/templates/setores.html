@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Setores | Invest Portal{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <h1>Mapa de setores</h1>
+  <p>Visao agregada por numero de ativos, DY medio e valor de mercado.</p>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Setor</th>
+        <th>Ativos</th>
+        <th>DY medio</th>
+        <th>Valor de mercado</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for sector in sectors %}
+      <tr>
+        <td>{{ sector.sector }}</td>
+        <td>{{ sector.assets_count }}</td>
+        <td>{{ sector.avg_dy }}%</td>
+        <td>R$ {{ sector.market_cap_bi }} bi</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

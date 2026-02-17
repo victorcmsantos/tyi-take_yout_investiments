@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}{{ asset.ticker }} | Invest Portal{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <h1>{{ asset.ticker }} - {{ asset.name }}</h1>
+  <p>Setor: {{ asset.sector }}</p>
+  <form method="post" action="{{ url_for('main.atualizar_ativo_yahoo', ticker=asset.ticker, portfolio_id=selected_portfolio_ids) }}" class="inline-form">
+    {% for pid in selected_portfolio_ids %}
+    <input type="hidden" name="portfolio_id" value="{{ pid }}">
+    {% endfor %}
+    <button type="submit" class="btn-primary">Atualizar dados do Yahoo</button>
+  </form>
+  {% if sync_message %}
+  <p class="{% if sync_status == 'ok' %}alert-success{% elif sync_status == 'partial' %}alert-warning{% else %}alert-error{% endif %}">{{ sync_message }}</p>
+  {% endif %}
+</section>
+
+<section class="grid grid-4">
+  <article class="card">
+    <h3>Preco</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(asset.price) }}</p>
+  </article>
+  <article class="card">
+    <h3>Dividend Yield</h3>
+    <p class="highlight">{{ asset.dy }}%</p>
+  </article>
+  <article class="card">
+    <h3>P/L</h3>
+    <p class="highlight">{{ asset.pl }}</p>
+  </article>
+  <article class="card">
+    <h3>P/VP</h3>
+    <p class="highlight">{{ asset.pvp }}</p>
+  </article>
+</section>
+
+<section class="grid grid-4">
+  <article class="card">
+    <h3>Quantidade em carteira</h3>
+    <p class="highlight">{{ position.shares }}</p>
+  </article>
+  <article class="card">
+    <h3>Preco medio</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(position.avg_price) }}</p>
+  </article>
+  <article class="card">
+    <h3>Valor total investido</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(position.total_value) }}</p>
+  </article>
+  <article class="card">
+    <h3>Valor de mercado da posicao</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(position.market_value) }}</p>
+  </article>
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <h3>Resultado em aberto (R$)</h3>
+    <p class="highlight {{ 'up' if position.open_pnl_value >= 0 else 'down' }}">
+      R$ {{ '%.2f'|format(position.open_pnl_value) }}
+    </p>
+  </article>
+  <article class="card">
+    <h3>Resultado em aberto (%)</h3>
+    <p class="highlight {{ 'up' if position.open_pnl_pct >= 0 else 'down' }}">
+      {{ '%.2f'|format(position.open_pnl_pct) }}%
+    </p>
+  </article>
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <h3>Proventos recebidos</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(position.total_incomes) }}</p>
+  </article>
+</section>
+
+<section class="card detail">
+  <h2>Resumo</h2>
+  <p>Variacao no dia: <strong class="{{ 'up' if asset.variation_day >= 0 else 'down' }}">{{ asset.variation_day }}%</strong></p>
+  <p>Valor de mercado: R$ {{ asset.market_cap_bi }} bi</p>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Carteira</th>
+        <th>Data</th>
+        <th>Tipo</th>
+        <th>Valor</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in incomes %}
+      <tr>
+        <td>{{ item.portfolio_name }}</td>
+        <td>{{ item.date | date_br }}</td>
+        <td>{{ item.income_type | upper }}</td>
+        <td>R$ {{ '%.2f'|format(item.amount) }}</td>
+      </tr>
+      {% endfor %}
+      {% if not incomes %}
+      <tr>
+        <td colspan="4">Esse ativo ainda nao possui proventos.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Carteira</th>
+        <th>Data</th>
+        <th>Tipo</th>
+        <th>Qtd</th>
+        <th>Preco</th>
+        <th>Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for tx in transactions %}
+      <tr>
+        <td>{{ tx.portfolio_name }}</td>
+        <td>{{ tx.date | date_br }}</td>
+        <td>{{ "Compra" if tx.tx_type == "buy" else "Venda" }}</td>
+        <td>{{ tx.shares }}</td>
+        <td>R$ {{ '%.2f'|format(tx.price) }}</td>
+        <td>R$ {{ '%.2f'|format(tx.total_value) }}</td>
+      </tr>
+      {% endfor %}
+      {% if not transactions %}
+      <tr>
+        <td colspan="6">Esse ativo ainda nao possui transacoes.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

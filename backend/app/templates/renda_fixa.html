@@ -62,6 +62,9 @@
           <p>{{ group['summary']['count'] }} registro(s)</p>
         </div>
         <div class="asset-group-metrics">
+          {% set carteira_total = summary.current_total|float %}
+          {% set grupo_total = group['summary']['current_total']|float %}
+          {% set grupo_peso = (grupo_total / carteira_total * 100) if carteira_total > 0 else 0 %}
           <div>
             <span>Aplicado</span>
             <strong>R$ {{ '%.2f'|format(group['summary']['applied_total']) }}</strong>
@@ -77,6 +80,10 @@
           <div>
             <span>Rendimento recebido</span>
             <strong class="{{ 'up' if group['summary']['rendimento_recebido_total'] >= 0 else 'down' }}">R$ {{ '%.2f'|format(group['summary']['rendimento_recebido_total']) }}</strong>
+          </div>
+          <div>
+            <span>% na carteira</span>
+            <strong>{{ '%.2f'|format(grupo_peso) }}%</strong>
           </div>
         </div>
         <span class="asset-group-chevron"></span>

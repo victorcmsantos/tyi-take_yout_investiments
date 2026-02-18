@@ -1,16 +1,32 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
 import { apiGet } from './api'
 import HomePage from './pages/HomePage'
 import PortfolioPage from './pages/PortfolioPage'
 import FixedIncomePage from './pages/FixedIncomePage'
 import ChartsPage from './pages/ChartsPage'
+import AssetPage from './pages/AssetPage'
+import NewTransactionPage from './pages/NewTransactionPage'
+import NewIncomePage from './pages/NewIncomePage'
+import PortfoliosPage from './pages/PortfoliosPage'
 
 function App() {
   const [portfolios, setPortfolios] = useState([])
   const [selectedPortfolioIds, setSelectedPortfolioIds] = useState([])
   const [loadingPortfolios, setLoadingPortfolios] = useState(true)
   const [error, setError] = useState('')
+
+  const refreshPortfolios = useCallback(async () => {
+    const data = await apiGet('/api/portfolios')
+    setPortfolios(data)
+    setSelectedPortfolioIds((current) => {
+      const valid = current.filter((id) => data.some((p) => Number(p.id) === Number(id)))
+      if (valid.length > 0) return valid
+      if (data.length > 0) return [data[0].id]
+      return []
+    })
+    return data
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -66,10 +82,11 @@ function App() {
         <div className="topbar-row">
           <Link to="/" className="brand">Invest Portal</Link>
           <nav className="nav">
-            <Link to="/">Acoes</Link>
             <Link to="/carteira">Renda Variavel</Link>
             <Link to="/renda-fixa">Renda Fixa</Link>
             <Link to="/graficos">Graficos</Link>
+            <Link to="/nova">Nova transacao</Link>
+            <Link to="/novo">Novo provento</Link>
           </nav>
         </div>
         <p className="active-tag">Carteira ativa: {activePortfolioName}</p>
@@ -90,6 +107,7 @@ function App() {
               {portfolio.name}
             </label>
           ))}
+          <Link to="/carteiras" className="sidebar-manage-link">Gerenciar</Link>
         </aside>
 
         <main className="content">
@@ -98,6 +116,33 @@ function App() {
             <Route path="/carteira" element={<PortfolioPage selectedPortfolioIds={selectedPortfolioIds} />} />
             <Route path="/renda-fixa" element={<FixedIncomePage selectedPortfolioIds={selectedPortfolioIds} />} />
             <Route path="/graficos" element={<ChartsPage selectedPortfolioIds={selectedPortfolioIds} />} />
+            <Route path="/ativo/:ticker" element={<AssetPage selectedPortfolioIds={selectedPortfolioIds} />} />
+            <Route
+              path="/nova"
+              element={<NewTransactionPage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
+            />
+            <Route
+              path="/novo"
+              element={<NewIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
+            />
+            <Route
+              path="/carteiras"
+              element={
+                <PortfoliosPage
+                  portfolios={portfolios}
+                  selectedPortfolioIds={selectedPortfolioIds}
+                  refreshPortfolios={refreshPortfolios}
+                />
+              }
+            />
+            <Route
+              path="/transacoes/nova"
+              element={<Navigate to="/nova" replace />}
+            />
+            <Route
+              path="/proventos/novo"
+              element={<Navigate to="/novo" replace />}
+            />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

@@ -289,6 +289,11 @@ def nova_transacao():
     )
 
 
+@main_bp.route("/nova", methods=["GET", "POST"])
+def nova_transacao_alias():
+    return nova_transacao()
+
+
 @main_bp.route("/transacoes/remover", methods=["POST"])
 def remover_transacoes():
     selected_portfolio_ids = _selected_portfolio_ids()
@@ -318,6 +323,11 @@ def novo_provento():
         **_base_context(selected_portfolio_ids),
         target_portfolio_id=active_portfolio_id,
     )
+
+
+@main_bp.route("/novo", methods=["GET", "POST"])
+def novo_provento_alias():
+    return novo_provento()
 
 
 @main_bp.route("/renda-fixa")

@@ -84,6 +84,67 @@
 </section>
 
 <section class="monthly-summary">
+  <h2>Investidos por mes (ano)</h2>
+  <form method="get" class="inline-form" style="margin-bottom: 12px;">
+    {% for pid in selected_portfolio_ids %}
+    <input type="hidden" name="portfolio_id" value="{{ pid }}">
+    {% endfor %}
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-right:12px;">
+      <input type="checkbox" name="annual_metric" value="invested" {% if 'invested' in annual_selected_metrics %}checked{% endif %}>
+      Investidos
+    </label>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-right:12px;">
+      <input type="checkbox" name="annual_metric" value="incomes" {% if 'incomes' in annual_selected_metrics %}checked{% endif %}>
+      Proventos
+    </label>
+    <button type="submit" class="btn-secondary">Aplicar</button>
+  </form>
+  <div class="table-wrap">
+    <table class="annual-month-table">
+      <thead>
+        <tr>
+          <th></th>
+          {% for year in annual_invested_summary.years %}
+          <th>
+            {{ year['label'] }}
+            {% if 'invested' in annual_selected_metrics %}
+            <div>Inv: R$ {{ '%.2f'|format(year['invested_total']) }}</div>
+            {% endif %}
+            {% if 'incomes' in annual_selected_metrics %}
+            <div>Prov: R$ {{ '%.2f'|format(year['incomes_total']) }}</div>
+            {% endif %}
+          </th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for month_label in annual_invested_summary.months %}
+        {% set month_idx = loop.index0 %}
+        <tr>
+          <th>{{ month_label }}</th>
+          {% for year in annual_invested_summary.years %}
+          <td>
+            {% if 'invested' in annual_selected_metrics %}
+            <div>Inv: R$ {{ '%.2f'|format(year['invested_values'][month_idx]) }}</div>
+            {% endif %}
+            {% if 'incomes' in annual_selected_metrics %}
+            <div>Prov: R$ {{ '%.2f'|format(year['incomes_values'][month_idx]) }}</div>
+            {% endif %}
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+        {% if not annual_invested_summary.years %}
+        <tr>
+          <td colspan="2">Sem dados para tabela anual.</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="monthly-summary">
   <h2>Resumo mensal por classe</h2>
   <div class="table-wrap">
     <table class="monthly-table">
@@ -118,38 +179,6 @@
         {% if not monthly_class_summary %}
         <tr>
           <td colspan="11">Sem dados mensais para o periodo selecionado.</td>
-        </tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<section class="monthly-summary">
-  <h2>Investidos por mes (ano)</h2>
-  <div class="table-wrap">
-    <table class="annual-month-table">
-      <thead>
-        <tr>
-          <th></th>
-          {% for year in annual_invested_summary.years %}
-          <th>{{ year['label'] }} - R${{ '%.2f'|format(year['total']) }}</th>
-          {% endfor %}
-        </tr>
-      </thead>
-      <tbody>
-        {% for month_label in annual_invested_summary.months %}
-        {% set month_idx = loop.index0 %}
-        <tr>
-          <th>{{ month_label }}</th>
-          {% for year in annual_invested_summary.years %}
-          <td>R$ {{ '%.2f'|format(year['values'][month_idx]) }}</td>
-          {% endfor %}
-        </tr>
-        {% endfor %}
-        {% if not annual_invested_summary.years %}
-        <tr>
-          <td colspan="2">Sem dados para tabela anual.</td>
         </tr>
         {% endif %}
       </tbody>

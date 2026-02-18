@@ -384,6 +384,11 @@ def remover_renda_fixa():
 @main_bp.route("/graficos")
 def graficos():
     selected_portfolio_ids = _selected_portfolio_ids()
+    raw_annual_metrics = [item.strip().lower() for item in request.args.getlist("annual_metric") if item]
+    valid_annual_metrics = {"invested", "incomes"}
+    annual_selected_metrics = [item for item in raw_annual_metrics if item in valid_annual_metrics]
+    if not annual_selected_metrics:
+        annual_selected_metrics = ["invested", "incomes"]
     portfolio = get_portfolio_snapshot(selected_portfolio_ids)
     fixed_income = get_fixed_income_summary(selected_portfolio_ids)
     fixed_income_items = get_fixed_incomes(selected_portfolio_ids)
@@ -533,21 +538,27 @@ def graficos():
         except ValueError:
             continue
         if year not in annual_invested_map:
-            annual_invested_map[year] = {key: 0.0 for _, key in month_order}
+            annual_invested_map[year] = {
+                key: {"invested": 0.0, "incomes": 0.0} for _, key in month_order
+            }
         if month_key in annual_invested_map[year]:
-            annual_invested_map[year][month_key] = float(row.get("total_invested", 0.0))
+            annual_invested_map[year][month_key]["invested"] = float(row.get("total_invested", 0.0))
+            annual_invested_map[year][month_key]["incomes"] = float(row.get("total_incomes", 0.0))
 
     annual_invested_summary = {
         "months": [label for label, _ in month_order],
         "years": [],
     }
     for year in sorted(annual_invested_map.keys()):
-        month_values = [annual_invested_map[year][key] for _, key in month_order]
+        month_invested_values = [annual_invested_map[year][key]["invested"] for _, key in month_order]
+        month_income_values = [annual_invested_map[year][key]["incomes"] for _, key in month_order]
         annual_invested_summary["years"].append(
             {
                 "label": str(year),
-                "total": round(sum(month_values), 2),
-                "values": [round(value, 2) for value in month_values],
+                "invested_total": round(sum(month_invested_values), 2),
+                "incomes_total": round(sum(month_income_values), 2),
+                "invested_values": [round(value, 2) for value in month_invested_values],
+                "incomes_values": [round(value, 2) for value in month_income_values],
             }
         )
     monthly_income_rows = list(monthly_class_summary)
@@ -583,6 +594,7 @@ def graficos():
         fixed_income_issuer_chart=fixed_income_issuer_chart,
         monthly_class_summary=monthly_class_summary,
         annual_invested_summary=annual_invested_summary,
+        annual_selected_metrics=annual_selected_metrics,
         monthly_income_chart=monthly_income_chart,
         **_base_context(selected_portfolio_ids),
     )

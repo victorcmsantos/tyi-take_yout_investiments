@@ -42,7 +42,19 @@
     <p class="highlight">R$ {{ '%.2f'|format(portfolio.monthly_dividends) }}</p>
   </article>
   <article class="card">
-    <h3>Proventos totais recebidos</h3>
+    <h3>Proventos mes atual</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(portfolio.incomes_current_month) }}</p>
+  </article>
+  <article class="card">
+    <h3>Proventos 3 meses</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(portfolio.incomes_3m) }}</p>
+  </article>
+  <article class="card">
+    <h3>Proventos 12 meses</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(portfolio.incomes_12m) }}</p>
+  </article>
+  <article class="card">
+    <h3>Proventos total</h3>
     <p class="highlight">R$ {{ '%.2f'|format(portfolio.total_incomes) }}</p>
   </article>
 </section>
@@ -112,6 +124,18 @@
         <p class="highlight {{ 'up' if group_summary.open_pnl_pct >= 0 else 'down' }}">
           {{ '%.2f'|format(group_summary.open_pnl_pct) }}%
         </p>
+      </article>
+      <article class="card">
+        <h3>Proventos mes atual</h3>
+        <p class="highlight">R$ {{ '%.2f'|format(group_summary.incomes_current_month) }}</p>
+      </article>
+      <article class="card">
+        <h3>Proventos 3 meses</h3>
+        <p class="highlight">R$ {{ '%.2f'|format(group_summary.incomes_3m) }}</p>
+      </article>
+      <article class="card">
+        <h3>Proventos 12 meses</h3>
+        <p class="highlight">R$ {{ '%.2f'|format(group_summary.incomes_12m) }}</p>
       </article>
       <article class="card">
         <h3>Proventos totais recebidos</h3>

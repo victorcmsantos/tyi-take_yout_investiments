@@ -2086,6 +2086,10 @@ def get_asset_position_summary(ticker: str, portfolio_ids):
             "market_value": 0.0,
             "open_pnl_value": 0.0,
             "open_pnl_pct": 0.0,
+            "total_incomes": 0.0,
+            "incomes_current_month": 0.0,
+            "incomes_3m": 0.0,
+            "incomes_12m": 0.0,
         }
 
     rows = db.execute(
@@ -2126,17 +2130,46 @@ def get_asset_position_summary(ticker: str, portfolio_ids):
     market_value = shares * asset["price"]
     open_pnl_value = market_value - total_value
     open_pnl_pct = (open_pnl_value / total_value) * 100 if total_value > 0 else 0.0
+    today = datetime.now().date()
+    current_month_start = today.replace(day=1)
+
+    def _subtract_months(date_value, months_back):
+        year = date_value.year
+        month = date_value.month - months_back
+        while month <= 0:
+            month += 12
+            year -= 1
+        return date_value.replace(year=year, month=month, day=1)
+
+    start_3m = _subtract_months(current_month_start, 2)
+    start_12m = _subtract_months(current_month_start, 11)
+
     income_row = db.execute(
         """
-        SELECT COALESCE(SUM(amount), 0) AS total_incomes
+        SELECT
+            COALESCE(SUM(amount), 0) AS total_incomes,
+            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_current_month,
+            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_3m,
+            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_12m
         FROM incomes
         WHERE ticker = ? AND portfolio_id IN ("""
         + placeholders
         + """)
         """,
-        tuple([ticker.upper()] + pids),
+        tuple(
+            [
+                current_month_start.strftime("%Y-%m-%d"),
+                start_3m.strftime("%Y-%m-%d"),
+                start_12m.strftime("%Y-%m-%d"),
+                ticker.upper(),
+            ]
+            + pids
+        ),
     ).fetchone()
     total_incomes = float(income_row["total_incomes"]) if income_row else 0.0
+    incomes_current_month = float(income_row["incomes_current_month"]) if income_row else 0.0
+    incomes_3m = float(income_row["incomes_3m"]) if income_row else 0.0
+    incomes_12m = float(income_row["incomes_12m"]) if income_row else 0.0
 
     return {
         "shares": shares,
@@ -2146,6 +2179,9 @@ def get_asset_position_summary(ticker: str, portfolio_ids):
         "open_pnl_value": round(open_pnl_value, 2),
         "open_pnl_pct": round(open_pnl_pct, 2),
         "total_incomes": round(total_incomes, 2),
+        "incomes_current_month": round(incomes_current_month, 2),
+        "incomes_3m": round(incomes_3m, 2),
+        "incomes_12m": round(incomes_12m, 2),
     }
 
 
@@ -2202,6 +2238,9 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "value", sort_dir: str 
     monthly_dividends = 0.0
     invested_total = 0.0
     incomes_total = 0.0
+    incomes_current_month = 0.0
+    incomes_3m = 0.0
+    incomes_12m = 0.0
 
     for row in rows:
         item = dict(row)
@@ -2251,6 +2290,20 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "value", sort_dir: str 
 
         cost_state[ticker] = {"shares": shares, "cost": cost}
 
+    today = datetime.now().date()
+    current_month_start = today.replace(day=1)
+
+    def _subtract_months(date_value, months_back):
+        year = date_value.year
+        month = date_value.month - months_back
+        while month <= 0:
+            month += 12
+            year -= 1
+        return date_value.replace(year=year, month=month, day=1)
+
+    start_3m = _subtract_months(current_month_start, 2)
+    start_12m = _subtract_months(current_month_start, 11)
+
     # Proventos por ticker para as carteiras selecionadas.
     income_rows = db.execute(
         """
@@ -2265,6 +2318,73 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "value", sort_dir: str 
     ).fetchall()
     incomes_by_ticker = {row["ticker"]: float(row["total_incomes"]) for row in income_rows}
     incomes_total = sum(incomes_by_ticker.values())
+    income_current_month_rows = db.execute(
+        """
+        SELECT ticker, COALESCE(SUM(amount), 0) AS total_incomes
+        FROM incomes
+        WHERE portfolio_id IN ("""
+        + placeholders
+        + """)
+          AND date >= ?
+        GROUP BY ticker
+        """,
+        tuple(pids + [current_month_start.strftime("%Y-%m-%d")]),
+    ).fetchall()
+    incomes_current_month_by_ticker = {
+        row["ticker"]: float(row["total_incomes"]) for row in income_current_month_rows
+    }
+    income_3m_rows = db.execute(
+        """
+        SELECT ticker, COALESCE(SUM(amount), 0) AS total_incomes
+        FROM incomes
+        WHERE portfolio_id IN ("""
+        + placeholders
+        + """)
+          AND date >= ?
+        GROUP BY ticker
+        """,
+        tuple(pids + [start_3m.strftime("%Y-%m-%d")]),
+    ).fetchall()
+    incomes_3m_by_ticker = {row["ticker"]: float(row["total_incomes"]) for row in income_3m_rows}
+    income_12m_rows = db.execute(
+        """
+        SELECT ticker, COALESCE(SUM(amount), 0) AS total_incomes
+        FROM incomes
+        WHERE portfolio_id IN ("""
+        + placeholders
+        + """)
+          AND date >= ?
+        GROUP BY ticker
+        """,
+        tuple(pids + [start_12m.strftime("%Y-%m-%d")]),
+    ).fetchall()
+    incomes_12m_by_ticker = {row["ticker"]: float(row["total_incomes"]) for row in income_12m_rows}
+    incomes_summary_row = db.execute(
+        """
+        SELECT
+            COALESCE(SUM(amount), 0) AS total_incomes,
+            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_current_month,
+            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_3m,
+            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_12m
+        FROM incomes
+        WHERE portfolio_id IN ("""
+        + placeholders
+        + """)
+        """,
+        tuple(
+            [
+                current_month_start.strftime("%Y-%m-%d"),
+                start_3m.strftime("%Y-%m-%d"),
+                start_12m.strftime("%Y-%m-%d"),
+            ]
+            + pids
+        ),
+    ).fetchone()
+    if incomes_summary_row:
+        incomes_total = float(incomes_summary_row["total_incomes"] or incomes_total)
+        incomes_current_month = float(incomes_summary_row["incomes_current_month"] or 0.0)
+        incomes_3m = float(incomes_summary_row["incomes_3m"] or 0.0)
+        incomes_12m = float(incomes_summary_row["incomes_12m"] or 0.0)
 
     for item in positions:
         invested_total += cost_state.get(item["ticker"], {"cost": 0.0})["cost"]
@@ -2282,6 +2402,11 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "value", sort_dir: str 
         item["open_pnl_value"] = round(open_pnl_item, 2)
         item["open_pnl_pct"] = round(open_pnl_pct_item, 2)
         item["total_incomes"] = round(incomes_by_ticker.get(item["ticker"], 0.0), 2)
+        item["incomes_current_month"] = round(
+            incomes_current_month_by_ticker.get(item["ticker"], 0.0), 2
+        )
+        item["incomes_3m"] = round(incomes_3m_by_ticker.get(item["ticker"], 0.0), 2)
+        item["incomes_12m"] = round(incomes_12m_by_ticker.get(item["ticker"], 0.0), 2)
         item["weight"] = round((item["value"] / total) * 100, 2) if total else 0.0
         item["category"] = _position_category(item["ticker"], item["name"], item["sector"])
         grouped_positions[item["category"]].append(item)
@@ -2325,11 +2450,17 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "value", sort_dir: str 
         group_open_pnl = group_total - group_invested
         group_open_pnl_pct = (group_open_pnl / group_invested) * 100 if group_invested > 0 else 0.0
         group_incomes = sum(item["total_incomes"] for item in items)
+        group_incomes_current_month = sum(item["incomes_current_month"] for item in items)
+        group_incomes_3m = sum(item["incomes_3m"] for item in items)
+        group_incomes_12m = sum(item["incomes_12m"] for item in items)
         group_summaries[key] = {
             "total_value": round(group_total, 2),
             "invested_value": round(group_invested, 2),
             "open_pnl_value": round(group_open_pnl, 2),
             "open_pnl_pct": round(group_open_pnl_pct, 2),
+            "incomes_current_month": round(group_incomes_current_month, 2),
+            "incomes_3m": round(group_incomes_3m, 2),
+            "incomes_12m": round(group_incomes_12m, 2),
             "total_incomes": round(group_incomes, 2),
         }
 
@@ -2338,6 +2469,9 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "value", sort_dir: str 
         "invested_value": round(invested_total, 2),
         "monthly_dividends": round(monthly_dividends, 2),
         "total_incomes": round(incomes_total, 2),
+        "incomes_current_month": round(incomes_current_month, 2),
+        "incomes_3m": round(incomes_3m, 2),
+        "incomes_12m": round(incomes_12m, 2),
         "open_pnl_value": round(open_pnl_value, 2),
         "open_pnl_pct": round(open_pnl_pct, 2),
         "positions": positions,

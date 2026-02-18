@@ -9,9 +9,38 @@
 
 <section class="charts-grid">
   <article class="card chart-card">
+    <h3>Renda Variavel x Renda Fixa</h3>
+    <div class="chart-canvas-wrap">
+      <canvas id="chart-classes"></canvas>
+    </div>
+    <p id="chart-classes-total" class="chart-total"></p>
+  </article>
+
+  <article class="card chart-card">
     <h3>Distribuicao por tipo de ativo</h3>
     <div class="chart-canvas-wrap">
       <canvas id="chart-categories"></canvas>
+    </div>
+  </article>
+
+  <article class="card chart-card">
+    <h3>Resultado por categoria</h3>
+    <div class="chart-canvas-wrap">
+      <canvas id="chart-result-category"></canvas>
+    </div>
+  </article>
+
+  <article class="card chart-card">
+    <h3>Consolidado da carteira</h3>
+    <div class="chart-canvas-wrap">
+      <canvas id="chart-cards"></canvas>
+    </div>
+  </article>
+
+  <article class="card chart-card">
+    <h3>Proventos mes a mes (FIIs x Acoes)</h3>
+    <div class="chart-canvas-wrap">
+      <canvas id="chart-monthly-income"></canvas>
     </div>
   </article>
 
@@ -30,28 +59,6 @@
     </div>
   </article>
   {% endfor %}
-
-  <article class="card chart-card">
-    <h3>Consolidado da carteira</h3>
-    <div class="chart-canvas-wrap">
-      <canvas id="chart-cards"></canvas>
-    </div>
-  </article>
-
-  <article class="card chart-card">
-    <h3>Resultado por categoria</h3>
-    <div class="chart-canvas-wrap">
-      <canvas id="chart-result-category"></canvas>
-    </div>
-  </article>
-
-  <article class="card chart-card">
-    <h3>Renda Variavel x Renda Fixa</h3>
-    <div class="chart-canvas-wrap">
-      <canvas id="chart-classes"></canvas>
-    </div>
-    <p id="chart-classes-total" class="chart-total"></p>
-  </article>
 
   <article class="card chart-card">
     <h3>Investimento Renda Fixa</h3>
@@ -74,12 +81,6 @@
     </div>
   </article>
 
-  <article class="card chart-card">
-    <h3>Proventos mes a mes (FIIs x Acoes)</h3>
-    <div class="chart-canvas-wrap">
-      <canvas id="chart-monthly-income"></canvas>
-    </div>
-  </article>
 </section>
 
 <section class="monthly-summary">
@@ -189,6 +190,7 @@
   Chart.register(ChartDataLabels);
 
   if (categoryData.values.length > 0) {
+    const categoryTotal = categoryData.values.reduce((acc, value) => acc + Number(value || 0), 0);
     new Chart(document.getElementById("chart-categories"), {
       type: "doughnut",
       data: {
@@ -202,9 +204,26 @@
       },
       options: {
         ...baseTooltip,
+        layout: {
+          padding: { top: 28, right: 36, bottom: 28, left: 36 }
+        },
         plugins: {
           ...baseTooltip.plugins,
-          datalabels: { display: false }
+          legend: { display: false },
+          datalabels: {
+            color: "#2d3748",
+            anchor: "end",
+            align: "end",
+            offset: 6,
+            clamp: true,
+            clip: false,
+            formatter: (value, ctx) => {
+              const label = categoryData.labels[ctx.dataIndex] || "";
+              const pct = categoryTotal > 0 ? (Number(value || 0) / categoryTotal) * 100 : 0;
+              return `${label} | ${brlCompact(value)} | ${pct.toFixed(2)}%`;
+            },
+            font: { size: 9, weight: "600" }
+          }
         },
         maintainAspectRatio: false
       }

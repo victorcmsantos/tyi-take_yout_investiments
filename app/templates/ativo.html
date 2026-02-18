@@ -96,9 +96,21 @@
   </article>
 </section>
 
-<section class="grid grid-2">
+<section class="grid grid-4">
   <article class="card">
-    <h3>Proventos recebidos</h3>
+    <h3>Mes atual</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(position.incomes_current_month) }}</p>
+  </article>
+  <article class="card">
+    <h3>3 meses</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(position.incomes_3m) }}</p>
+  </article>
+  <article class="card">
+    <h3>12 meses</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(position.incomes_12m) }}</p>
+  </article>
+  <article class="card">
+    <h3>Total</h3>
     <p class="highlight">R$ {{ '%.2f'|format(position.total_incomes) }}</p>
   </article>
 </section>

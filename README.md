@@ -2,13 +2,13 @@
 
 MVP de portal de investimentos em Flask, inspirado no estilo do Investidor10.
 
-## Como rodar
+## Como rodar (local)
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-python run.py
+pip install -r backend/requirements.txt
+python backend/run.py
 ```
 
 Acesse em `http://127.0.0.1:8000`.
@@ -20,7 +20,7 @@ O backend Flask agora expõe API em `/api`. O frontend em `frontend/` consome es
 ```bash
 # terminal 1 (backend)
 source .venv/bin/activate
-python run.py
+python backend/run.py
 
 # terminal 2 (frontend)
 cd frontend
@@ -29,6 +29,60 @@ npm run dev
 ```
 
 Frontend: `http://127.0.0.1:5173`
+
+## Docker
+
+### Build das imagens
+
+```bash
+# backend
+docker build -t invest-portal-backend ./backend
+
+# frontend
+docker build -t invest-portal-frontend ./frontend
+```
+
+### Subir containers
+
+```bash
+docker network create invest-net
+
+# backend (sem expor porta externa, usado via proxy do frontend)
+docker run -d --name backend --network invest-net \
+  -v "$(pwd)/backend:/data" \
+  -e DATABASE=/data/investments.db \
+  -e DATABASE_BACKUP_DIR=/data/backups \
+  invest-portal-backend
+
+# frontend com Basic Auth
+docker run -d --name frontend --network invest-net -p 5173:80 \
+  -e BASIC_AUTH_USER=admin \
+  -e BASIC_AUTH_PASS='troque-esta-senha' \
+  invest-portal-frontend
+```
+
+Acesse em `http://127.0.0.1:5173`.
+
+### Basic Auth
+
+- O frontend exige `BASIC_AUTH_USER` e `BASIC_AUTH_PASS`.
+- Se essas variáveis não forem informadas, o container do frontend encerra com erro.
+
+### Restore do banco
+
+Banco principal: `backend/investments.db`  
+Backups: `backend/backups/*.sqlite3`
+
+```bash
+# parar backend antes do restore
+docker rm -f backend
+
+# (opcional) backup do estado atual
+cp backend/investments.db backend/backups/investments_before_restore_$(date +%Y%m%d_%H%M%S).sqlite3
+
+# restaurar um backup
+cp backend/backups/investments_YYYYMMDD_HHMMSS.sqlite3 backend/investments.db
+```
 
 ## Rotas
 
@@ -43,7 +97,7 @@ Frontend: `http://127.0.0.1:5173`
 
 ## Banco SQL
 
-- Persistencia em SQLite no arquivo `investments.db`
+- Persistencia em SQLite no arquivo `backend/investments.db`
 - Schema SQL em `backend/app/schema.sql`
 - O banco e criado automaticamente na primeira execucao
 

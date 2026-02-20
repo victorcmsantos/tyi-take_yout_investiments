@@ -1990,16 +1990,57 @@ def get_incomes(portfolio_ids):
     db = get_db()
     rows = db.execute(
         """
-        SELECT ticker, income_type, amount, date
-        FROM incomes
+        SELECT
+            i.id,
+            i.ticker,
+            i.income_type,
+            i.amount,
+            i.date,
+            p.name AS portfolio_name
+        FROM incomes i
+        JOIN portfolios p ON p.id = i.portfolio_id
         WHERE portfolio_id IN ("""
         + placeholders
         + """)
-        ORDER BY date DESC, id DESC
+        ORDER BY i.date DESC, i.id DESC
         """,
         tuple(pids),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def delete_incomes(income_ids, portfolio_ids):
+    ids = []
+    for raw_id in income_ids:
+        try:
+            parsed = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0 and parsed not in ids:
+            ids.append(parsed)
+
+    if not ids:
+        return 0
+
+    pids = normalize_portfolio_ids(portfolio_ids)
+    ids_placeholders = ",".join(["?"] * len(ids))
+    pids_placeholders = ",".join(["?"] * len(pids))
+
+    db = get_db()
+    cursor = db.execute(
+        """
+        DELETE FROM incomes
+        WHERE id IN ("""
+        + ids_placeholders
+        + """)
+          AND portfolio_id IN ("""
+        + pids_placeholders
+        + """)
+        """,
+        tuple(ids + pids),
+    )
+    db.commit()
+    return cursor.rowcount or 0
 
 
 def get_income_totals_by_ticker(portfolio_ids):

@@ -437,6 +437,12 @@ th {
   color: #8a5c00;
 }
 
+.table-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
 select {
   height: 34px;
   border-radius: 8px;

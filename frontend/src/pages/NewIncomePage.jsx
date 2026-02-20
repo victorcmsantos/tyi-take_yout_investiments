@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { apiGet, apiPost, apiPostForm } from '../api'
+import { apiDelete, apiGet, apiPost, apiPostForm } from '../api'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 
@@ -16,6 +16,8 @@ function dateBr(value) {
 function NewIncomePage({ selectedPortfolioIds, portfolios }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
+  const [selectedIncomeIds, setSelectedIncomeIds] = useState([])
+  const [removingIncomes, setRemovingIncomes] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [importError, setImportError] = useState('')
@@ -40,6 +42,7 @@ function NewIncomePage({ selectedPortfolioIds, portfolios }) {
     try {
       const data = await apiGet('/api/incomes', { portfolio_id: selectedPortfolioIds })
       setRows(data)
+      setSelectedIncomeIds([])
     } catch (err) {
       setError(err.message)
     } finally {
@@ -51,6 +54,35 @@ function NewIncomePage({ selectedPortfolioIds, portfolios }) {
     loadIncomes()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(selectedPortfolioIds)])
+
+  const toggleIncome = (incomeId) => {
+    setSelectedIncomeIds((current) => (
+      current.includes(incomeId) ? current.filter((id) => id !== incomeId) : [...current, incomeId]
+    ))
+  }
+
+  const onRemoveIncomes = async () => {
+    if (selectedIncomeIds.length === 0) {
+      setError('Selecione ao menos um provento para remover.')
+      return
+    }
+    setRemovingIncomes(true)
+    setError('')
+    setMessage('')
+    try {
+      const result = await apiDelete(
+        '/api/incomes',
+        { income_ids: selectedIncomeIds },
+        { portfolio_id: selectedPortfolioIds },
+      )
+      setMessage(`${Number(result.removed || 0)} provento(s) removido(s).`)
+      await loadIncomes()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setRemovingIncomes(false)
+    }
+  }
 
   useEffect(() => {
     setForm((current) => ({ ...current, target_portfolio_id: String(activePortfolioId || '') }))
@@ -180,6 +212,8 @@ function NewIncomePage({ selectedPortfolioIds, portfolios }) {
         <table>
           <thead>
             <tr>
+              <th>Sel.</th>
+              <th>Carteira</th>
               <th>Ticker</th>
               <th>Tipo</th>
               <th>Valor</th>
@@ -189,6 +223,14 @@ function NewIncomePage({ selectedPortfolioIds, portfolios }) {
           <tbody>
             {!loading && rows.map((item, idx) => (
               <tr key={`${item.ticker}-${item.date}-${idx}`}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selectedIncomeIds.includes(item.id)}
+                    onChange={() => toggleIncome(item.id)}
+                  />
+                </td>
+                <td>{item.portfolio_name}</td>
                 <td>{item.ticker}</td>
                 <td>{String(item.income_type || '').toUpperCase()}</td>
                 <td>{brl(item.amount)}</td>
@@ -197,16 +239,21 @@ function NewIncomePage({ selectedPortfolioIds, portfolios }) {
             ))}
             {!loading && rows.length === 0 && (
               <tr>
-                <td colSpan={4}>Nenhum provento cadastrado ainda.</td>
+                <td colSpan={6}>Nenhum provento cadastrado ainda.</td>
               </tr>
             )}
             {loading && (
               <tr>
-                <td colSpan={4}>Carregando...</td>
+                <td colSpan={6}>Carregando...</td>
               </tr>
             )}
           </tbody>
         </table>
+        <div className="table-actions">
+          <button type="button" className="btn-danger" disabled={removingIncomes} onClick={onRemoveIncomes}>
+            {removingIncomes ? 'Removendo...' : 'Remover selecionados'}
+          </button>
+        </div>
       </div>
     </section>
   )

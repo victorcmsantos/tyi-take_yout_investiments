@@ -1,15 +1,9 @@
-DROP TABLE IF EXISTS transactions;
-DROP TABLE IF EXISTS incomes;
-DROP TABLE IF EXISTS fixed_incomes;
-DROP TABLE IF EXISTS portfolios;
-DROP TABLE IF EXISTS assets;
-
-CREATE TABLE portfolios (
+CREATE TABLE IF NOT EXISTS portfolios (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE
 );
 
-CREATE TABLE assets (
+CREATE TABLE IF NOT EXISTS assets (
   ticker TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   sector TEXT NOT NULL,
@@ -24,7 +18,7 @@ CREATE TABLE assets (
   market_cap_bi REAL NOT NULL DEFAULT 0
 );
 
-CREATE TABLE transactions (
+CREATE TABLE IF NOT EXISTS transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   portfolio_id INTEGER NOT NULL,
   ticker TEXT NOT NULL,
@@ -36,7 +30,7 @@ CREATE TABLE transactions (
   FOREIGN KEY (ticker) REFERENCES assets (ticker)
 );
 
-CREATE TABLE incomes (
+CREATE TABLE IF NOT EXISTS incomes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   portfolio_id INTEGER NOT NULL,
   ticker TEXT NOT NULL,
@@ -47,7 +41,7 @@ CREATE TABLE incomes (
   FOREIGN KEY (ticker) REFERENCES assets (ticker)
 );
 
-CREATE TABLE fixed_incomes (
+CREATE TABLE IF NOT EXISTS fixed_incomes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   portfolio_id INTEGER NOT NULL,
   distributor TEXT NOT NULL,

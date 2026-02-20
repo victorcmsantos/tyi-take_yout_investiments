@@ -1,5 +1,6 @@
 from flask import Blueprint, jsonify, request
 
+from .db import create_database_backup, list_database_backups
 from .services import (
     add_fixed_income,
     add_income,
@@ -7,6 +8,7 @@ from .services import (
     create_portfolio,
     delete_portfolio,
     delete_fixed_incomes,
+    delete_incomes,
     delete_transactions,
     get_asset,
     get_asset_incomes,
@@ -58,6 +60,18 @@ def _json_error(message, status=400, details=None):
 @api_bp.route("/health", methods=["GET"])
 def health():
     return _json_ok({"status": "ok"})
+
+
+@api_bp.route("/backup/database", methods=["GET", "POST"])
+def backup_database_endpoint():
+    if request.method == "GET":
+        return _json_ok({"backups": list_database_backups()})
+
+    try:
+        backup = create_database_backup(reason="api")
+    except Exception as exc:
+        return _json_error(f"Nao foi possivel gerar backup: {exc}", status=500)
+    return _json_ok({"backup": backup}, status=201)
 
 
 @api_bp.route("/portfolios", methods=["GET", "POST", "DELETE"])
@@ -137,17 +151,26 @@ def transactions():
     return _json_ok({"removed": removed})
 
 
-@api_bp.route("/incomes", methods=["GET", "POST"])
+@api_bp.route("/incomes", methods=["GET", "POST", "DELETE"])
 def incomes():
     if request.method == "GET":
         portfolio_ids = _selected_portfolio_ids_from_request()
         return _json_ok(get_incomes(portfolio_ids))
 
-    payload = request.get_json(silent=True) or request.form.to_dict()
-    ok, message = add_income(payload)
-    if not ok:
-        return _json_error(message, status=400)
-    return _json_ok({"message": message}, status=201)
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or request.form.to_dict()
+        ok, message = add_income(payload)
+        if not ok:
+            return _json_error(message, status=400)
+        return _json_ok({"message": message}, status=201)
+
+    ids = request.get_json(silent=True) or {}
+    income_ids = ids.get("income_ids") or []
+    portfolio_ids = _selected_portfolio_ids_from_request()
+    removed = delete_incomes(income_ids, portfolio_ids)
+    if removed <= 0:
+        return _json_error("Nenhum provento removido.", status=400)
+    return _json_ok({"removed": removed})
 
 
 @api_bp.route("/fixed-incomes", methods=["GET", "POST", "DELETE"])

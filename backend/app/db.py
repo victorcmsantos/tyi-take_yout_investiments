@@ -1,7 +1,96 @@
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from flask import current_app, g
+
+
+def _backup_dir_from_app():
+    db_path = Path(current_app.config["DATABASE"])
+    backup_dir = current_app.config.get("DATABASE_BACKUP_DIR")
+    if backup_dir:
+        return Path(backup_dir)
+    return db_path.parent / "backups"
+
+
+def _backup_file_prefix():
+    db_path = Path(current_app.config["DATABASE"])
+    return f"{db_path.stem}_"
+
+
+def _backup_glob_pattern():
+    return f"{_backup_file_prefix()}*.sqlite3"
+
+
+def list_database_backups():
+    backup_dir = _backup_dir_from_app()
+    if not backup_dir.exists():
+        return []
+
+    rows = []
+    for path in sorted(backup_dir.glob(_backup_glob_pattern()), reverse=True):
+        stat = path.stat()
+        rows.append(
+            {
+                "filename": path.name,
+                "path": str(path),
+                "size_bytes": int(stat.st_size),
+                "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+            }
+        )
+    return rows
+
+
+def create_database_backup(reason: str = "manual"):
+    db_path = Path(current_app.config["DATABASE"])
+    if not db_path.exists():
+        raise FileNotFoundError(f"Banco nao encontrado em {db_path}")
+
+    backup_dir = _backup_dir_from_app()
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"{db_path.stem}_{stamp}.sqlite3"
+
+    # Usa a API nativa de backup do SQLite para copia consistente do arquivo.
+    source = sqlite3.connect(str(db_path))
+    target = sqlite3.connect(str(backup_path))
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+        source.close()
+
+    max_files = int(current_app.config.get("DATABASE_BACKUP_MAX_FILES", 30))
+    if max_files > 0:
+        backups = sorted(backup_dir.glob(_backup_glob_pattern()), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old_file in backups[max_files:]:
+            try:
+                old_file.unlink()
+            except OSError:
+                current_app.logger.warning("Nao foi possivel remover backup antigo: %s", old_file)
+
+    return {
+        "filename": backup_path.name,
+        "path": str(backup_path),
+        "reason": reason,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def backup_database_on_startup_if_needed():
+    if not current_app.config.get("DATABASE_BACKUP_ON_STARTUP", True):
+        return {"created": False, "reason": "disabled"}
+
+    min_interval_minutes = int(current_app.config.get("DATABASE_BACKUP_MIN_INTERVAL_MINUTES", 720))
+    backups = list_database_backups()
+    if backups and min_interval_minutes > 0:
+        latest_path = Path(backups[0]["path"])
+        latest_age_minutes = (datetime.now().timestamp() - latest_path.stat().st_mtime) / 60.0
+        if latest_age_minutes < min_interval_minutes:
+            return {"created": False, "reason": "recent_backup"}
+
+    created = create_database_backup(reason="startup")
+    return {"created": True, "backup": created}
 
 def get_db():
     if "db" not in g:
@@ -32,6 +121,10 @@ def seed_db():
 def init_app(app):
     db_path = Path(app.root_path).parent / "investments.db"
     app.config.setdefault("DATABASE", str(db_path))
+    app.config.setdefault("DATABASE_BACKUP_ON_STARTUP", True)
+    app.config.setdefault("DATABASE_BACKUP_MIN_INTERVAL_MINUTES", 720)
+    app.config.setdefault("DATABASE_BACKUP_MAX_FILES", 30)
+    app.config.setdefault("DATABASE_BACKUP_DIR", str(db_path.parent / "backups"))
 
     app.teardown_appcontext(close_db)
     with app.app_context():
@@ -41,6 +134,10 @@ def init_app(app):
             seed_db()
         else:
             ensure_schema_upgrades()
+        try:
+            backup_database_on_startup_if_needed()
+        except Exception:
+            app.logger.exception("Falha ao criar backup automatico do banco.")
 
 
 def ensure_schema_upgrades():

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { apiGet } from '../api'
+import { apiDelete, apiGet } from '../api'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 
@@ -36,9 +36,12 @@ function FixedIncomePage({ selectedPortfolioIds }) {
   const [payload, setPayload] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
   const [sortBy, setSortBy] = useState('date_aporte')
   const [sortDir, setSortDir] = useState('desc')
   const [openGroups, setOpenGroups] = useState({ prefixado: true, posfixado: false })
+  const [selectedFixedIds, setSelectedFixedIds] = useState([])
+  const [removingFixed, setRemovingFixed] = useState(false)
 
   const toggleSort = (field) => {
     if (sortBy === field) {
@@ -62,6 +65,7 @@ function FixedIncomePage({ selectedPortfolioIds }) {
     let active = true
     setLoading(true)
     setError('')
+    setMessage('')
     ;(async () => {
       try {
         const data = await apiGet('/api/fixed-incomes', {
@@ -71,6 +75,7 @@ function FixedIncomePage({ selectedPortfolioIds }) {
         })
         if (!active) return
         setPayload(data)
+        setSelectedFixedIds([])
       } catch (err) {
         if (!active) return
         setError(err.message)
@@ -83,8 +88,43 @@ function FixedIncomePage({ selectedPortfolioIds }) {
     }
   }, [selectedPortfolioIds, sortBy, sortDir])
 
+  const toggleFixed = (fixedId) => {
+    setSelectedFixedIds((current) => (
+      current.includes(fixedId) ? current.filter((id) => id !== fixedId) : [...current, fixedId]
+    ))
+  }
+
+  const onRemoveFixed = async () => {
+    if (selectedFixedIds.length === 0) {
+      setError('Selecione ao menos um registro de renda fixa para remover.')
+      return
+    }
+    setRemovingFixed(true)
+    setError('')
+    setMessage('')
+    try {
+      const result = await apiDelete(
+        '/api/fixed-incomes',
+        { fixed_income_ids: selectedFixedIds },
+        { portfolio_id: selectedPortfolioIds },
+      )
+      setMessage(`${Number(result.removed || 0)} registro(s) de renda fixa removido(s).`)
+      const data = await apiGet('/api/fixed-incomes', {
+        portfolio_id: selectedPortfolioIds,
+        sort_by: sortBy,
+        sort_dir: sortDir,
+      })
+      setPayload(data)
+      setSelectedFixedIds([])
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setRemovingFixed(false)
+    }
+  }
+
   if (loading) return <p>Carregando...</p>
-  if (error) return <p className="error">{error}</p>
+  if (!payload && error) return <p className="error">{error}</p>
   if (!payload) return <p>Sem dados.</p>
 
   const summary = payload.summary || {}
@@ -99,6 +139,8 @@ function FixedIncomePage({ selectedPortfolioIds }) {
   return (
     <section>
       <h1>Renda Fixa</h1>
+      {!!error && <p className="notice-warn">{error}</p>}
+      {!!message && <p className="notice-ok">{message}</p>}
       <div className="cards">
         <article className="card"><h3>Total aplicado</h3><p>{brl(summary.applied_total)}</p></article>
         <article className="card"><h3>Valor atual bruto</h3><p>{brl(summary.current_total)}</p></article>
@@ -155,6 +197,7 @@ function FixedIncomePage({ selectedPortfolioIds }) {
                 <table>
                   <thead>
                     <tr>
+                      <th>Sel.</th>
                       <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('distributor')}>{sortLabel('Distribuidor', 'distributor')}</button></th>
                       <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('issuer')}>{sortLabel('Emissor', 'issuer')}</button></th>
                       <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('investment_type')}>{sortLabel('Investimento', 'investment_type')}</button></th>
@@ -168,6 +211,13 @@ function FixedIncomePage({ selectedPortfolioIds }) {
                   <tbody>
                     {group.items.map((item) => (
                       <tr key={`${group.key}-${item.id}`}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={selectedFixedIds.includes(item.id)}
+                            onChange={() => toggleFixed(item.id)}
+                          />
+                        </td>
                         <td>{item.distributor}</td>
                         <td>{item.issuer}</td>
                         <td>{item.investment_type}</td>
@@ -180,11 +230,16 @@ function FixedIncomePage({ selectedPortfolioIds }) {
                     ))}
                     {group.items.length === 0 && (
                       <tr>
-                        <td colSpan={8}>Sem registros nesse grupo.</td>
+                        <td colSpan={9}>Sem registros nesse grupo.</td>
                       </tr>
                     )}
                   </tbody>
                 </table>
+                <div className="table-actions">
+                  <button type="button" className="btn-danger" disabled={removingFixed} onClick={onRemoveFixed}>
+                    {removingFixed ? 'Removendo...' : 'Remover selecionados'}
+                  </button>
+                </div>
               </div>
                 </>
               )}

@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
+import {
+  AppBar,
+  Box,
+  Button,
+  Checkbox,
+  FormControlLabel,
+  FormGroup,
+  Paper,
+  Stack,
+  Toolbar,
+  Typography,
+} from '@mui/material'
 import { apiGet } from './api'
 import HomePage from './pages/HomePage'
 import PortfolioPage from './pages/PortfolioPage'
@@ -77,40 +89,58 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="topbar-row">
-          <Link to="/" className="brand">Invest Portal</Link>
-          <nav className="nav">
-            <Link to="/carteira">Renda Variavel</Link>
-            <Link to="/renda-fixa">Renda Fixa</Link>
-            <Link to="/graficos">Graficos</Link>
-            <Link to="/nova">Nova transacao</Link>
-            <Link to="/novo">Novo provento</Link>
-          </nav>
-        </div>
-        <p className="active-tag">Carteira ativa: {activePortfolioName}</p>
-      </header>
+    <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
+      <AppBar position="static" color="secondary" elevation={0}>
+        <Toolbar sx={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 1, py: 1 }}>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }} justifyContent="space-between">
+            <Typography
+              component={Link}
+              to="/"
+              variant="h5"
+              sx={{ color: '#fff', textDecoration: 'none', fontWeight: 700 }}
+            >
+              Invest Portal
+            </Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap">
+              <Button component={Link} to="/carteira" color="inherit">Renda Variavel</Button>
+              <Button component={Link} to="/renda-fixa" color="inherit">Renda Fixa</Button>
+              <Button component={Link} to="/graficos" color="inherit">Graficos</Button>
+              <Button component={Link} to="/nova" color="inherit">Nova transacao</Button>
+              <Button component={Link} to="/novo" color="inherit">Novo provento</Button>
+            </Stack>
+          </Stack>
+          <Typography variant="body2" sx={{ opacity: 0.9 }}>
+            Carteira ativa: {activePortfolioName}
+          </Typography>
+        </Toolbar>
+      </AppBar>
 
-      <div className="layout">
-        <aside className="sidebar">
-          <h3>Carteiras</h3>
-          {loadingPortfolios && <p>Carregando...</p>}
-          {!!error && <p className="error">{error}</p>}
-          {portfolios.map((portfolio) => (
-            <label key={portfolio.id} className="check-row">
-              <input
-                type="checkbox"
-                checked={selectedPortfolioIds.some((id) => Number(id) === Number(portfolio.id))}
-                onChange={() => onTogglePortfolio(portfolio.id)}
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '250px 1fr' }, gap: 2, p: 2 }}>
+        <Paper sx={{ p: 2, alignSelf: 'start' }}>
+          <Typography variant="h6" sx={{ mb: 1 }}>Carteiras</Typography>
+          {loadingPortfolios && <Typography variant="body2">Carregando...</Typography>}
+          {!!error && <Typography color="error" variant="body2">{error}</Typography>}
+          <FormGroup>
+            {portfolios.map((portfolio) => (
+              <FormControlLabel
+                key={portfolio.id}
+                control={(
+                  <Checkbox
+                    checked={selectedPortfolioIds.some((id) => Number(id) === Number(portfolio.id))}
+                    onChange={() => onTogglePortfolio(portfolio.id)}
+                    size="small"
+                  />
+                )}
+                label={portfolio.name}
               />
-              {portfolio.name}
-            </label>
-          ))}
-          <Link to="/carteiras" className="sidebar-manage-link">Gerenciar</Link>
-        </aside>
+            ))}
+          </FormGroup>
+          <Button component={Link} to="/carteiras" variant="outlined" fullWidth sx={{ mt: 1 }}>
+            Gerenciar
+          </Button>
+        </Paper>
 
-        <main className="content">
+        <Box>
           <Routes>
             <Route path="/" element={<HomePage selectedPortfolioIds={selectedPortfolioIds} />} />
             <Route path="/carteira" element={<PortfolioPage selectedPortfolioIds={selectedPortfolioIds} />} />
@@ -127,27 +157,21 @@ function App() {
             />
             <Route
               path="/carteiras"
-              element={
+              element={(
                 <PortfoliosPage
                   portfolios={portfolios}
                   selectedPortfolioIds={selectedPortfolioIds}
                   refreshPortfolios={refreshPortfolios}
                 />
-              }
+              )}
             />
-            <Route
-              path="/transacoes/nova"
-              element={<Navigate to="/nova" replace />}
-            />
-            <Route
-              path="/proventos/novo"
-              element={<Navigate to="/novo" replace />}
-            />
+            <Route path="/transacoes/nova" element={<Navigate to="/nova" replace />} />
+            <Route path="/proventos/novo" element={<Navigate to="/novo" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
-        </main>
-      </div>
-    </div>
+        </Box>
+      </Box>
+    </Box>
   )
 }
 

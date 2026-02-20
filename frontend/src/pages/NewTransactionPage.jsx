@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { apiGet, apiPost, apiPostForm } from '../api'
+import { apiDelete, apiGet, apiPost, apiPostForm } from '../api'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 
@@ -16,6 +16,8 @@ function dateBr(value) {
 function NewTransactionPage({ selectedPortfolioIds, portfolios }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
+  const [selectedTxIds, setSelectedTxIds] = useState([])
+  const [removingTx, setRemovingTx] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [form, setForm] = useState({
@@ -63,10 +65,40 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios }) {
     try {
       const data = await apiGet('/api/transactions', { portfolio_id: selectedPortfolioIds })
       setRows(data)
+      setSelectedTxIds([])
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const toggleTx = (txId) => {
+    setSelectedTxIds((current) => (
+      current.includes(txId) ? current.filter((id) => id !== txId) : [...current, txId]
+    ))
+  }
+
+  const onRemoveTransactions = async () => {
+    if (selectedTxIds.length === 0) {
+      setError('Selecione ao menos uma transacao para remover.')
+      return
+    }
+    setRemovingTx(true)
+    setError('')
+    setMessage('')
+    try {
+      const result = await apiDelete(
+        '/api/transactions',
+        { transaction_ids: selectedTxIds },
+        { portfolio_id: selectedPortfolioIds },
+      )
+      setMessage(`${Number(result.removed || 0)} transacao(oes) removida(s).`)
+      await loadTransactions()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setRemovingTx(false)
     }
   }
 
@@ -282,6 +314,7 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios }) {
             <table>
               <thead>
                 <tr>
+                  <th>Sel.</th>
                   <th>Carteira</th>
                   <th>Ticker</th>
                   <th>Tipo</th>
@@ -294,6 +327,13 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios }) {
               <tbody>
                 {!loading && rows.map((tx) => (
                   <tr key={tx.id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedTxIds.includes(tx.id)}
+                        onChange={() => toggleTx(tx.id)}
+                      />
+                    </td>
                     <td>{tx.portfolio_name}</td>
                     <td>{tx.ticker}</td>
                     <td>{tx.tx_type === 'buy' ? 'Compra' : 'Venda'}</td>
@@ -305,16 +345,21 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios }) {
                 ))}
                 {!loading && rows.length === 0 && (
                   <tr>
-                    <td colSpan={7}>Sem transacoes para as carteiras selecionadas.</td>
+                    <td colSpan={8}>Sem transacoes para as carteiras selecionadas.</td>
                   </tr>
                 )}
                 {loading && (
                   <tr>
-                    <td colSpan={7}>Carregando...</td>
+                    <td colSpan={8}>Carregando...</td>
                   </tr>
                 )}
               </tbody>
             </table>
+            <div className="table-actions">
+              <button type="button" className="btn-danger" disabled={removingTx} onClick={onRemoveTransactions}>
+                {removingTx ? 'Removendo...' : 'Remover selecionadas'}
+              </button>
+            </div>
           </div>
         </div>
       </details>

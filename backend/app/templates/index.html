@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Dashboard | Invest Portal{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <h1>Radar do mercado</h1>
+  <p>Portal de investimentos em Flask com indicadores e renda variavel por transacoes.</p>
+  <form method="post" action="{{ url_for('main.atualizar_yahoo', portfolio_id=selected_portfolio_ids) }}" class="inline-form">
+    {% for pid in selected_portfolio_ids %}
+    <input type="hidden" name="portfolio_id" value="{{ pid }}">
+    {% endfor %}
+    <button type="submit" class="btn-primary">Buscar infos do Yahoo</button>
+  </form>
+  {% if sync_message %}
+  <p class="{% if sync_status == 'ok' %}alert-success{% else %}alert-warning{% endif %}">{{ sync_message }}</p>
+  {% endif %}
+</section>
+
+{% if highlights %}
+<section class="grid grid-4">
+  <article class="card">
+    <h3>Maior dividend yield</h3>
+    <p class="highlight">{{ highlights.highest_dy.ticker }}</p>
+    <small>{{ highlights.highest_dy.dy }}% a.a.</small>
+  </article>
+  <article class="card">
+    <h3>Maior alta do dia</h3>
+    <p class="highlight">{{ highlights.highest_gain.ticker }}</p>
+    <small>{{ highlights.highest_gain.variation_day }}%</small>
+  </article>
+  <article class="card">
+    <h3>Maior valor de mercado</h3>
+    <p class="highlight">{{ highlights.largest_cap.ticker }}</p>
+    <small>R$ {{ highlights.largest_cap.market_cap_bi }} bi</small>
+  </article>
+  <article class="card">
+    <h3>Proventos totais</h3>
+    <p class="highlight">R$ {{ '%.2f'|format(incomes_total) }}</p>
+    <small>Carteiras selecionadas</small>
+  </article>
+</section>
+{% endif %}
+
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Ticker</th>
+        <th>Nome</th>
+        <th>Preco</th>
+        <th>DY</th>
+        <th>P/L</th>
+        <th>P/VP</th>
+        <th>Proventos</th>
+        <th>Dia</th>
+        <th>7 dias</th>
+        <th>30 dias</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for asset in assets %}
+      <tr>
+        <td><a href="{{ url_for('main.ativo', ticker=asset.ticker, portfolio_id=selected_portfolio_ids) }}">{{ asset.ticker }}</a></td>
+        <td>{{ asset.name }}</td>
+        <td>R$ {{ '%.2f'|format(asset.price) }}</td>
+        <td>{{ '%.2f'|format(asset.dy) }}%</td>
+        <td>{{ '%.2f'|format(asset.pl) }}</td>
+        <td>{{ '%.2f'|format(asset.pvp) }}</td>
+        <td>R$ {{ '%.2f'|format(asset.total_incomes) }}</td>
+        <td class="{{ 'up' if asset.variation_day >= 0 else 'down' }}">{{ '%.2f'|format(asset.variation_day) }}%</td>
+        <td class="{{ 'up' if asset.variation_7d >= 0 else 'down' }}">{{ '%.2f'|format(asset.variation_7d) }}%</td>
+        <td class="{{ 'up' if asset.variation_30d >= 0 else 'down' }}">{{ '%.2f'|format(asset.variation_30d) }}%</td>
+      </tr>
+      {% endfor %}
+      {% if not assets %}
+      <tr>
+        <td colspan="10">Nenhum ativo cadastrado ainda.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
+<section class="hero">
+  <h2>Mapa de setores</h2>
+  <p>Visao agregada por numero de ativos, DY medio e valor de mercado.</p>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Setor</th>
+        <th>Ativos</th>
+        <th>DY medio</th>
+        <th>Valor de mercado</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for sector in sectors %}
+      <tr>
+        <td>{{ sector.sector }}</td>
+        <td>{{ sector.assets_count }}</td>
+        <td>{{ sector.avg_dy }}%</td>
+        <td>R$ {{ sector.market_cap_bi }} bi</td>
+      </tr>
+      {% endfor %}
+      {% if not sectors %}
+      <tr>
+        <td colspan="4">Sem dados de setores disponiveis.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

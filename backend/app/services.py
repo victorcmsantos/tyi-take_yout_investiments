@@ -1,11 +1,16 @@
 import csv
 import io
 import json
+import logging
+import os
 import random
+import re
 import time
 from datetime import datetime, timedelta
 from urllib.error import URLError
 from urllib.request import Request, urlopen
+
+from flask import current_app
 
 from .db import get_db
 
@@ -16,6 +21,7 @@ except ImportError:  # pragma: no cover
 
 _FX_CACHE = {"usdbrl": None, "expires_at": 0.0}
 _BCB_SERIES_CACHE = {}
+_LOGGER = logging.getLogger(__name__)
 
 
 def _row_to_dict(row):
@@ -247,6 +253,143 @@ def _http_get_json(url: str):
         except Exception:
             time.sleep(0.15)
             continue
+    return None
+
+
+def _http_get_text(url: str, timeout: float = 8.0):
+    request = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+        },
+    )
+    for _ in range(2):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                body = response.read()
+            if not body:
+                continue
+            return body.decode("utf-8", "ignore")
+        except (URLError, TimeoutError):
+            time.sleep(0.15)
+            continue
+        except Exception:
+            time.sleep(0.15)
+            continue
+    return ""
+
+
+def _number_from_text(value):
+    raw = (value or "").strip().replace("\u00a0", "").replace(" ", "")
+    if not raw:
+        return None
+
+    # Mantem apenas sinais/decimal, removendo moeda e textos.
+    filtered = re.sub(r"[^0-9,.\-+]", "", raw)
+    if not filtered:
+        return None
+    if "," in filtered and "." in filtered:
+        filtered = filtered.replace(",", "")
+    elif "," in filtered:
+        filtered = filtered.replace(",", ".")
+
+    try:
+        return float(filtered)
+    except Exception:
+        return None
+
+
+def _extract_google_metric_value(page_html: str, label: str):
+    pattern = rf">{re.escape(label)}</div>.*?<div class=\"P6K39c\">([^<]+)</div>"
+    match = re.search(pattern, page_html, re.S)
+    if not match:
+        return None
+    return (match.group(1) or "").strip()
+
+
+def _parse_market_cap_to_bi(value):
+    raw = (value or "").strip().upper()
+    if not raw:
+        return None
+
+    multiplier = 1.0 / 1_000_000_000.0
+    if "T" in raw:
+        multiplier = 1000.0
+    elif "B" in raw:
+        multiplier = 1.0
+    elif "M" in raw:
+        multiplier = 0.001
+    elif "K" in raw:
+        multiplier = 0.000001
+
+    numeric = _number_from_text(raw)
+    if numeric is None:
+        return None
+    return numeric * multiplier
+
+
+def _candidate_google_quotes(ticker: str):
+    raw = (ticker or "").strip().upper()
+    if not raw:
+        return []
+
+    clean = raw.replace(".SA", "")
+    candidates = []
+
+    if clean.endswith("-USD"):
+        candidates.extend([clean, raw])
+    elif _is_us_stock_ticker(clean):
+        candidates.extend([f"{clean}:NASDAQ", f"{clean}:NYSE", f"{clean}:AMEX", clean])
+    else:
+        candidates.extend([f"{clean}:BVMF", clean, raw])
+
+    unique = []
+    for item in candidates:
+        candidate = (item or "").strip()
+        if candidate and candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _fetch_google_metrics(ticker: str):
+    timeout_ms = int(os.getenv("GOOGLE_SCRAPER_TIMEOUT_MS", "2500") or "2500")
+    timeout_s = max(timeout_ms, 500) / 1000.0
+    retries = int(os.getenv("GOOGLE_SCRAPER_MAX_RETRIES", "1") or "1")
+    retries = min(max(retries, 0), 3)
+
+    for quote in _candidate_google_quotes(ticker):
+        page_html = ""
+        for _ in range(retries + 1):
+            page_html = _http_get_text(f"https://www.google.com/finance/quote/{quote}", timeout=timeout_s)
+            if page_html:
+                break
+            time.sleep(0.1)
+        if not page_html:
+            continue
+
+        price_match = re.search(r'data-last-price="([^"]+)"', page_html)
+        price = _number_from_text(price_match.group(1)) if price_match else None
+
+        pl = _number_from_text(_extract_google_metric_value(page_html, "P/E ratio"))
+        pvp = _number_from_text(_extract_google_metric_value(page_html, "P/B ratio"))
+        dy = _number_from_text(_extract_google_metric_value(page_html, "Dividend yield"))
+        market_cap_bi = _parse_market_cap_to_bi(_extract_google_metric_value(page_html, "Market cap"))
+
+        metrics = {
+            "price": price,
+            "pl": pl,
+            "pvp": pvp,
+            "dy": dy,
+            "variation_day": None,
+            "variation_7d": None,
+            "variation_30d": None,
+            "market_cap_bi": market_cap_bi,
+        }
+        if any(metrics.get(field) is not None for field in ("price", "pl", "pvp", "dy", "market_cap_bi")):
+            return _metrics_in_brl_if_needed(ticker, metrics)
     return None
 
 
@@ -830,16 +973,10 @@ def _fetch_yahoo_metrics(ticker: str):
     return None
 
 
-def refresh_asset_market_data(ticker: str):
-    asset = get_asset(ticker)
-    if not asset:
+def _has_market_metrics(metrics: dict):
+    if not metrics:
         return False
-
-    profile = _fetch_yahoo_profile(ticker)
-    metrics = _fetch_yahoo_metrics(ticker) or {}
-    if not metrics and not profile:
-        return False
-    has_market_metrics = any(
+    return any(
         metrics.get(field) is not None
         for field in (
             "price",
@@ -852,6 +989,46 @@ def refresh_asset_market_data(ticker: str):
             "market_cap_bi",
         )
     )
+
+
+def _market_data_provider_order():
+    allowed = {"google", "yahoo"}
+    primary = (os.getenv("MARKET_DATA_PRIMARY") or "google").strip().lower()
+    fallback = (os.getenv("MARKET_DATA_FALLBACK") or "yahoo").strip().lower()
+
+    order = []
+    for provider in (primary, fallback, "yahoo"):
+        if provider in allowed and provider not in order:
+            order.append(provider)
+    return order or ["yahoo"]
+
+
+def _is_truthy_env(name: str, default: str = "0"):
+    value = (os.getenv(name, default) or default).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _fetch_market_metrics(ticker: str):
+    for provider in _market_data_provider_order():
+        try:
+            metrics = _fetch_google_metrics(ticker) if provider == "google" else _fetch_yahoo_metrics(ticker)
+        except Exception:
+            metrics = None
+        if _has_market_metrics(metrics):
+            return metrics, provider
+    return {}, None
+
+
+def refresh_asset_market_data(ticker: str):
+    asset = get_asset(ticker)
+    if not asset:
+        return False
+
+    profile = _fetch_yahoo_profile(ticker)
+    metrics, metrics_source = _fetch_market_metrics(ticker)
+    if not metrics and not profile:
+        return False
+    has_market_metrics = _has_market_metrics(metrics)
 
     db = get_db()
     name = asset["name"]
@@ -901,6 +1078,25 @@ def refresh_asset_market_data(ticker: str):
         ),
     )
     db.commit()
+    if _is_truthy_env("MARKET_DATA_LOG_SOURCES", "0"):
+        logger = _LOGGER
+        try:
+            logger = current_app.logger
+        except Exception:
+            pass
+        logger.info(
+            "market_data_source ticker=%s metrics_source=%s profile_source=yahoo price=%s dy=%s pl=%s pvp=%s variation_day=%s variation_7d=%s variation_30d=%s market_cap_bi=%s",
+            ticker.upper(),
+            metrics_source or "none",
+            metrics.get("price"),
+            metrics.get("dy"),
+            metrics.get("pl"),
+            metrics.get("pvp"),
+            metrics.get("variation_day"),
+            metrics.get("variation_7d"),
+            metrics.get("variation_30d"),
+            metrics.get("market_cap_bi"),
+        )
     # Sucesso de "atualizacao Yahoo" significa ter recebido cotacao/indicadores.
     # Atualizacao apenas de nome/setor nao conta como sync completo de mercado.
     return has_market_metrics

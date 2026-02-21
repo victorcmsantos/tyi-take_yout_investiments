@@ -48,17 +48,10 @@ docker build -t invest-portal-frontend ./frontend
 docker network create invest-net
 
 # backend (sem expor porta externa, usado via proxy do frontend)
-docker run -d --name backend --network invest-net \
-  -v "$(pwd)/backend:/data" \
-  -e DATABASE=/data/investments.db \
-  -e DATABASE_BACKUP_DIR=/data/backups \
-  invest-portal-backend
+docker run -d --name backend --network invest-net -p 8000:8000 -v /srv/tyi-take_yout_investiments/investments.db:/app/investments.db -e MARKET_DATA_LOG_SOURCES=1 invest-portal-backend
 
 # frontend com Basic Auth
-docker run -d --name frontend --network invest-net -p 5173:80 \
-  -e BASIC_AUTH_USER=admin \
-  -e BASIC_AUTH_PASS='troque-esta-senha' \
-  invest-portal-frontend
+docker run -d --name frontend --network invest-net -p 5173:80 -e BASIC_AUTH_USER=amor -e BASIC_AUTH_PASS='250109' invest-portal-frontend
 ```
 
 Acesse em `http://127.0.0.1:5173`.

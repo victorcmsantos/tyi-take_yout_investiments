@@ -4,7 +4,7 @@ from flask import Flask, request
 
 from .api_routes import api_bp
 from .db import init_app as init_db_app
-from .market_sync import start_market_sync, trigger_market_sync_if_due
+from .market_sync import start_market_sync
 from .routes import main_bp
 
 
@@ -29,13 +29,9 @@ def create_app() -> Flask:
         return raw
 
     @app.before_request
-    def _ensure_market_sync():
+    def _ensure_options():
         if request.method == "OPTIONS":
             return "", 204
-        endpoint = request.endpoint or ""
-        if endpoint == "static":
-            return
-        trigger_market_sync_if_due(app, blocking=True)
 
     @app.after_request
     def _add_api_cors_headers(response):

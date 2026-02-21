@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { apiGet, apiPost } from '../api'
 
@@ -15,6 +15,22 @@ function HomePage({ selectedPortfolioIds }) {
   const [syncing, setSyncing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [sortBy, setSortBy] = useState('market_cap_bi')
+  const [sortDir, setSortDir] = useState('desc')
+
+  const toggleSort = (field) => {
+    if (sortBy === field) {
+      setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+    setSortBy(field)
+    setSortDir('desc')
+  }
+
+  const sortLabel = (label, field) => {
+    if (sortBy !== field) return label
+    return `${label} ${sortDir === 'asc' ? '↑' : '↓'}`
+  }
 
   useEffect(() => {
     let active = true
@@ -72,9 +88,6 @@ function HomePage({ selectedPortfolioIds }) {
     }
   }
 
-  if (loading) return <p>Carregando...</p>
-  if (error) return <p className="error">{error}</p>
-
   const highlights = assets.length > 0
     ? {
       highestDy: assets.reduce((best, asset) => (Number(asset.dy || 0) > Number(best.dy || 0) ? asset : best), assets[0]),
@@ -82,6 +95,37 @@ function HomePage({ selectedPortfolioIds }) {
       largestCap: assets.reduce((best, asset) => (Number(asset.market_cap_bi || 0) > Number(best.market_cap_bi || 0) ? asset : best), assets[0]),
     }
     : null
+
+  const sortedAssets = useMemo(() => {
+    const toNumber = (value) => {
+      const num = Number(value)
+      return Number.isFinite(num) ? num : 0
+    }
+    const sorted = [...assets]
+    sorted.sort((a, b) => {
+      let left = null
+      let right = null
+
+      if (sortBy === 'incomes') {
+        left = toNumber(incomesByTicker[a.ticker] || 0)
+        right = toNumber(incomesByTicker[b.ticker] || 0)
+      } else if (['ticker', 'name', 'sector'].includes(sortBy)) {
+        left = String(a[sortBy] || '').toUpperCase()
+        right = String(b[sortBy] || '').toUpperCase()
+      } else {
+        left = toNumber(a[sortBy])
+        right = toNumber(b[sortBy])
+      }
+
+      if (left < right) return sortDir === 'asc' ? -1 : 1
+      if (left > right) return sortDir === 'asc' ? 1 : -1
+      return 0
+    })
+    return sorted
+  }, [assets, incomesByTicker, sortBy, sortDir])
+
+  if (loading) return <p>Carregando...</p>
+  if (error) return <p className="error">{error}</p>
 
   return (
     <section>
@@ -124,21 +168,21 @@ function HomePage({ selectedPortfolioIds }) {
         <table>
           <thead>
             <tr>
-              <th>Ticker</th>
-              <th>Nome</th>
-              <th>Setor</th>
-              <th>Preco</th>
-              <th>DY</th>
-              <th>P/L</th>
-              <th>P/VP</th>
-              <th>Proventos</th>
-              <th>Dia</th>
-              <th>7 dias</th>
-              <th>30 dias</th>
+              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('ticker')}>{sortLabel('Ticker', 'ticker')}</button></th>
+              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('name')}>{sortLabel('Nome', 'name')}</button></th>
+              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('sector')}>{sortLabel('Setor', 'sector')}</button></th>
+              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('price')}>{sortLabel('Preco', 'price')}</button></th>
+              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('dy')}>{sortLabel('DY', 'dy')}</button></th>
+              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('pl')}>{sortLabel('P/L', 'pl')}</button></th>
+              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('pvp')}>{sortLabel('P/VP', 'pvp')}</button></th>
+              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('incomes')}>{sortLabel('Proventos', 'incomes')}</button></th>
+              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('variation_day')}>{sortLabel('Dia', 'variation_day')}</button></th>
+              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('variation_7d')}>{sortLabel('7 dias', 'variation_7d')}</button></th>
+              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('variation_30d')}>{sortLabel('30 dias', 'variation_30d')}</button></th>
             </tr>
           </thead>
           <tbody>
-            {assets.map((asset) => (
+            {sortedAssets.map((asset) => (
               <tr key={asset.ticker}>
                 <td><Link to={`/ativo/${asset.ticker}`}>{asset.ticker}</Link></td>
                 <td>{asset.name}</td>

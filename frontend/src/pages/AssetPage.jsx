@@ -106,6 +106,12 @@ function AssetPage({ selectedPortfolioIds }) {
 
   return (
     <section>
+      <div className="hero-actions">
+        <Link to="/carteira" className="btn-primary btn-link">
+          Voltar para Renda Variavel
+        </Link>
+      </div>
+
       <div className="hero-line">
         <h1>{asset.ticker} - {asset.name}</h1>
         <button type="button" className="btn-primary" onClick={onSyncTicker} disabled={syncing}>
@@ -175,7 +181,6 @@ function AssetPage({ selectedPortfolioIds }) {
         <h3>Resumo</h3>
         <p>Variacao no dia: <strong className={Number(asset.variation_day || 0) >= 0 ? 'up' : 'down'}>{pct(asset.variation_day)}</strong></p>
         <p>Valor de mercado: R$ {Number(asset.market_cap_bi || 0).toFixed(2)} bi</p>
-        <p><Link to="/carteira">Voltar para Renda Variavel</Link></p>
       </article>
 
       <div className="table-wrap">

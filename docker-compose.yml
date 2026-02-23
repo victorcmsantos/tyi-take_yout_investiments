@@ -1,0 +1,35 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: invest-portal-backend
+    container_name: backend
+    networks:
+      - invest-net
+    environment:
+      MARKET_DATA_LOG_SOURCES: "1"
+    ports:
+      - "8000:8000"
+    volumes:
+      - /srv/tyi-take_yout_investiments/investments.db:/app/investments.db
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: invest-portal-frontend
+    container_name: frontend
+    networks:
+      - invest-net
+    environment:
+      BASIC_AUTH_USER: "amor"
+      BASIC_AUTH_PASS: "250109"
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+networks:
+  invest-net:
+    external: true

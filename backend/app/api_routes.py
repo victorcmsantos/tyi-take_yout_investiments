@@ -20,6 +20,7 @@ from .services import (
     get_fixed_incomes,
     get_incomes,
     get_monthly_class_summary,
+    get_monthly_ticker_summary,
     get_portfolio_snapshot,
     get_portfolios,
     get_sectors_summary,
@@ -273,6 +274,7 @@ def charts_dashboard():
     fixed_income = get_fixed_income_summary(portfolio_ids)
     fixed_income_items = get_fixed_incomes(portfolio_ids, sort_by="date_aporte", sort_dir="desc")
     monthly_class_summary = get_monthly_class_summary(portfolio_ids)
+    monthly_ticker_summary = get_monthly_ticker_summary(portfolio_ids, months=8)
     benchmark_chart = get_benchmark_comparison(
         portfolio_ids,
         range_key=benchmark_range,
@@ -493,6 +495,7 @@ def charts_dashboard():
         "fixed_income_distributor_chart": fixed_income_distributor_chart,
         "fixed_income_issuer_chart": fixed_income_issuer_chart,
         "monthly_class_summary": monthly_class_summary,
+        "monthly_ticker_summary": monthly_ticker_summary,
         "annual_invested_summary": annual_invested_summary,
         "annual_selected_metrics": annual_selected_metrics,
         "annual_selected_categories": annual_selected_categories,

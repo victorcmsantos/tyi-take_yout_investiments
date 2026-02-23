@@ -32,6 +32,24 @@ Frontend: `http://127.0.0.1:5173`
 
 ## Docker
 
+### Subir com Docker Compose (recomendado para testes locais)
+
+```bash
+# opcional: sobrescrever credenciais do Basic Auth
+export BASIC_AUTH_USER=amor
+export BASIC_AUTH_PASS='250109'
+
+docker compose up -d --build
+```
+
+Acesse em `http://127.0.0.1:5173`.
+
+Para parar:
+
+```bash
+docker compose down
+```
+
 ### Build das imagens
 
 ```bash

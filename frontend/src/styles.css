@@ -318,6 +318,10 @@ th {
   color: #4f5f73;
 }
 
+table tbody tr:hover td {
+  background: #f2f7ff;
+}
+
 .th-sort-btn {
   all: unset;
   cursor: pointer;
@@ -447,6 +451,38 @@ th {
   display: flex;
   justify-content: flex-end;
   margin-top: 10px;
+}
+
+.ticker-month-table {
+  min-width: 1200px;
+}
+
+.ticker-month-table th,
+.ticker-month-table td {
+  white-space: nowrap;
+}
+
+.ticker-month-sticky {
+  position: sticky;
+  left: 0;
+  background: #f7fafc;
+  z-index: 1;
+}
+
+.ticker-month-table tbody .ticker-month-sticky {
+  background: #fff;
+}
+
+.ticker-month-table tbody tr:hover .ticker-month-sticky {
+  background: #eaf2ff;
+}
+
+.ticker-month-total-row td {
+  background: #f3f7fd;
+}
+
+.ticker-month-total-row:hover td {
+  background: #f3f7fd;
 }
 
 select {

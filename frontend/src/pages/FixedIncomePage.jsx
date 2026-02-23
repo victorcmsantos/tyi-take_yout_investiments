@@ -27,6 +27,7 @@ function groupSummary(items) {
     count: items.length,
     applied: items.reduce((acc, item) => acc + Number(item.active_applied_value || 0), 0),
     current: items.reduce((acc, item) => acc + Number(item.current_gross_value || 0), 0),
+    final: items.reduce((acc, item) => acc + (item.is_matured ? 0 : Number(item.final_gross_value || 0)), 0),
     income: items.reduce((acc, item) => acc + Number(item.current_income || 0), 0),
     totalReceived: items.reduce((acc, item) => acc + Number(item.total_received || 0), 0),
   }
@@ -144,6 +145,7 @@ function FixedIncomePage({ selectedPortfolioIds }) {
       <div className="cards">
         <article className="card"><h3>Total aplicado</h3><p>{brl(summary.applied_total)}</p></article>
         <article className="card"><h3>Valor atual bruto</h3><p>{brl(summary.current_total)}</p></article>
+        <article className="card"><h3>Valor final estimado</h3><p>{brl(summary.final_total)}</p></article>
         <article className="card"><h3>Rendimento bruto</h3><p>{brl(summary.income_total)}</p></article>
         <article className="card"><h3>Total recebido</h3><p>{brl(summary.total_received)}</p></article>
       </div>
@@ -189,6 +191,7 @@ function FixedIncomePage({ selectedPortfolioIds }) {
               <div className="cards">
                 <article className="card"><h3>Total aplicado</h3><p>{brl(sum.applied)}</p></article>
                 <article className="card"><h3>Valor atual bruto</h3><p>{brl(sum.current)}</p></article>
+                <article className="card"><h3>Valor final estimado</h3><p>{brl(sum.final)}</p></article>
                 <article className="card"><h3>Rendimento bruto</h3><p className={sum.income >= 0 ? 'up' : 'down'}>{brl(sum.income)}</p></article>
                 <article className="card"><h3>Total recebido</h3><p>{brl(sum.totalReceived)}</p></article>
               </div>

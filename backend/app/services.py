@@ -2912,6 +2912,191 @@ def get_monthly_class_summary(portfolio_ids):
     return result
 
 
+def get_monthly_ticker_summary(portfolio_ids, months=8):
+    pids = normalize_portfolio_ids(portfolio_ids)
+    placeholders = ",".join(["?"] * len(pids))
+    db = get_db()
+
+    try:
+        months = int(months)
+    except (TypeError, ValueError):
+        months = 8
+    months = max(1, min(months, 24))
+
+    month_names = {
+        1: "jan.",
+        2: "fev.",
+        3: "mar.",
+        4: "abr.",
+        5: "mai.",
+        6: "jun.",
+        7: "jul.",
+        8: "ago.",
+        9: "set.",
+        10: "out.",
+        11: "nov.",
+        12: "dez.",
+    }
+
+    def _month_key(date_text: str):
+        try:
+            parsed = datetime.strptime((date_text or "")[:10], "%Y-%m-%d")
+            return f"{parsed.year:04d}-{parsed.month:02d}"
+        except ValueError:
+            return None
+
+    def _month_label(month_key: str):
+        try:
+            year, month = month_key.split("-", 1)
+            month_num = int(month)
+            return f"{month_names.get(month_num, month)} / {str(year)[2:]}"
+        except (ValueError, TypeError):
+            return month_key
+
+    ticker_month_map = {}
+    month_totals = {}
+    month_set = set()
+    ticker_name_map = {}
+
+    def _ensure_values(month_map, month_key):
+        if month_key not in month_map:
+            month_map[month_key] = {"invested": 0.0, "incomes": 0.0}
+
+    tx_rows = db.execute(
+        """
+        SELECT
+            t.date,
+            t.ticker,
+            t.tx_type,
+            (t.shares * t.price) AS amount,
+            a.name
+        FROM transactions t
+        LEFT JOIN assets a ON a.ticker = t.ticker
+        WHERE t.portfolio_id IN ("""
+        + placeholders
+        + """)
+        ORDER BY t.date ASC, t.id ASC
+        """,
+        tuple(pids),
+    ).fetchall()
+
+    for row in tx_rows:
+        month_key = _month_key(row["date"])
+        if not month_key:
+            continue
+        if (row["tx_type"] or "").lower() != "buy":
+            continue
+        ticker = (row["ticker"] or "").strip().upper()
+        if not ticker:
+            continue
+
+        amount = float(row["amount"] or 0.0)
+        ticker_name_map[ticker] = (row["name"] or ticker).strip() or ticker
+
+        ticker_values = ticker_month_map.setdefault(ticker, {})
+        _ensure_values(ticker_values, month_key)
+        ticker_values[month_key]["invested"] += amount
+
+        _ensure_values(month_totals, month_key)
+        month_totals[month_key]["invested"] += amount
+        month_set.add(month_key)
+
+    income_rows = db.execute(
+        """
+        SELECT
+            i.date,
+            i.ticker,
+            i.amount,
+            a.name
+        FROM incomes i
+        LEFT JOIN assets a ON a.ticker = i.ticker
+        WHERE i.portfolio_id IN ("""
+        + placeholders
+        + """)
+        ORDER BY i.date ASC, i.id ASC
+        """,
+        tuple(pids),
+    ).fetchall()
+
+    for row in income_rows:
+        month_key = _month_key(row["date"])
+        if not month_key:
+            continue
+        ticker = (row["ticker"] or "").strip().upper()
+        if not ticker:
+            continue
+
+        amount = float(row["amount"] or 0.0)
+        ticker_name_map[ticker] = (row["name"] or ticker).strip() or ticker
+
+        ticker_values = ticker_month_map.setdefault(ticker, {})
+        _ensure_values(ticker_values, month_key)
+        ticker_values[month_key]["incomes"] += amount
+
+        _ensure_values(month_totals, month_key)
+        month_totals[month_key]["incomes"] += amount
+        month_set.add(month_key)
+
+    if not month_set:
+        return {"months": [], "totals": [], "rows": []}
+
+    ordered_months = sorted(month_set)
+    if len(ordered_months) > months:
+        ordered_months = ordered_months[-months:]
+    selected_months = set(ordered_months)
+
+    month_items = [{"key": key, "label": _month_label(key)} for key in ordered_months]
+
+    totals = []
+    for key in ordered_months:
+        values = month_totals.get(key, {"invested": 0.0, "incomes": 0.0})
+        totals.append(
+            {
+                "month_key": key,
+                "invested": round(float(values.get("invested", 0.0)), 2),
+                "incomes": round(float(values.get("incomes", 0.0)), 2),
+            }
+        )
+
+    rows = []
+    for ticker in sorted(ticker_month_map.keys()):
+        per_month = ticker_month_map[ticker]
+        month_values = {}
+        row_invested = 0.0
+        row_incomes = 0.0
+
+        for key in ordered_months:
+            values = per_month.get(key, {"invested": 0.0, "incomes": 0.0})
+            invested = round(float(values.get("invested", 0.0)), 2)
+            incomes = round(float(values.get("incomes", 0.0)), 2)
+            month_values[key] = {"invested": invested, "incomes": incomes}
+            row_invested += invested
+            row_incomes += incomes
+
+        has_any_value = any(
+            key in selected_months
+            and (
+                abs(float(per_month.get(key, {}).get("invested", 0.0))) > 0
+                or abs(float(per_month.get(key, {}).get("incomes", 0.0))) > 0
+            )
+            for key in per_month.keys()
+        )
+        if not has_any_value:
+            continue
+
+        rows.append(
+            {
+                "ticker": ticker,
+                "name": ticker_name_map.get(ticker, ticker),
+                "total_invested": round(row_invested, 2),
+                "total_incomes": round(row_incomes, 2),
+                "months": month_values,
+            }
+        )
+
+    return {"months": month_items, "totals": totals, "rows": rows}
+
+
 def _subtract_months_from_date(date_value, months_back: int):
     year = date_value.year
     month = date_value.month - months_back

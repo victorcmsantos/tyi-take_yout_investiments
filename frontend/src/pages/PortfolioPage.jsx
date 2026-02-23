@@ -62,13 +62,14 @@ function PortfolioPage({ selectedPortfolioIds }) {
     }
   }, [selectedPortfolioIds, sortBy, sortDir])
 
-  if (loading) return <p>Carregando...</p>
+  if (loading && !snapshot) return <p>Carregando...</p>
   if (error) return <p className="error">{error}</p>
   if (!snapshot) return <p>Sem dados.</p>
 
   return (
     <section>
       <h1>Renda Variavel</h1>
+      {loading && <p>Atualizando ordenacao...</p>}
       <div className="cards">
         <article className="card"><h3>Patrimonio</h3><p>{brl(snapshot.total_value)}</p></article>
         <article className="card"><h3>Investido</h3><p>{brl(snapshot.invested_value)}</p></article>
@@ -151,7 +152,8 @@ function PortfolioPage({ selectedPortfolioIds }) {
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('invested_value')}>{sortLabel('Investido', 'invested_value')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('value')}>{sortLabel('Total', 'value')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('total_incomes')}>{sortLabel('Proventos', 'total_incomes')}</button></th>
-                          <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('open_pnl_value')}>{sortLabel('Aberto', 'open_pnl_value')}</button></th>
+                          <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('open_pnl_value')}>{sortLabel('Aberto (R$)', 'open_pnl_value')}</button></th>
+                          <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('open_pnl_pct')}>{sortLabel('Aberto (%)', 'open_pnl_pct')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('weight')}>{sortLabel('Peso', 'weight')}</button></th>
                         </tr>
                       </thead>
@@ -166,9 +168,8 @@ function PortfolioPage({ selectedPortfolioIds }) {
                             <td>{brl(item.invested_value)}</td>
                             <td>{brl(item.value)}</td>
                             <td>{brl(item.total_incomes)}</td>
-                            <td className={Number(item.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>
-                              {brl(item.open_pnl_value)} ({Number(item.open_pnl_pct || 0).toFixed(2)}%)
-                            </td>
+                            <td className={Number(item.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>{brl(item.open_pnl_value)}</td>
+                            <td className={Number(item.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>{Number(item.open_pnl_pct || 0).toFixed(2)}%</td>
                             <td>{Number(item.weight || 0).toFixed(2)}%</td>
                           </tr>
                         ))}

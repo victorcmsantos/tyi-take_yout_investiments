@@ -3,6 +3,16 @@ import { apiDelete, apiGet } from '../api'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 
+function dateBr(value) {
+  if (!value) return ''
+  const text = String(value)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const [y, m, d] = text.split('-')
+    return `${d}/${m}/${y}`
+  }
+  return text
+}
+
 function pct(value) {
   return `${Number(value || 0).toFixed(2)}%`
 }
@@ -36,6 +46,7 @@ function groupSummary(items) {
 function FixedIncomePage({ selectedPortfolioIds }) {
   const [payload, setPayload] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [sortBy, setSortBy] = useState('date_aporte')
@@ -64,7 +75,9 @@ function FixedIncomePage({ selectedPortfolioIds }) {
 
   useEffect(() => {
     let active = true
-    setLoading(true)
+    const isInitialLoad = !payload
+    setLoading(isInitialLoad)
+    setRefreshing(!isInitialLoad)
     setError('')
     setMessage('')
     ;(async () => {
@@ -81,7 +94,10 @@ function FixedIncomePage({ selectedPortfolioIds }) {
         if (!active) return
         setError(err.message)
       } finally {
-        if (active) setLoading(false)
+        if (active) {
+          setLoading(false)
+          setRefreshing(false)
+        }
       }
     })()
     return () => {
@@ -124,7 +140,7 @@ function FixedIncomePage({ selectedPortfolioIds }) {
     }
   }
 
-  if (loading) return <p>Carregando...</p>
+  if (loading && !payload) return <p>Carregando...</p>
   if (!payload && error) return <p className="error">{error}</p>
   if (!payload) return <p>Sem dados.</p>
 
@@ -140,6 +156,7 @@ function FixedIncomePage({ selectedPortfolioIds }) {
   return (
     <section>
       <h1>Renda Fixa</h1>
+      {refreshing && <p className="subtitle">Atualizando ordenacao...</p>}
       {!!error && <p className="notice-warn">{error}</p>}
       {!!message && <p className="notice-ok">{message}</p>}
       <div className="cards">
@@ -201,14 +218,20 @@ function FixedIncomePage({ selectedPortfolioIds }) {
                   <thead>
                     <tr>
                       <th>Sel.</th>
+                      <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('portfolio_name')}>{sortLabel('Carteira', 'portfolio_name')}</button></th>
                       <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('distributor')}>{sortLabel('Distribuidor', 'distributor')}</button></th>
                       <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('issuer')}>{sortLabel('Emissor', 'issuer')}</button></th>
                       <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('investment_type')}>{sortLabel('Investimento', 'investment_type')}</button></th>
-                      <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('rate_type')}>{sortLabel('Tipo', 'rate_type')}</button></th>
+                      <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('annual_rate')}>{sortLabel('Taxa', 'annual_rate')}</button></th>
                       <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('date_aporte')}>{sortLabel('Data aporte', 'date_aporte')}</button></th>
-                      <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('active_applied_value')}>{sortLabel('Aporte', 'active_applied_value')}</button></th>
                       <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('maturity_date')}>{sortLabel('Data final', 'maturity_date')}</button></th>
+                      <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('active_applied_value')}>{sortLabel('Aplicado', 'active_applied_value')}</button></th>
+                      <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('elapsed_days')}>{sortLabel('Dias', 'elapsed_days')}</button></th>
+                      <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('total_days')}>{sortLabel('Total dias', 'total_days')}</button></th>
                       <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('current_gross_value')}>{sortLabel('Atual bruto', 'current_gross_value')}</button></th>
+                      <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('total_received')}>{sortLabel('Total recebido', 'total_received')}</button></th>
+                      <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('rendimento')}>{sortLabel('Rendimento Recebido', 'rendimento')}</button></th>
+                      <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('final_gross_value')}>{sortLabel('Valor final', 'final_gross_value')}</button></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -221,19 +244,25 @@ function FixedIncomePage({ selectedPortfolioIds }) {
                             onChange={() => toggleFixed(item.id)}
                           />
                         </td>
+                        <td>{item.portfolio_name}</td>
                         <td>{item.distributor}</td>
                         <td>{item.issuer}</td>
                         <td>{item.investment_type}</td>
                         <td>{formatRateType(item)}</td>
-                        <td>{item.date_aporte}</td>
-                        <td>{brl(item.aporte)}</td>
-                        <td>{item.maturity_date}</td>
+                        <td>{dateBr(item.date_aporte)}</td>
+                        <td>{dateBr(item.maturity_date)}</td>
+                        <td>{brl(item.active_applied_value)}</td>
+                        <td>{Number(item.elapsed_days || 0)}</td>
+                        <td>{Number(item.total_days || 0)}</td>
                         <td>{brl(item.current_gross_value)}</td>
+                        <td>{brl(item.total_received)}</td>
+                        <td className={Number(item.rendimento || 0) >= 0 ? 'up' : 'down'}>{brl(item.rendimento)}</td>
+                        <td>{brl(item.final_gross_value)}</td>
                       </tr>
                     ))}
                     {group.items.length === 0 && (
                       <tr>
-                        <td colSpan={9}>Sem registros nesse grupo.</td>
+                        <td colSpan={15}>Sem registros nesse grupo.</td>
                       </tr>
                     )}
                   </tbody>

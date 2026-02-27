@@ -292,4 +292,41 @@ def ensure_schema_upgrades():
           AND ABS(rate_ipca) < 0.000001
         """
     )
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fixed_income_snapshot_items (
+          portfolio_id INTEGER NOT NULL,
+          fixed_income_id INTEGER NOT NULL,
+          payload_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (portfolio_id, fixed_income_id),
+          FOREIGN KEY (portfolio_id) REFERENCES portfolios (id),
+          FOREIGN KEY (fixed_income_id) REFERENCES fixed_incomes (id)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fixed_income_snapshot_summary (
+          portfolio_id INTEGER PRIMARY KEY,
+          payload_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
+        )
+        """
+    )
+    db.execute(
+        """
+        DELETE FROM fixed_income_snapshot_items
+        WHERE portfolio_id NOT IN (SELECT id FROM portfolios)
+        """
+    )
+    db.execute(
+        """
+        DELETE FROM fixed_income_snapshot_summary
+        WHERE portfolio_id NOT IN (SELECT id FROM portfolios)
+        """
+    )
+
     db.commit()

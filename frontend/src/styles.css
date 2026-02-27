@@ -542,3 +542,74 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+html[data-theme='dark'] body {
+  background: #0f1722;
+  color: #dbe5f2;
+}
+
+html[data-theme='dark'] .card,
+html[data-theme='dark'] .table-wrap,
+html[data-theme='dark'] .asset-group,
+html[data-theme='dark'] .sidebar {
+  background: #172232;
+  border-color: #27364a;
+}
+
+html[data-theme='dark'] .card h3,
+html[data-theme='dark'] .metric-label,
+html[data-theme='dark'] .asset-group-summary small,
+html[data-theme='dark'] .subtitle,
+html[data-theme='dark'] th {
+  color: #9fb1c9;
+}
+
+html[data-theme='dark'] .card p,
+html[data-theme='dark'] .asset-group-summary strong,
+html[data-theme='dark'] td,
+html[data-theme='dark'] .content h1,
+html[data-theme='dark'] .content h2 {
+  color: #e5edf8;
+}
+
+html[data-theme='dark'] th {
+  background: #1c2a3b;
+}
+
+html[data-theme='dark'] td,
+html[data-theme='dark'] th {
+  border-bottom-color: #243449;
+}
+
+html[data-theme='dark'] table tbody tr:hover td {
+  background: #203149;
+}
+
+html[data-theme='dark'] .ticker-month-table tbody .ticker-month-sticky {
+  background: #172232;
+}
+
+html[data-theme='dark'] .ticker-month-table tbody tr:hover .ticker-month-sticky {
+  background: #22354f;
+}
+
+html[data-theme='dark'] .ticker-month-total-row td,
+html[data-theme='dark'] .ticker-month-total-row:hover td {
+  background: #1b2a3f;
+}
+
+html[data-theme='dark'] .notice-ok {
+  background: #153528;
+  border-color: #2d6d51;
+  color: #9de0be;
+}
+
+html[data-theme='dark'] .notice-warn {
+  background: #3f2f12;
+  border-color: #8c6a27;
+  color: #ffd787;
+}

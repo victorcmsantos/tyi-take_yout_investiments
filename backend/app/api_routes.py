@@ -17,6 +17,7 @@ from .services import (
     get_asset_transactions,
     get_benchmark_comparison,
     get_fixed_income_summary,
+    get_fixed_income_payload_cached,
     get_fixed_incomes,
     get_incomes,
     get_monthly_class_summary,
@@ -180,11 +181,7 @@ def fixed_incomes():
         portfolio_ids = _selected_portfolio_ids_from_request()
         sort_by = request.args.get("sort_by", "date_aporte")
         sort_dir = request.args.get("sort_dir", "desc")
-        payload = {
-            "items": get_fixed_incomes(portfolio_ids, sort_by=sort_by, sort_dir=sort_dir),
-            "summary": get_fixed_income_summary(portfolio_ids),
-        }
-        return _json_ok(payload)
+        return _json_ok(get_fixed_income_payload_cached(portfolio_ids, sort_by=sort_by, sort_dir=sort_dir))
 
     if request.method == "POST":
         payload = request.get_json(silent=True) or request.form.to_dict()

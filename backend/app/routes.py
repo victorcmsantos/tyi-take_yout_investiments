@@ -18,6 +18,7 @@ from .services import (
     get_benchmark_comparison,
     get_income_totals_by_ticker,
     get_monthly_class_summary,
+    get_fixed_income_payload_cached,
     get_fixed_income_summary,
     get_fixed_incomes,
     get_incomes,
@@ -344,7 +345,12 @@ def renda_fixa():
     elif remove_error == "none":
         error = "Selecione ao menos um registro de renda fixa para remover."
 
-    fixed_incomes = get_fixed_incomes(selected_portfolio_ids, sort_by=sort_by, sort_dir=sort_dir)
+    fixed_income_payload = get_fixed_income_payload_cached(
+        selected_portfolio_ids,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    fixed_incomes = fixed_income_payload.get("items", [])
     prefixado_items = [item for item in fixed_incomes if (item.get("rate_type") or "").upper() == "FIXO"]
     posfixado_items = [item for item in fixed_incomes if (item.get("rate_type") or "").upper() != "FIXO"]
 
@@ -377,7 +383,7 @@ def renda_fixa():
         "renda_fixa.html",
         error=error,
         remove_message=remove_message,
-        summary=get_fixed_income_summary(selected_portfolio_ids),
+        summary=fixed_income_payload.get("summary", get_fixed_income_summary(selected_portfolio_ids)),
         fixed_incomes=fixed_incomes,
         fixed_income_groups=fixed_income_groups,
         sort_by=sort_by,

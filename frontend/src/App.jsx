@@ -22,7 +22,7 @@ import NewTransactionPage from './pages/NewTransactionPage'
 import NewIncomePage from './pages/NewIncomePage'
 import PortfoliosPage from './pages/PortfoliosPage'
 
-function App() {
+function App({ themeMode, onToggleTheme }) {
   const [portfolios, setPortfolios] = useState([])
   const [selectedPortfolioIds, setSelectedPortfolioIds] = useState([])
   const [loadingPortfolios, setLoadingPortfolios] = useState(true)
@@ -107,6 +107,9 @@ function App() {
               <Button component={Link} to="/graficos" color="inherit">Graficos</Button>
               <Button component={Link} to="/nova" color="inherit">Nova transacao</Button>
               <Button component={Link} to="/novo" color="inherit">Novo provento</Button>
+              <Button color="inherit" variant="outlined" onClick={onToggleTheme} sx={{ borderColor: 'rgba(255,255,255,0.35)' }}>
+                {themeMode === 'dark' ? 'Modo claro' : 'Modo escuro'}
+              </Button>
             </Stack>
           </Stack>
           <Typography variant="body2" sx={{ opacity: 0.9 }}>

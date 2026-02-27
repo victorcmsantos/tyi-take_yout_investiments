@@ -1646,6 +1646,7 @@ def add_fixed_income(form_data: dict):
         ),
     )
     db.commit()
+    invalidate_fixed_income_snapshot([portfolio_id])
     return True, "Renda fixa cadastrada com sucesso."
 
 
@@ -2011,6 +2012,7 @@ def get_fixed_incomes(portfolio_ids, sort_by: str = "date_aporte", sort_dir: str
         """
         SELECT
             fi.id,
+            fi.portfolio_id,
             fi.distributor,
             fi.issuer,
             fi.investment_type,
@@ -2034,7 +2036,10 @@ def get_fixed_incomes(portfolio_ids, sort_by: str = "date_aporte", sort_dir: str
         tuple(pids),
     ).fetchall()
     items = [_fixed_income_projection(dict(row)) for row in rows]
+    return _sort_fixed_income_items(items, sort_by=sort_by, sort_dir=sort_dir)
 
+
+def _sort_fixed_income_items(items, sort_by: str = "date_aporte", sort_dir: str = "desc"):
     valid_dirs = {"asc", "desc"}
     direction = sort_dir if sort_dir in valid_dirs else "desc"
     key_name = (sort_by or "date_aporte").strip()
@@ -2065,8 +2070,9 @@ def get_fixed_incomes(portfolio_ids, sort_by: str = "date_aporte", sort_dir: str
             return (0, float(value))
         return (0, str(value).lower())
 
-    items.sort(key=_sort_key, reverse=(direction == "desc"))
-    return items
+    sorted_items = list(items or [])
+    sorted_items.sort(key=_sort_key, reverse=(direction == "desc"))
+    return sorted_items
 
 
 def delete_fixed_incomes(fixed_income_ids, portfolio_ids):
@@ -2100,11 +2106,17 @@ def delete_fixed_incomes(fixed_income_ids, portfolio_ids):
         tuple(ids + pids),
     )
     db.commit()
+    invalidate_fixed_income_snapshot(pids)
     return cursor.rowcount or 0
 
 
 def get_fixed_income_summary(portfolio_ids):
     items = get_fixed_incomes(portfolio_ids)
+    return get_fixed_income_summary_from_items(items)
+
+
+def get_fixed_income_summary_from_items(items):
+    items = items or []
     return {
         "applied_total": round(sum(item["active_applied_value"] for item in items), 2),
         "current_total": round(sum(item["current_gross_value"] for item in items), 2),
@@ -2117,6 +2129,161 @@ def get_fixed_income_summary(portfolio_ids):
         "rendimento_recebido_total": round(sum(item["rendimento"] for item in items), 2),
         "count": len(items),
     }
+
+
+def _snapshot_now():
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _snapshot_age_seconds(iso_text: str):
+    try:
+        created = datetime.fromisoformat((iso_text or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return max((datetime.now() - created).total_seconds(), 0.0)
+
+
+def invalidate_fixed_income_snapshot(portfolio_ids):
+    pids = normalize_portfolio_ids(portfolio_ids)
+    placeholders = ",".join(["?"] * len(pids))
+    db = get_db()
+    try:
+        db.execute(
+            "DELETE FROM fixed_income_snapshot_items WHERE portfolio_id IN (" + placeholders + ")",
+            tuple(pids),
+        )
+        db.execute(
+            "DELETE FROM fixed_income_snapshot_summary WHERE portfolio_id IN (" + placeholders + ")",
+            tuple(pids),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def rebuild_fixed_income_snapshots(portfolio_ids=None):
+    if portfolio_ids is None:
+        pids = [int(item["id"]) for item in get_portfolios()]
+    else:
+        pids = normalize_portfolio_ids(portfolio_ids)
+    if not pids:
+        return {"portfolios": 0, "items": 0}
+
+    db = get_db()
+    total_items = 0
+    stamp = _snapshot_now()
+    for pid in pids:
+        items = get_fixed_incomes([pid], sort_by="date_aporte", sort_dir="desc")
+        summary = get_fixed_income_summary_from_items(items)
+        total_items += len(items)
+        try:
+            db.execute(
+                "DELETE FROM fixed_income_snapshot_items WHERE portfolio_id = ?",
+                (pid,),
+            )
+            db.execute(
+                """
+                INSERT INTO fixed_income_snapshot_summary (portfolio_id, payload_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(portfolio_id) DO UPDATE SET
+                  payload_json = excluded.payload_json,
+                  updated_at = excluded.updated_at
+                """,
+                (pid, json.dumps(summary, ensure_ascii=False), stamp),
+            )
+            for item in items:
+                db.execute(
+                    """
+                    INSERT INTO fixed_income_snapshot_items (portfolio_id, fixed_income_id, payload_json, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(portfolio_id, fixed_income_id) DO UPDATE SET
+                      payload_json = excluded.payload_json,
+                      updated_at = excluded.updated_at
+                    """,
+                    (pid, int(item["id"]), json.dumps(item, ensure_ascii=False), stamp),
+                )
+        except Exception:
+            db.rollback()
+            raise
+    db.commit()
+    return {"portfolios": len(pids), "items": total_items}
+
+
+def get_fixed_income_payload_cached(portfolio_ids, sort_by: str = "date_aporte", sort_dir: str = "desc"):
+    pids = normalize_portfolio_ids(portfolio_ids)
+    max_age_seconds = int(current_app.config.get("FIXED_INCOME_SNAPSHOT_MAX_AGE_SECONDS", 900))
+    placeholders = ",".join(["?"] * len(pids))
+    db = get_db()
+
+    try:
+        summary_rows = db.execute(
+            """
+            SELECT portfolio_id, payload_json, updated_at
+            FROM fixed_income_snapshot_summary
+            WHERE portfolio_id IN ("""
+            + placeholders
+            + """)
+            """,
+            tuple(pids),
+        ).fetchall()
+        if len(summary_rows) != len(pids):
+            raise RuntimeError("snapshot_miss")
+
+        summary_map = {}
+        for row in summary_rows:
+            age = _snapshot_age_seconds(row["updated_at"])
+            if age is None or age > max_age_seconds:
+                raise RuntimeError("snapshot_stale")
+            summary_map[int(row["portfolio_id"])] = json.loads(row["payload_json"] or "{}")
+
+        item_rows = db.execute(
+            """
+            SELECT portfolio_id, payload_json, updated_at
+            FROM fixed_income_snapshot_items
+            WHERE portfolio_id IN ("""
+            + placeholders
+            + """)
+            """,
+            tuple(pids),
+        ).fetchall()
+
+        items = []
+        for row in item_rows:
+            age = _snapshot_age_seconds(row["updated_at"])
+            if age is None or age > max_age_seconds:
+                raise RuntimeError("snapshot_stale")
+            items.append(json.loads(row["payload_json"] or "{}"))
+
+        summary = {
+            "applied_total": 0.0,
+            "current_total": 0.0,
+            "income_total": 0.0,
+            "final_total": 0.0,
+            "total_received": 0.0,
+            "rendimento_recebido_total": 0.0,
+            "count": 0,
+        }
+        for pid in pids:
+            part = summary_map.get(int(pid), {})
+            summary["applied_total"] += float(part.get("applied_total", 0.0))
+            summary["current_total"] += float(part.get("current_total", 0.0))
+            summary["income_total"] += float(part.get("income_total", 0.0))
+            summary["final_total"] += float(part.get("final_total", 0.0))
+            summary["total_received"] += float(part.get("total_received", 0.0))
+            summary["rendimento_recebido_total"] += float(part.get("rendimento_recebido_total", 0.0))
+            summary["count"] += int(part.get("count", 0))
+        for key in ("applied_total", "current_total", "income_total", "final_total", "total_received", "rendimento_recebido_total"):
+            summary[key] = round(summary[key], 2)
+
+        return {
+            "items": _sort_fixed_income_items(items, sort_by=sort_by, sort_dir=sort_dir),
+            "summary": summary,
+            "snapshot": True,
+        }
+    except Exception:
+        items = get_fixed_incomes(pids, sort_by=sort_by, sort_dir=sort_dir)
+        summary = get_fixed_income_summary_from_items(items)
+        return {"items": items, "summary": summary, "snapshot": False}
 
 
 def get_transactions(portfolio_ids):

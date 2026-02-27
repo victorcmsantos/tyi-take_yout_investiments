@@ -4,6 +4,7 @@ from flask import Flask, request
 
 from .api_routes import api_bp
 from .db import init_app as init_db_app
+from .fixed_income_sync import start_fixed_income_sync
 from .market_sync import start_market_sync
 from .routes import main_bp
 
@@ -14,6 +15,7 @@ def create_app() -> Flask:
     app.register_blueprint(main_bp)
     app.register_blueprint(api_bp, url_prefix="/api")
     start_market_sync(app)
+    start_fixed_income_sync(app)
 
     @app.template_filter("date_br")
     def date_br(value):

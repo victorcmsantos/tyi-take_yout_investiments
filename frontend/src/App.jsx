@@ -8,11 +8,10 @@ import {
   FormControlLabel,
   FormGroup,
   Paper,
-  Stack,
   Toolbar,
   Typography,
 } from '@mui/material'
-import { apiGet } from './api'
+import { apiGet, apiPost } from './api'
 import HomePage from './pages/HomePage'
 import PortfolioPage from './pages/PortfolioPage'
 import FixedIncomePage from './pages/FixedIncomePage'
@@ -21,10 +20,14 @@ import AssetPage from './pages/AssetPage'
 import NewTransactionPage from './pages/NewTransactionPage'
 import NewIncomePage from './pages/NewIncomePage'
 import PortfoliosPage from './pages/PortfoliosPage'
+import LoginPage from './pages/LoginPage'
+import AdminPage from './pages/AdminPage'
 
 function App({ themeMode, onToggleTheme }) {
   const navigate = useNavigate()
   const location = useLocation()
+  const [currentUser, setCurrentUser] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
   const [portfolios, setPortfolios] = useState([])
   const [selectedPortfolioIds, setSelectedPortfolioIds] = useState([])
   const [loadingPortfolios, setLoadingPortfolios] = useState(true)
@@ -44,13 +47,25 @@ function App({ themeMode, onToggleTheme }) {
     return data
   }, [])
 
+  const refreshAuth = useCallback(async () => {
+    const payload = await apiGet('/api/auth/me')
+    const user = payload?.user || null
+    setCurrentUser(user)
+    return user
+  }, [])
+
   useEffect(() => {
     let active = true
     ;(async () => {
       try {
-        const data = await apiGet('/api/portfolios')
+        const user = await refreshAuth()
         if (!active) return
-        setPortfolios(data)
+        if (!user) {
+          setLoadingPortfolios(false)
+          return
+        }
+        const data = await refreshPortfolios()
+        if (!active) return
         const saved = localStorage.getItem('selectedPortfolioIds')
         const parsed = saved ? JSON.parse(saved) : []
         const validIds = parsed.filter((id) => data.some((p) => Number(p.id) === Number(id)))
@@ -63,14 +78,17 @@ function App({ themeMode, onToggleTheme }) {
         if (!active) return
         setError(err.message)
       } finally {
-        if (active) setLoadingPortfolios(false)
+        if (active) {
+          setAuthLoading(false)
+          setLoadingPortfolios(false)
+        }
       }
     })()
 
     return () => {
       active = false
     }
-  }, [])
+  }, [refreshAuth, refreshPortfolios])
 
   useEffect(() => {
     localStorage.setItem('selectedPortfolioIds', JSON.stringify(selectedPortfolioIds))
@@ -88,6 +106,37 @@ function App({ themeMode, onToggleTheme }) {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [sidebarOpen])
+
+  const onLoggedIn = async (user) => {
+    setCurrentUser(user)
+    setAuthLoading(false)
+    setLoadingPortfolios(true)
+    setError('')
+    try {
+      const data = await refreshPortfolios()
+      if (data.length > 0) {
+        setSelectedPortfolioIds(data.map((item) => item.id))
+      }
+      navigate('/')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoadingPortfolios(false)
+    }
+  }
+
+  const onLogout = async () => {
+    try {
+      await apiPost('/api/auth/logout')
+    } catch (err) {
+      // ignora erro e limpa estado local mesmo assim
+    }
+    setCurrentUser(null)
+    setPortfolios([])
+    setSelectedPortfolioIds([])
+    setError('')
+    navigate('/login')
+  }
 
   const activePortfolioNames = useMemo(() => {
     const names = selectedPortfolioIds
@@ -125,6 +174,7 @@ function App({ themeMode, onToggleTheme }) {
     '/nova': 'Nova transacao',
     '/novo': 'Novo provento',
     '/carteiras': 'Carteiras',
+    '/admin': 'Admin',
   }
 
   const breadcrumbs = useMemo(() => {
@@ -145,35 +195,62 @@ function App({ themeMode, onToggleTheme }) {
     ]
   }, [location.pathname])
 
-  const menuSections = [
-    {
-      title: 'Visao Geral',
-      items: [
-        { to: '/', label: 'Dashboard' },
-        { to: '/graficos', label: 'Graficos' },
-      ],
-    },
-    {
-      title: 'Carteira',
-      items: [
-        { to: '/carteira', label: 'Renda Variavel' },
-        { to: '/renda-fixa', label: 'Renda Fixa' },
-      ],
-    },
-    {
-      title: 'Lancamentos',
-      items: [
-        { to: '/nova', label: 'Nova transacao' },
-        { to: '/novo', label: 'Novo provento' },
-      ],
-    },
-    {
-      title: 'Configuracao',
-      items: [
-        { to: '/carteiras', label: 'Carteiras' },
-      ],
-    },
-  ]
+  const menuSections = useMemo(() => {
+    if (currentUser?.is_admin) {
+      return [
+        {
+          title: 'Administracao',
+          items: [
+            { to: '/admin', label: 'Usuarios' },
+          ],
+        },
+      ]
+    }
+
+    const sections = [
+      {
+        title: 'Visao Geral',
+        items: [
+          { to: '/', label: 'Dashboard' },
+          { to: '/graficos', label: 'Graficos' },
+        ],
+      },
+      {
+        title: 'Carteira',
+        items: [
+          { to: '/carteira', label: 'Renda Variavel' },
+          { to: '/renda-fixa', label: 'Renda Fixa' },
+        ],
+      },
+      {
+        title: 'Lancamentos',
+        items: [
+          { to: '/nova', label: 'Nova transacao' },
+          { to: '/novo', label: 'Novo provento' },
+        ],
+      },
+      {
+        title: 'Configuracao',
+        items: [
+          { to: '/carteiras', label: 'Carteiras' },
+        ],
+      },
+    ]
+    return sections
+  }, [currentUser])
+
+  if (authLoading) {
+    return <main className="auth-shell"><p>Carregando autenticacao...</p></main>
+  }
+
+  if (!currentUser) {
+    return (
+      <Routes>
+        <Route path="/login" element={<LoginPage onLoggedIn={onLoggedIn} />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    )
+  }
 
   return (
     <Box className="app-v2-shell" sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
@@ -200,10 +277,13 @@ function App({ themeMode, onToggleTheme }) {
             </Box>
             <Box className="app-v2-header-right">
               <Typography variant="body2" className="app-v2-header-portfolios" title={activePortfolioNames}>
-                Carteiras selecionadas: {activePortfolioNames}
+                {currentUser.username}{currentUser.is_admin ? ' · Admin' : ` · ${activePortfolioNames}`}
               </Typography>
               <Button color="inherit" variant="outlined" onClick={onToggleTheme} sx={{ borderColor: 'rgba(255,255,255,0.35)' }}>
                 {themeMode === 'dark' ? 'Modo claro' : 'Modo escuro'}
+              </Button>
+              <Button color="inherit" variant="outlined" onClick={onLogout} sx={{ borderColor: 'rgba(255,255,255,0.35)' }}>
+                Sair
               </Button>
             </Box>
           </Box>
@@ -288,29 +368,57 @@ function App({ themeMode, onToggleTheme }) {
             ))}
           </div>
           <Routes>
-            <Route path="/" element={<HomePage selectedPortfolioIds={selectedPortfolioIds} />} />
-            <Route path="/carteira" element={<PortfolioPage selectedPortfolioIds={selectedPortfolioIds} />} />
-            <Route path="/renda-fixa" element={<FixedIncomePage selectedPortfolioIds={selectedPortfolioIds} />} />
-            <Route path="/graficos" element={<ChartsPage selectedPortfolioIds={selectedPortfolioIds} />} />
-            <Route path="/ativo/:ticker" element={<AssetPage selectedPortfolioIds={selectedPortfolioIds} />} />
+            <Route
+              path="/"
+              element={
+                currentUser.is_admin
+                  ? <Navigate to="/admin" replace />
+                  : <HomePage selectedPortfolioIds={selectedPortfolioIds} />
+              }
+            />
+            <Route
+              path="/carteira"
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <PortfolioPage selectedPortfolioIds={selectedPortfolioIds} />}
+            />
+            <Route
+              path="/renda-fixa"
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <FixedIncomePage selectedPortfolioIds={selectedPortfolioIds} />}
+            />
+            <Route
+              path="/graficos"
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <ChartsPage selectedPortfolioIds={selectedPortfolioIds} />}
+            />
+            <Route
+              path="/ativo/:ticker"
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <AssetPage selectedPortfolioIds={selectedPortfolioIds} />}
+            />
             <Route
               path="/nova"
-              element={<NewTransactionPage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <NewTransactionPage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
             />
             <Route
               path="/novo"
-              element={<NewIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <NewIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
             />
             <Route
               path="/carteiras"
-              element={(
-                <PortfoliosPage
-                  portfolios={portfolios}
-                  selectedPortfolioIds={selectedPortfolioIds}
-                  refreshPortfolios={refreshPortfolios}
-                />
-              )}
+              element={
+                currentUser.is_admin
+                  ? <Navigate to="/admin" replace />
+                  : (
+                    <PortfoliosPage
+                      portfolios={portfolios}
+                      selectedPortfolioIds={selectedPortfolioIds}
+                      refreshPortfolios={refreshPortfolios}
+                    />
+                  )
+              }
             />
+            <Route
+              path="/admin"
+              element={currentUser.is_admin ? <AdminPage currentUser={currentUser} /> : <Navigate to="/" replace />}
+            />
+            <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="/transacoes/nova" element={<Navigate to="/nova" replace />} />
             <Route path="/proventos/novo" element={<Navigate to="/novo" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />

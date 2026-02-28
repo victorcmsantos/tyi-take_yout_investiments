@@ -12,6 +12,12 @@ services:
       BRAPI_TOKEN: "${BRAPI_TOKEN:-}"
       COINGECKO_API_KEY: "${COINGECKO_API_KEY:-}"
       TWELVE_DATA_API_KEY: "${TWELVE_DATA_API_KEY:-}"
+      DATABASE: "/app_vol/investments.db"
+      DATABASE_BACKUP_DIR: "/app_vol/backups"
+      AUTH_SECRET_KEY_FILE: "/app_vol/.flask-secret"
+      ADMIN_BOOTSTRAP_FILE: "/app_vol/admin-bootstrap.txt"
+      BACKGROUND_JOBS_LOCK_FILE: "/app_vol/.background-jobs.lock"
+      DATABASE_STARTUP_LOCK_FILE: "/app_vol/.db-startup.lock"
       MARKET_DATA_LOG_SOURCES: "1"
       MARKET_DATA_PROVIDERS: "${MARKET_DATA_PROVIDERS:-twelve_data,alpha_vantage,brapi,coingecko,google,yahoo}"
       MARKET_DATA_PROVIDERS_US: "${MARKET_DATA_PROVIDERS_US:-}"
@@ -20,7 +26,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - /srv/tyi-take_yout_investiments/investments.db:/app/investments.db
+      - /srv/tyi-take_yout_investiments/app_vol:/app_vol
 
   frontend:
     build:
@@ -30,9 +36,6 @@ services:
     container_name: frontend
     networks:
       - invest-net
-    environment:
-      BASIC_AUTH_USER: "amor"
-      BASIC_AUTH_PASS: "250109"
     ports:
       - "5173:80"
     depends_on:

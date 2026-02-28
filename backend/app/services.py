@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 
 from flask import current_app
 
+from .auth import get_current_user
 from .db import get_db
 
 try:
@@ -140,6 +141,13 @@ def get_top_assets():
     return [_serialize_asset(row) for row in rows]
 
 
+def _current_user_id():
+    user = get_current_user()
+    if not user or user.get("is_admin"):
+        return None
+    return int(user["id"])
+
+
 def get_asset(ticker: str):
     db = get_db()
     row = db.execute(
@@ -150,15 +158,33 @@ def get_asset(ticker: str):
 
 
 def get_portfolios():
+    current_user_id = _current_user_id()
+    if current_user_id is None:
+        return []
     db = get_db()
-    rows = db.execute("SELECT id, name FROM portfolios ORDER BY id ASC").fetchall()
+    rows = db.execute(
+        "SELECT id, name FROM portfolios WHERE user_id = ? ORDER BY id ASC",
+        (current_user_id,),
+    ).fetchall()
     return [dict(row) for row in rows]
 
 
 def get_portfolio(portfolio_id: int):
+    current_user_id = _current_user_id()
+    if current_user_id is None:
+        return None
     db = get_db()
-    row = db.execute("SELECT id, name FROM portfolios WHERE id = ?", (portfolio_id,)).fetchone()
+    row = db.execute(
+        "SELECT id, name FROM portfolios WHERE id = ? AND user_id = ?",
+        (portfolio_id, current_user_id),
+    ).fetchone()
     return _row_to_dict(row)
+
+
+def _all_portfolio_ids():
+    db = get_db()
+    rows = db.execute("SELECT id FROM portfolios ORDER BY id ASC").fetchall()
+    return [int(row["id"]) for row in rows]
 
 
 def normalize_portfolio_ids(raw_ids):
@@ -184,40 +210,54 @@ def normalize_portfolio_ids(raw_ids):
             result.append(pid)
 
     if not result:
-        result = [get_default_portfolio_id()]
+        default_portfolio_id = get_default_portfolio_id()
+        result = [default_portfolio_id] if default_portfolio_id is not None else []
     return result
 
 
 def get_default_portfolio_id():
     db = get_db()
-    row = db.execute("SELECT id FROM portfolios ORDER BY id ASC LIMIT 1").fetchone()
-    return int(row["id"]) if row else 1
+    current_user_id = _current_user_id()
+    if current_user_id is None:
+        return None
+    row = db.execute(
+        "SELECT id FROM portfolios WHERE user_id = ? ORDER BY id ASC LIMIT 1",
+        (current_user_id,),
+    ).fetchone()
+    return int(row["id"]) if row else None
 
 
 def resolve_portfolio_id(raw_portfolio_id):
+    default_portfolio_id = get_default_portfolio_id()
     if raw_portfolio_id in (None, ""):
-        return get_default_portfolio_id()
+        return default_portfolio_id
     try:
         pid = int(raw_portfolio_id)
     except (TypeError, ValueError):
-        return get_default_portfolio_id()
-    return pid if get_portfolio(pid) else get_default_portfolio_id()
+        return default_portfolio_id
+    return pid if get_portfolio(pid) else default_portfolio_id
 
 
 def create_portfolio(name: str):
     clean_name = (name or "").strip()
     if not clean_name:
         return False, "Nome da carteira e obrigatorio."
+    current_user_id = _current_user_id()
+    if current_user_id is None:
+        return False, "Usuario sem contexto de carteira."
     db = get_db()
     existing = db.execute(
-        "SELECT id FROM portfolios WHERE LOWER(name) = LOWER(?)",
-        (clean_name,),
+        "SELECT id FROM portfolios WHERE user_id = ? AND LOWER(name) = LOWER(?)",
+        (current_user_id, clean_name),
     ).fetchone()
     if existing:
         return False, "Ja existe uma carteira com esse nome."
-    db.execute("INSERT INTO portfolios (name) VALUES (?)", (clean_name,))
+    db.execute("INSERT INTO portfolios (user_id, name) VALUES (?, ?)", (current_user_id, clean_name))
     db.commit()
-    row = db.execute("SELECT id FROM portfolios WHERE name = ?", (clean_name,)).fetchone()
+    row = db.execute(
+        "SELECT id FROM portfolios WHERE user_id = ? AND name = ?",
+        (current_user_id, clean_name),
+    ).fetchone()
     return True, int(row["id"])
 
 
@@ -228,11 +268,20 @@ def delete_portfolio(portfolio_id):
         return False, "Carteira invalida."
 
     db = get_db()
-    portfolio = db.execute("SELECT id, name FROM portfolios WHERE id = ?", (pid,)).fetchone()
+    current_user_id = _current_user_id()
+    if current_user_id is None:
+        return False, "Usuario sem contexto de carteira."
+    portfolio = db.execute(
+        "SELECT id, name FROM portfolios WHERE id = ? AND user_id = ?",
+        (pid, current_user_id),
+    ).fetchone()
     if not portfolio:
         return False, "Carteira nao encontrada."
 
-    total_row = db.execute("SELECT COUNT(*) AS total FROM portfolios").fetchone()
+    total_row = db.execute(
+        "SELECT COUNT(*) AS total FROM portfolios WHERE user_id = ?",
+        (current_user_id,),
+    ).fetchone()
     total_portfolios = int(total_row["total"]) if total_row else 0
     if total_portfolios <= 1:
         return False, "Nao e possivel remover a unica carteira. Crie outra primeiro."
@@ -3182,7 +3231,7 @@ def invalidate_fixed_income_snapshot(portfolio_ids):
 
 def rebuild_fixed_income_snapshots(portfolio_ids=None):
     if portfolio_ids is None:
-        pids = [int(item["id"]) for item in get_portfolios()]
+        pids = _all_portfolio_ids()
     else:
         pids = normalize_portfolio_ids(portfolio_ids)
     if not pids:
@@ -4530,7 +4579,7 @@ def invalidate_chart_snapshots(portfolio_ids):
 
 def rebuild_chart_snapshots(portfolio_ids=None):
     if portfolio_ids is None:
-        pids = [int(item["id"]) for item in get_portfolios()]
+        pids = _all_portfolio_ids()
     else:
         pids = normalize_portfolio_ids(portfolio_ids)
     if not pids:

@@ -1,6 +1,7 @@
-from flask import Flask, request
+from flask import Flask, g, request
 
 from .api_routes import api_bp
+from .auth import configure_auth, get_current_user, is_auth_exempt_path
 from .chart_sync import start_chart_sync
 from .db import init_app as init_db_app
 from .fixed_income_sync import start_fixed_income_sync
@@ -12,6 +13,7 @@ def create_app() -> Flask:
     app = Flask(__name__)
     configure_observability(app)
     init_db_app(app)
+    configure_auth(app)
     app.register_blueprint(api_bp, url_prefix="/api")
     start_market_sync(app)
     start_fixed_income_sync(app)
@@ -21,6 +23,11 @@ def create_app() -> Flask:
     def _ensure_options():
         if request.method == "OPTIONS":
             return "", 204
+        g.current_user = None
+        if request.path.startswith("/api/") and not is_auth_exempt_path(request.path):
+            user = get_current_user()
+            if not user:
+                return {"ok": False, "error": "Autenticacao necessaria."}, 401
 
     @app.after_request
     def _add_api_cors_headers(response):

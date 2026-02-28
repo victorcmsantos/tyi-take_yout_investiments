@@ -12,12 +12,15 @@ async function requestJson(path, { method = 'GET', params = {}, body } = {}) {
 
   const response = await fetch(url.toString(), {
     method,
+    credentials: 'same-origin',
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   })
-  const payload = await response.json()
+  const payload = await response.json().catch(() => ({}))
   if (!response.ok || !payload.ok) {
-    throw new Error(payload?.error || 'Falha na requisicao da API')
+    const error = new Error(payload?.error || 'Falha na requisicao da API')
+    error.status = response.status
+    throw error
   }
   return payload.data
 }
@@ -48,11 +51,14 @@ export async function apiPostForm(path, formData, params = {}) {
 
   const response = await fetch(url.toString(), {
     method: 'POST',
+    credentials: 'same-origin',
     body: formData,
   })
-  const payload = await response.json()
+  const payload = await response.json().catch(() => ({}))
   if (!response.ok || !payload.ok) {
-    throw new Error(payload?.error || 'Falha na requisicao da API')
+    const error = new Error(payload?.error || 'Falha na requisicao da API')
+    error.status = response.status
+    throw error
   }
   return payload.data
 }

@@ -35,14 +35,12 @@ Frontend: `http://127.0.0.1:5173`
 ### Subir com Docker Compose (recomendado para testes locais)
 
 ```bash
-# opcional: sobrescrever credenciais do Basic Auth
-export BASIC_AUTH_USER=amor
-export BASIC_AUTH_PASS='250109'
 export ALPHA_VANTAGE_API_KEY='sua-chave-aqui'
 export BRAPI_TOKEN='seu-token-aqui'
 export COINGECKO_API_KEY='sua-chave-aqui'
 export TWELVE_DATA_API_KEY='sua-chave-aqui'
 export MARKET_DATA_PROVIDERS='twelve_data,alpha_vantage,coingecko,brapi,yahoo'
+export SQLITE_TIMEOUT_SECONDS=30
 
 docker compose up -d --build
 ```
@@ -73,18 +71,40 @@ docker build -t invest-portal-frontend ./frontend
 docker network create invest-net
 
 # backend (sem expor porta externa, usado via proxy do frontend)
-docker run -d --name backend --network invest-net -p 8000:8000 -v /srv/tyi-take_yout_investiments/investments.db:/app/investments.db -e MARKET_DATA_LOG_SOURCES=1 invest-portal-backend
+docker run -d --name backend --network invest-net -p 8000:8000 \
+  -v /srv/tyi-take_yout_investiments/app_vol:/app_vol \
+  -e DATABASE=/app_vol/investments.db \
+  -e DATABASE_BACKUP_DIR=/app_vol/backups \
+  -e AUTH_SECRET_KEY_FILE=/app_vol/.flask-secret \
+  -e ADMIN_BOOTSTRAP_FILE=/app_vol/admin-bootstrap.txt \
+  -e BACKGROUND_JOBS_LOCK_FILE=/app_vol/.background-jobs.lock \
+  -e DATABASE_STARTUP_LOCK_FILE=/app_vol/.db-startup.lock \
+  -e MARKET_DATA_LOG_SOURCES=1 invest-portal-backend
 
-# frontend com Basic Auth
-docker run -d --name frontend --network invest-net -p 5173:80 -e BASIC_AUTH_USER=amor -e BASIC_AUTH_PASS='250109' invest-portal-frontend
+# frontend
+docker run -d --name frontend --network invest-net -p 5173:80 invest-portal-frontend
 ```
 
 Acesse em `http://127.0.0.1:5173`.
 
-### Basic Auth
+### Usuarios e admin bootstrap
 
-- O frontend exige `BASIC_AUTH_USER` e `BASIC_AUTH_PASS`.
-- Se essas variáveis não forem informadas, o container do frontend encerra com erro.
+- O acesso agora e feito por login de usuario na propria aplicacao.
+- No primeiro boot, o backend garante a existencia de um usuario `admin`.
+- A senha inicial do `admin` e gerada aleatoriamente e fica disponivel dentro do container em `/app_vol/admin-bootstrap.txt`.
+- Para consultar:
+
+```bash
+docker exec backend cat /app_vol/admin-bootstrap.txt
+```
+
+- Se o arquivo nao existir mais dentro do container, o backend regenera uma nova senha bootstrap para o `admin` no proximo startup.
+- A rota `/admin` permite listar usuarios, criar novos usuarios e habilitar/desabilitar contas.
+- O volume persistido recomendado e `/app_vol`, contendo:
+- `investments.db`
+- `admin-bootstrap.txt`
+- `.flask-secret`
+- `backups/`
 
 ### Providers de market data
 
@@ -114,28 +134,42 @@ Acesse em `http://127.0.0.1:5173`.
 
 ### Restore do banco
 
-Banco principal: `backend/investments.db`  
-Backups: `backend/backups/*.sqlite3`
+Banco principal no container: `/app_vol/investments.db`  
+Backups no container: `/app_vol/backups/*.sqlite3`
 
 ```bash
 # parar backend antes do restore
 docker rm -f backend
 
 # (opcional) backup do estado atual
-cp backend/investments.db backend/backups/investments_before_restore_$(date +%Y%m%d_%H%M%S).sqlite3
+cp /srv/tyi-take_yout_investiments/app_vol/investments.db /srv/tyi-take_yout_investiments/app_vol/backups/investments_before_restore_$(date +%Y%m%d_%H%M%S).sqlite3
 
 # restaurar um backup
-cp backend/backups/investments_YYYYMMDD_HHMMSS.sqlite3 backend/investments.db
+cp /srv/tyi-take_yout_investiments/app_vol/backups/investments_YYYYMMDD_HHMMSS.sqlite3 /srv/tyi-take_yout_investiments/app_vol/investments.db
 ```
+
+### SQLite e jobs em background
+
+- O backend usa SQLite com `busy_timeout` e `WAL` para reduzir concorrencia de escrita.
+- O startup do banco agora usa lock de arquivo para evitar disputa entre workers do Gunicorn.
+- Os jobs de background (`market_sync`, `fixed_income_snapshot`, `chart_snapshot`) rodam em apenas um worker por vez.
+- Variaveis uteis:
+- `SQLITE_TIMEOUT_SECONDS`: timeout das conexoes SQLite antes de falhar com lock. Padrao: `30`
+- `BACKGROUND_JOBS_LOCK_FILE`: arquivo de lock que define o worker lider dos jobs. Padrao: ao lado do banco, em `.background-jobs.lock`
+- `DATABASE_STARTUP_LOCK_FILE`: arquivo de lock usado durante inicializacao/migracao do banco. Padrao: ao lado do banco, em `.db-startup.lock`
+- Essas configuracoes ajudam a evitar `sqlite3.OperationalError: database is locked` no startup e nos warmups dos snapshots.
+- Com o `docker-compose` atual, esses arquivos ficam em `/app_vol`.
 
 ## Rotas
 
 - Frontend SPA:
+  - `/login`
   - `/`
   - `/carteira`
   - `/renda-fixa`
   - `/graficos`
   - `/ativo/:ticker`
+  - `/admin`
   - `/nova`
   - `/novo`
   - `/carteiras`
@@ -143,12 +177,17 @@ cp backend/backups/investments_YYYYMMDD_HHMMSS.sqlite3 backend/investments.db
   - `/api/*`
   - `/api/health`
   - `/api/metrics`
+  - `/api/auth/me`
+  - `/api/auth/login`
+  - `/api/auth/logout`
+  - `/api/admin/users`
+  - `/api/admin/users/:id/status`
   - `/api/sync/market-data`
   - `/api/sync/market-data/:ticker`
 
 ## Banco SQL
 
-- Persistencia em SQLite no arquivo `backend/investments.db`
+- Persistencia em SQLite no arquivo configurado em `DATABASE` (no compose atual: `/app_vol/investments.db`)
 - Schema SQL em `backend/app/schema.sql`
 - O banco e criado automaticamente na primeira execucao
 

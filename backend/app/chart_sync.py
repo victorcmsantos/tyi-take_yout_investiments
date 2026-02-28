@@ -3,6 +3,7 @@ import time
 from threading import Event, Thread
 
 from .observability import init_job_status, mark_job_finished, mark_job_started
+from .runtime_lock import should_run_background_jobs
 from .services import rebuild_chart_snapshots
 
 
@@ -54,15 +55,16 @@ def start_chart_sync(app):
     app.config.setdefault("YAHOO_MONTHLY_CACHE_TTL_SECONDS", 21600)
     app.extensions.setdefault("chart_snapshot_last_run", 0.0)
     app.extensions.setdefault("chart_snapshot_running", False)
+    should_start = app.config["CHART_SNAPSHOT_ENABLED"] and should_run_background_jobs(app)
     init_job_status(
         app,
         "chart_snapshot",
         interval_seconds=app.config["CHART_SNAPSHOT_INTERVAL_SECONDS"],
         max_age_seconds=app.config["CHART_SNAPSHOT_MAX_AGE_SECONDS"],
-        enabled=app.config["CHART_SNAPSHOT_ENABLED"],
+        enabled=should_start,
     )
 
-    if not app.config["CHART_SNAPSHOT_ENABLED"]:
+    if not should_start:
         return
 
     if app.debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true":

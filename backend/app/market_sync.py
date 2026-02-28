@@ -3,6 +3,7 @@ import time
 from threading import Event, Thread
 
 from .observability import init_job_status, mark_job_finished, mark_job_started
+from .runtime_lock import should_run_background_jobs
 from .services import refresh_all_assets_market_data
 
 
@@ -82,15 +83,16 @@ def start_market_sync(app):
     app.config.setdefault("MARKET_SYNC_INTERVAL_SECONDS", 300)
     app.extensions.setdefault("market_sync_last_run", 0.0)
     app.extensions.setdefault("market_sync_manual_running", False)
+    should_start = app.config["MARKET_SYNC_ENABLED"] and should_run_background_jobs(app)
     init_job_status(
         app,
         "market_sync",
         interval_seconds=app.config["MARKET_SYNC_INTERVAL_SECONDS"],
         max_age_seconds=app.config["MARKET_SYNC_INTERVAL_SECONDS"] * 2,
-        enabled=app.config["MARKET_SYNC_ENABLED"],
+        enabled=should_start,
     )
 
-    if not app.config["MARKET_SYNC_ENABLED"]:
+    if not should_start:
         return
 
     # Evita thread duplicada no processo pai do reloader do Flask.

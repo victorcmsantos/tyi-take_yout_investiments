@@ -1,8 +1,11 @@
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 from flask import current_app, g
+
+from .runtime_lock import exclusive_file_lock
 
 
 def _backup_dir_from_app():
@@ -92,10 +95,32 @@ def backup_database_on_startup_if_needed():
     created = create_database_backup(reason="startup")
     return {"created": True, "backup": created}
 
+
+def _configure_connection(connection, timeout_seconds: float, enable_wal: bool = False):
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute(f"PRAGMA busy_timeout = {int(timeout_seconds * 1000)}")
+    if enable_wal:
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
+    return connection
+
+
+def _enable_wal_mode(database_path: str, timeout_seconds: float):
+    connection = sqlite3.connect(database_path, timeout=timeout_seconds)
+    try:
+        _configure_connection(connection, timeout_seconds, enable_wal=True)
+    finally:
+        connection.close()
+
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(current_app.config["DATABASE"])
-        g.db.row_factory = sqlite3.Row
+        timeout_seconds = float(current_app.config.get("SQLITE_TIMEOUT_SECONDS", 30))
+        g.db = _configure_connection(
+            sqlite3.connect(current_app.config["DATABASE"], timeout=timeout_seconds),
+            timeout_seconds,
+            enable_wal=False,
+        )
     return g.db
 
 
@@ -114,45 +139,120 @@ def init_db():
 
 def seed_db():
     db = get_db()
-    db.execute("INSERT OR IGNORE INTO portfolios (id, name) VALUES (1, 'Carteira Principal')")
     db.commit()
 
 
 def init_app(app):
-    db_path = Path(app.root_path).parent / "investments.db"
-    app.config.setdefault("DATABASE", str(db_path))
+    default_db_path = Path(app.root_path).parent / "investments.db"
+    configured_db_path = Path(os.getenv("DATABASE", str(default_db_path)))
+    app.config.setdefault("DATABASE", str(configured_db_path))
+    db_path = Path(app.config["DATABASE"])
+    app.config.setdefault("SQLITE_TIMEOUT_SECONDS", float(os.getenv("SQLITE_TIMEOUT_SECONDS", "30")))
+    app.config.setdefault(
+        "BACKGROUND_JOBS_LOCK_FILE",
+        os.getenv("BACKGROUND_JOBS_LOCK_FILE", str(db_path.parent / ".background-jobs.lock")),
+    )
+    app.config.setdefault(
+        "DATABASE_STARTUP_LOCK_FILE",
+        os.getenv("DATABASE_STARTUP_LOCK_FILE", str(db_path.parent / ".db-startup.lock")),
+    )
     app.config.setdefault("DATABASE_BACKUP_ON_STARTUP", True)
     app.config.setdefault("DATABASE_BACKUP_MIN_INTERVAL_MINUTES", 720)
     app.config.setdefault("DATABASE_BACKUP_MAX_FILES", 30)
-    app.config.setdefault("DATABASE_BACKUP_DIR", str(db_path.parent / "backups"))
+    app.config.setdefault(
+        "DATABASE_BACKUP_DIR",
+        os.getenv("DATABASE_BACKUP_DIR", str(db_path.parent / "backups")),
+    )
 
     app.teardown_appcontext(close_db)
-    with app.app_context():
-        if not db_path.exists():
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            init_db()
-            seed_db()
-        else:
-            ensure_schema_upgrades()
-        try:
-            backup_database_on_startup_if_needed()
-        except Exception:
-            app.logger.exception("Falha ao criar backup automatico do banco.")
+    with exclusive_file_lock(app.config["DATABASE_STARTUP_LOCK_FILE"]):
+        with app.app_context():
+            if not db_path.exists():
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                init_db()
+                seed_db()
+            else:
+                ensure_schema_upgrades()
+
+            try:
+                _enable_wal_mode(app.config["DATABASE"], float(app.config["SQLITE_TIMEOUT_SECONDS"]))
+            except Exception:
+                app.logger.exception("Falha ao habilitar WAL no SQLite.")
+
+            try:
+                backup_database_on_startup_if_needed()
+            except Exception:
+                app.logger.exception("Falha ao criar backup automatico do banco.")
 
 
 def ensure_schema_upgrades():
     db = get_db()
     db.execute(
         """
-        CREATE TABLE IF NOT EXISTS portfolios (
+        CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          name TEXT NOT NULL UNIQUE
+          username TEXT NOT NULL UNIQUE,
+          password_hash TEXT NOT NULL,
+          is_admin INTEGER NOT NULL DEFAULT 0,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT,
+          last_login_at TEXT
         )
         """
     )
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS portfolios (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          UNIQUE(user_id, name),
+          FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    portfolio_cols = [row["name"] for row in db.execute("PRAGMA table_info(portfolios)").fetchall()]
+    owner_row = db.execute(
+        """
+        SELECT id
+        FROM users
+        WHERE username = 'amor'
+        ORDER BY id ASC
+        LIMIT 1
+        """
+    ).fetchone()
+    if not owner_row:
+        owner_row = db.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE is_admin = 0
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+    if not owner_row:
+        owner_row = db.execute("SELECT id FROM users ORDER BY id ASC LIMIT 1").fetchone()
+    default_owner_id = int(owner_row["id"]) if owner_row else None
+
+    if "user_id" not in portfolio_cols:
+        db.execute("ALTER TABLE portfolios ADD COLUMN user_id INTEGER")
+        if default_owner_id is not None:
+            db.execute("UPDATE portfolios SET user_id = ? WHERE user_id IS NULL", (default_owner_id,))
+    elif default_owner_id is not None:
+        db.execute("UPDATE portfolios SET user_id = ? WHERE user_id IS NULL", (default_owner_id,))
+
     portfolios_count = db.execute("SELECT COUNT(*) AS total FROM portfolios").fetchone()
-    if not portfolios_count or int(portfolios_count["total"]) == 0:
-        db.execute("INSERT INTO portfolios (name) VALUES ('Carteira Principal')")
+    if (
+        (not portfolios_count or int(portfolios_count["total"]) == 0)
+        and default_owner_id is not None
+    ):
+        db.execute(
+            "INSERT INTO portfolios (user_id, name) VALUES (?, ?)",
+            (default_owner_id, "Carteira Principal"),
+        )
 
     tx_cols = [row["name"] for row in db.execute("PRAGMA table_info(transactions)").fetchall()]
     if "portfolio_id" not in tx_cols:

@@ -329,4 +329,37 @@ def ensure_schema_upgrades():
         """
     )
 
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chart_snapshot_monthly_class (
+          portfolio_id INTEGER PRIMARY KEY,
+          payload_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chart_snapshot_monthly_ticker (
+          portfolio_id INTEGER PRIMARY KEY,
+          payload_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
+        )
+        """
+    )
+    db.execute(
+        """
+        DELETE FROM chart_snapshot_monthly_class
+        WHERE portfolio_id NOT IN (SELECT id FROM portfolios)
+        """
+    )
+    db.execute(
+        """
+        DELETE FROM chart_snapshot_monthly_ticker
+        WHERE portfolio_id NOT IN (SELECT id FROM portfolios)
+        """
+    )
+
     db.commit()

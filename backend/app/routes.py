@@ -663,8 +663,8 @@ def setores():
 @main_bp.route("/carteira")
 def carteira():
     selected_portfolio_ids = _selected_portfolio_ids()
-    sort_by = request.args.get("sort_by", "value")
-    sort_dir = request.args.get("sort_dir", "desc")
+    sort_by = request.args.get("sort_by", "name")
+    sort_dir = request.args.get("sort_dir", "asc")
     sync = request.args.get("sync")
     failed = request.args.get("failed", "0")
     sync_message = None

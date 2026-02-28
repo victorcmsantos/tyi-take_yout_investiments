@@ -76,3 +76,17 @@ CREATE TABLE IF NOT EXISTS fixed_income_snapshot_summary (
   updated_at TEXT NOT NULL,
   FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
 );
+
+CREATE TABLE IF NOT EXISTS chart_snapshot_monthly_class (
+  portfolio_id INTEGER PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
+);
+
+CREATE TABLE IF NOT EXISTS chart_snapshot_monthly_ticker (
+  portfolio_id INTEGER PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
+);

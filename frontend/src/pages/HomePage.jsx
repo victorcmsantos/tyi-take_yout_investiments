@@ -15,8 +15,8 @@ function HomePage({ selectedPortfolioIds }) {
   const [syncing, setSyncing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [sortBy, setSortBy] = useState('market_cap_bi')
-  const [sortDir, setSortDir] = useState('desc')
+  const [sortBy, setSortBy] = useState('name')
+  const [sortDir, setSortDir] = useState('asc')
 
   const toggleSort = (field) => {
     if (sortBy === field) {

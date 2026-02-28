@@ -15,8 +15,8 @@ function PortfolioPage({ selectedPortfolioIds }) {
   const [snapshot, setSnapshot] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [sortBy, setSortBy] = useState('value')
-  const [sortDir, setSortDir] = useState('desc')
+  const [sortBy, setSortBy] = useState('name')
+  const [sortDir, setSortDir] = useState('asc')
   const [openGroups, setOpenGroups] = useState({})
 
   const toggleSort = (field) => {

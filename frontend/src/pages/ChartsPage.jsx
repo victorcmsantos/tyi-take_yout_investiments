@@ -23,9 +23,15 @@ const MONTH_ORDER = [
 ChartJS.register(ChartDataLabels)
 
 function ChartsPage({ selectedPortfolioIds }) {
-  const [payload, setPayload] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [corePayload, setCorePayload] = useState(null)
+  const [benchmarkPayload, setBenchmarkPayload] = useState(null)
+  const [tickerPayload, setTickerPayload] = useState(null)
+  const [loadingCore, setLoadingCore] = useState(true)
+  const [loadingBenchmark, setLoadingBenchmark] = useState(true)
+  const [loadingTicker, setLoadingTicker] = useState(true)
   const [error, setError] = useState('')
+  const [benchmarkError, setBenchmarkError] = useState('')
+  const [tickerError, setTickerError] = useState('')
   const [range, setRange] = useState('12m')
   const [scope, setScope] = useState('all')
   const [annualMetrics, setAnnualMetrics] = useState(['invested', 'incomes'])
@@ -42,29 +48,76 @@ function ChartsPage({ selectedPortfolioIds }) {
     const currentPortfolioKey = JSON.stringify(selectedPortfolioIds || [])
     const portfolioChanged = previousPortfoliosRef.current !== currentPortfolioKey
     previousPortfoliosRef.current = currentPortfolioKey
-    setLoading(true)
+    setLoadingCore(true)
     setLoadingMessage(portfolioChanged ? 'Lendo carteiras selecionadas...' : 'Atualizando graficos...')
     setError('')
     ;(async () => {
       try {
-        const data = await apiGet('/api/charts/dashboard', {
+        const data = await apiGet('/api/charts/core', {
+          portfolio_id: selectedPortfolioIds,
+        })
+        if (!active) return
+        setCorePayload(data)
+      } catch (err) {
+        if (!active) return
+        setError(err.message)
+      } finally {
+        if (active) setLoadingCore(false)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [selectedPortfolioIds])
+
+  useEffect(() => {
+    let active = true
+    setLoadingBenchmark(true)
+    setBenchmarkError('')
+    ;(async () => {
+      try {
+        const data = await apiGet('/api/charts/benchmark', {
           portfolio_id: selectedPortfolioIds,
           range,
           scope,
         })
         if (!active) return
-        setPayload(data)
+        setBenchmarkPayload(data)
       } catch (err) {
         if (!active) return
-        setError(err.message)
+        setBenchmarkError(err.message)
       } finally {
-        if (active) setLoading(false)
+        if (active) setLoadingBenchmark(false)
       }
     })()
     return () => {
       active = false
     }
   }, [selectedPortfolioIds, range, scope])
+
+  useEffect(() => {
+    let active = true
+    setLoadingTicker(true)
+    setTickerError('')
+    ;(async () => {
+      try {
+        const data = await apiGet('/api/charts/ticker-summary', {
+          portfolio_id: selectedPortfolioIds,
+          months: 8,
+        })
+        if (!active) return
+        setTickerPayload(data)
+      } catch (err) {
+        if (!active) return
+        setTickerError(err.message)
+      } finally {
+        if (active) setLoadingTicker(false)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [selectedPortfolioIds])
 
   const onToggleMetric = (metric) => {
     setAnnualMetrics((current) => {
@@ -94,7 +147,7 @@ function ChartsPage({ selectedPortfolioIds }) {
   }), [])
 
   const annualSummary = useMemo(() => {
-    const rows = payload?.monthly_class_summary || []
+    const rows = corePayload?.monthly_class_summary || []
     const yearMap = new Map()
     for (const row of rows) {
       const label = String(row.label || '').toLowerCase()
@@ -148,25 +201,25 @@ function ChartsPage({ selectedPortfolioIds }) {
       }
     })
     return { months: MONTH_ORDER.map(([label]) => label), years }
-  }, [payload, annualCategories])
+  }, [corePayload, annualCategories])
 
-  if (loading && !payload) return <p>Carregando...</p>
+  if (loadingCore && !corePayload) return <p>Carregando...</p>
   if (error) return <p className="error">{error}</p>
-  if (!payload) return <p>Sem dados.</p>
+  if (!corePayload) return <p>Sem dados.</p>
 
-  const categoryChart = payload.category_chart || { labels: [], values: [] }
-  const topAssetsChart = payload.top_assets_chart || { labels: [], values: [] }
-  const allocationByGroupCharts = payload.allocation_by_group_charts || []
-  const cardsChart = payload.cards_chart || { labels: [], values: [] }
-  const resultByCategoryChart = payload.result_by_category_chart || { labels: [], values: [] }
-  const classesChart = payload.classes_chart || { labels: [], values: [] }
-  const fixedInvestmentChart = payload.fixed_income_investment_chart || { labels: [], values: [] }
-  const fixedDistributorChart = payload.fixed_income_distributor_chart || { labels: [], values: [] }
-  const fixedIssuerChart = payload.fixed_income_issuer_chart || { labels: [], investment_values: [], income_values: [] }
-  const monthlyIncomeChart = payload.monthly_income_chart || { labels: [], fii_values: [], acoes_values: [] }
-  const benchmarkChart = payload.benchmark_chart || { labels: [], datasets: [] }
-  const monthlyClassSummary = payload.monthly_class_summary || []
-  const monthlyTickerSummary = payload.monthly_ticker_summary || { months: [], totals: [], rows: [] }
+  const categoryChart = corePayload.category_chart || { labels: [], values: [] }
+  const topAssetsChart = corePayload.top_assets_chart || { labels: [], values: [] }
+  const allocationByGroupCharts = corePayload.allocation_by_group_charts || []
+  const cardsChart = corePayload.cards_chart || { labels: [], values: [] }
+  const resultByCategoryChart = corePayload.result_by_category_chart || { labels: [], values: [] }
+  const classesChart = corePayload.classes_chart || { labels: [], values: [] }
+  const fixedInvestmentChart = corePayload.fixed_income_investment_chart || { labels: [], values: [] }
+  const fixedDistributorChart = corePayload.fixed_income_distributor_chart || { labels: [], values: [] }
+  const fixedIssuerChart = corePayload.fixed_income_issuer_chart || { labels: [], investment_values: [], income_values: [] }
+  const monthlyIncomeChart = corePayload.monthly_income_chart || { labels: [], fii_values: [], acoes_values: [] }
+  const benchmarkChart = benchmarkPayload || { labels: [], datasets: [] }
+  const monthlyClassSummary = corePayload.monthly_class_summary || []
+  const monthlyTickerSummary = tickerPayload || { months: [], totals: [], rows: [] }
 
   const onToggleTickerSort = (field) => {
     if (tickerSortBy === field) return setTickerSortDir((current) => (current === 'asc' ? 'desc' : 'asc'))
@@ -395,7 +448,7 @@ function ChartsPage({ selectedPortfolioIds }) {
   return (
     <section>
       <h1>Graficos</h1>
-      {loading && <p className="subtitle">{loadingMessage}</p>}
+      {loadingCore && <p className="subtitle">{loadingMessage}</p>}
 
       <div className="charts-grid">
         <article className="card chart-card">
@@ -452,6 +505,8 @@ function ChartsPage({ selectedPortfolioIds }) {
               </label>
             </div>
           </div>
+          {loadingBenchmark && <p className="subtitle">Atualizando benchmark...</p>}
+          {benchmarkError && <p className="error">{benchmarkError}</p>}
           <div className="chart-canvas-wrap">
             <Line data={benchmarkData} options={{ responsive: true, maintainAspectRatio: false, scales: { y: percentScale } }} />
           </div>
@@ -551,6 +606,8 @@ function ChartsPage({ selectedPortfolioIds }) {
 
       <section>
         <h2 style={{ marginTop: 22 }}>Resumo mensal por ticker</h2>
+        {loadingTicker && <p className="subtitle">Atualizando resumo por ticker...</p>}
+        {tickerError && <p className="error">{tickerError}</p>}
         <div className="inline-filters" style={{ marginBottom: 8 }}>
           <label>
             Ordenar por

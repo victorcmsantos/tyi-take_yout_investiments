@@ -141,10 +141,10 @@ function PortfolioPage({ selectedPortfolioIds }) {
                   </div>
 
                   <div className="table-wrap">
-                    <table>
+                    <table className="asset-table">
                       <thead>
                         <tr>
-                          <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('ticker')}>{sortLabel('Ticker', 'ticker')}</button></th>
+                          <th className="sticky-col sticky-col-ticker"><button type="button" className="th-sort-btn" onClick={() => toggleSort('ticker')}>{sortLabel('Ticker', 'ticker')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('name')}>{sortLabel('Nome', 'name')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('shares')}>{sortLabel('Qtd', 'shares')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('price')}>{sortLabel('Preco', 'price')}</button></th>
@@ -160,7 +160,7 @@ function PortfolioPage({ selectedPortfolioIds }) {
                       <tbody>
                         {items.map((item) => (
                           <tr key={`${meta.key}-${item.ticker}`}>
-                            <td><Link to={`/ativo/${item.ticker}`}>{item.ticker}</Link></td>
+                            <td className="sticky-col sticky-col-ticker"><Link to={`/ativo/${item.ticker}`}>{item.ticker}</Link></td>
                             <td>{item.name}</td>
                             <td>{Number(item.shares || 0).toFixed(4)}</td>
                             <td>{brl(item.price)}</td>

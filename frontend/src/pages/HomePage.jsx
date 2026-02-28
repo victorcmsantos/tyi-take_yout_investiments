@@ -165,10 +165,10 @@ function HomePage({ selectedPortfolioIds }) {
       )}
 
       <div className="table-wrap">
-        <table>
+        <table className="asset-table">
           <thead>
             <tr>
-              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('ticker')}>{sortLabel('Ticker', 'ticker')}</button></th>
+              <th className="sticky-col sticky-col-ticker"><button type="button" className="th-sort-btn" onClick={() => toggleSort('ticker')}>{sortLabel('Ticker', 'ticker')}</button></th>
               <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('name')}>{sortLabel('Nome', 'name')}</button></th>
               <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('sector')}>{sortLabel('Setor', 'sector')}</button></th>
               <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('price')}>{sortLabel('Preco', 'price')}</button></th>
@@ -184,7 +184,7 @@ function HomePage({ selectedPortfolioIds }) {
           <tbody>
             {sortedAssets.map((asset) => (
               <tr key={asset.ticker}>
-                <td><Link to={`/ativo/${asset.ticker}`}>{asset.ticker}</Link></td>
+                <td className="sticky-col sticky-col-ticker"><Link to={`/ativo/${asset.ticker}`}>{asset.ticker}</Link></td>
                 <td>{asset.name}</td>
                 <td>{asset.sector}</td>
                 <td>{brl(asset.price)}</td>

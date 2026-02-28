@@ -591,6 +591,15 @@ table tbody tr:hover td {
   background: #f2f7ff;
 }
 
+.asset-table .sticky-col {
+  position: sticky;
+}
+
+.asset-table .sticky-col-ticker {
+  left: 0;
+  z-index: 3;
+}
+
 .th-sort-btn {
   all: unset;
   cursor: pointer;
@@ -763,6 +772,20 @@ select {
 }
 
 @media (max-width: 980px) {
+  .asset-table .sticky-col-ticker {
+    min-width: 96px;
+    background: #f7fafc;
+    box-shadow: 1px 0 0 #e8eef6;
+  }
+
+  .asset-table tbody .sticky-col-ticker {
+    background: #fff;
+  }
+
+  .asset-table tbody tr:hover .sticky-col-ticker {
+    background: #f2f7ff;
+  }
+
   .app-v2-header-bar {
     position: fixed !important;
     top: 0;
@@ -991,6 +1014,22 @@ html[data-theme='dark'] th {
 }
 
 html[data-theme='dark'] table tbody tr:hover td {
+  background: #203149;
+}
+
+html[data-theme='dark'] .asset-table .sticky-col-ticker {
+  box-shadow: 1px 0 0 #243449;
+}
+
+html[data-theme='dark'] .asset-table thead .sticky-col-ticker {
+  background: #1c2a3b;
+}
+
+html[data-theme='dark'] .asset-table tbody .sticky-col-ticker {
+  background: #0f1722;
+}
+
+html[data-theme='dark'] .asset-table tbody tr:hover .sticky-col-ticker {
   background: #203149;
 }
 

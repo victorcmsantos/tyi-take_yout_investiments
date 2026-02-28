@@ -1,11 +1,16 @@
 import csv
 import io
 import json
+import logging
+import os
 import random
+import re
 import time
 from datetime import datetime, timedelta
 from urllib.error import URLError
 from urllib.request import Request, urlopen
+
+from flask import current_app
 
 from .db import get_db
 
@@ -16,6 +21,9 @@ except ImportError:  # pragma: no cover
 
 _FX_CACHE = {"usdbrl": None, "expires_at": 0.0}
 _BCB_SERIES_CACHE = {}
+_YAHOO_MONTHLY_CACHE = {}
+_BENCHMARK_CACHE = {}
+_LOGGER = logging.getLogger(__name__)
 
 
 def _row_to_dict(row):
@@ -141,8 +149,13 @@ def delete_portfolio(portfolio_id):
             "Carteira com lancamentos nao pode ser removida. Remova transacoes/proventos primeiro.",
         )
 
+    db.execute("DELETE FROM chart_snapshot_monthly_class WHERE portfolio_id = ?", (pid,))
+    db.execute("DELETE FROM chart_snapshot_monthly_ticker WHERE portfolio_id = ?", (pid,))
+    db.execute("DELETE FROM fixed_income_snapshot_items WHERE portfolio_id = ?", (pid,))
+    db.execute("DELETE FROM fixed_income_snapshot_summary WHERE portfolio_id = ?", (pid,))
     db.execute("DELETE FROM portfolios WHERE id = ?", (pid,))
     db.commit()
+    _clear_benchmark_cache()
     return True, portfolio["name"]
 
 
@@ -247,6 +260,143 @@ def _http_get_json(url: str):
         except Exception:
             time.sleep(0.15)
             continue
+    return None
+
+
+def _http_get_text(url: str, timeout: float = 8.0):
+    request = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+        },
+    )
+    for _ in range(2):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                body = response.read()
+            if not body:
+                continue
+            return body.decode("utf-8", "ignore")
+        except (URLError, TimeoutError):
+            time.sleep(0.15)
+            continue
+        except Exception:
+            time.sleep(0.15)
+            continue
+    return ""
+
+
+def _number_from_text(value):
+    raw = (value or "").strip().replace("\u00a0", "").replace(" ", "")
+    if not raw:
+        return None
+
+    # Mantem apenas sinais/decimal, removendo moeda e textos.
+    filtered = re.sub(r"[^0-9,.\-+]", "", raw)
+    if not filtered:
+        return None
+    if "," in filtered and "." in filtered:
+        filtered = filtered.replace(",", "")
+    elif "," in filtered:
+        filtered = filtered.replace(",", ".")
+
+    try:
+        return float(filtered)
+    except Exception:
+        return None
+
+
+def _extract_google_metric_value(page_html: str, label: str):
+    pattern = rf">{re.escape(label)}</div>.*?<div class=\"P6K39c\">([^<]+)</div>"
+    match = re.search(pattern, page_html, re.S)
+    if not match:
+        return None
+    return (match.group(1) or "").strip()
+
+
+def _parse_market_cap_to_bi(value):
+    raw = (value or "").strip().upper()
+    if not raw:
+        return None
+
+    multiplier = 1.0 / 1_000_000_000.0
+    if "T" in raw:
+        multiplier = 1000.0
+    elif "B" in raw:
+        multiplier = 1.0
+    elif "M" in raw:
+        multiplier = 0.001
+    elif "K" in raw:
+        multiplier = 0.000001
+
+    numeric = _number_from_text(raw)
+    if numeric is None:
+        return None
+    return numeric * multiplier
+
+
+def _candidate_google_quotes(ticker: str):
+    raw = (ticker or "").strip().upper()
+    if not raw:
+        return []
+
+    clean = raw.replace(".SA", "")
+    candidates = []
+
+    if clean.endswith("-USD"):
+        candidates.extend([clean, raw])
+    elif _is_us_stock_ticker(clean):
+        candidates.extend([f"{clean}:NASDAQ", f"{clean}:NYSE", f"{clean}:AMEX", clean])
+    else:
+        candidates.extend([f"{clean}:BVMF", clean, raw])
+
+    unique = []
+    for item in candidates:
+        candidate = (item or "").strip()
+        if candidate and candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _fetch_google_metrics(ticker: str):
+    timeout_ms = int(os.getenv("GOOGLE_SCRAPER_TIMEOUT_MS", "2500") or "2500")
+    timeout_s = max(timeout_ms, 500) / 1000.0
+    retries = int(os.getenv("GOOGLE_SCRAPER_MAX_RETRIES", "1") or "1")
+    retries = min(max(retries, 0), 3)
+
+    for quote in _candidate_google_quotes(ticker):
+        page_html = ""
+        for _ in range(retries + 1):
+            page_html = _http_get_text(f"https://www.google.com/finance/quote/{quote}", timeout=timeout_s)
+            if page_html:
+                break
+            time.sleep(0.1)
+        if not page_html:
+            continue
+
+        price_match = re.search(r'data-last-price="([^"]+)"', page_html)
+        price = _number_from_text(price_match.group(1)) if price_match else None
+
+        pl = _number_from_text(_extract_google_metric_value(page_html, "P/E ratio"))
+        pvp = _number_from_text(_extract_google_metric_value(page_html, "P/B ratio"))
+        dy = _number_from_text(_extract_google_metric_value(page_html, "Dividend yield"))
+        market_cap_bi = _parse_market_cap_to_bi(_extract_google_metric_value(page_html, "Market cap"))
+
+        metrics = {
+            "price": price,
+            "pl": pl,
+            "pvp": pvp,
+            "dy": dy,
+            "variation_day": None,
+            "variation_7d": None,
+            "variation_30d": None,
+            "market_cap_bi": market_cap_bi,
+        }
+        if any(metrics.get(field) is not None for field in ("price", "pl", "pvp", "dy", "market_cap_bi")):
+            return _metrics_in_brl_if_needed(ticker, metrics)
     return None
 
 
@@ -830,16 +980,10 @@ def _fetch_yahoo_metrics(ticker: str):
     return None
 
 
-def refresh_asset_market_data(ticker: str):
-    asset = get_asset(ticker)
-    if not asset:
+def _has_market_metrics(metrics: dict):
+    if not metrics:
         return False
-
-    profile = _fetch_yahoo_profile(ticker)
-    metrics = _fetch_yahoo_metrics(ticker) or {}
-    if not metrics and not profile:
-        return False
-    has_market_metrics = any(
+    return any(
         metrics.get(field) is not None
         for field in (
             "price",
@@ -852,6 +996,46 @@ def refresh_asset_market_data(ticker: str):
             "market_cap_bi",
         )
     )
+
+
+def _market_data_provider_order():
+    allowed = {"google", "yahoo"}
+    primary = (os.getenv("MARKET_DATA_PRIMARY") or "google").strip().lower()
+    fallback = (os.getenv("MARKET_DATA_FALLBACK") or "yahoo").strip().lower()
+
+    order = []
+    for provider in (primary, fallback, "yahoo"):
+        if provider in allowed and provider not in order:
+            order.append(provider)
+    return order or ["yahoo"]
+
+
+def _is_truthy_env(name: str, default: str = "0"):
+    value = (os.getenv(name, default) or default).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _fetch_market_metrics(ticker: str):
+    for provider in _market_data_provider_order():
+        try:
+            metrics = _fetch_google_metrics(ticker) if provider == "google" else _fetch_yahoo_metrics(ticker)
+        except Exception:
+            metrics = None
+        if _has_market_metrics(metrics):
+            return metrics, provider
+    return {}, None
+
+
+def refresh_asset_market_data(ticker: str):
+    asset = get_asset(ticker)
+    if not asset:
+        return False
+
+    profile = _fetch_yahoo_profile(ticker)
+    metrics, metrics_source = _fetch_market_metrics(ticker)
+    if not metrics and not profile:
+        return False
+    has_market_metrics = _has_market_metrics(metrics)
 
     db = get_db()
     name = asset["name"]
@@ -901,6 +1085,25 @@ def refresh_asset_market_data(ticker: str):
         ),
     )
     db.commit()
+    if _is_truthy_env("MARKET_DATA_LOG_SOURCES", "0"):
+        logger = _LOGGER
+        try:
+            logger = current_app.logger
+        except Exception:
+            pass
+        logger.info(
+            "market_data_source ticker=%s metrics_source=%s profile_source=yahoo price=%s dy=%s pl=%s pvp=%s variation_day=%s variation_7d=%s variation_30d=%s market_cap_bi=%s",
+            ticker.upper(),
+            metrics_source or "none",
+            metrics.get("price"),
+            metrics.get("dy"),
+            metrics.get("pl"),
+            metrics.get("pvp"),
+            metrics.get("variation_day"),
+            metrics.get("variation_7d"),
+            metrics.get("variation_30d"),
+            metrics.get("market_cap_bi"),
+        )
     # Sucesso de "atualizacao Yahoo" significa ter recebido cotacao/indicadores.
     # Atualizacao apenas de nome/setor nao conta como sync completo de mercado.
     return has_market_metrics
@@ -1170,6 +1373,7 @@ def add_transaction(form_data: dict):
         (portfolio_id, ticker, tx_type, shares, price, transaction_date),
     )
     db.commit()
+    invalidate_chart_snapshots([portfolio_id])
 
     return True, "Transacao registrada com sucesso."
 
@@ -1326,6 +1530,7 @@ def add_income(form_data: dict):
         (portfolio_id, ticker, income_type, amount, income_date),
     )
     db.commit()
+    invalidate_chart_snapshots([portfolio_id])
     return True, "Provento registrado com sucesso."
 
 
@@ -1450,6 +1655,8 @@ def add_fixed_income(form_data: dict):
         ),
     )
     db.commit()
+    invalidate_fixed_income_snapshot([portfolio_id])
+    invalidate_chart_snapshots([portfolio_id])
     return True, "Renda fixa cadastrada com sucesso."
 
 
@@ -1815,6 +2022,7 @@ def get_fixed_incomes(portfolio_ids, sort_by: str = "date_aporte", sort_dir: str
         """
         SELECT
             fi.id,
+            fi.portfolio_id,
             fi.distributor,
             fi.issuer,
             fi.investment_type,
@@ -1838,7 +2046,10 @@ def get_fixed_incomes(portfolio_ids, sort_by: str = "date_aporte", sort_dir: str
         tuple(pids),
     ).fetchall()
     items = [_fixed_income_projection(dict(row)) for row in rows]
+    return _sort_fixed_income_items(items, sort_by=sort_by, sort_dir=sort_dir)
 
+
+def _sort_fixed_income_items(items, sort_by: str = "date_aporte", sort_dir: str = "desc"):
     valid_dirs = {"asc", "desc"}
     direction = sort_dir if sort_dir in valid_dirs else "desc"
     key_name = (sort_by or "date_aporte").strip()
@@ -1869,8 +2080,9 @@ def get_fixed_incomes(portfolio_ids, sort_by: str = "date_aporte", sort_dir: str
             return (0, float(value))
         return (0, str(value).lower())
 
-    items.sort(key=_sort_key, reverse=(direction == "desc"))
-    return items
+    sorted_items = list(items or [])
+    sorted_items.sort(key=_sort_key, reverse=(direction == "desc"))
+    return sorted_items
 
 
 def delete_fixed_incomes(fixed_income_ids, portfolio_ids):
@@ -1904,11 +2116,18 @@ def delete_fixed_incomes(fixed_income_ids, portfolio_ids):
         tuple(ids + pids),
     )
     db.commit()
+    invalidate_fixed_income_snapshot(pids)
+    invalidate_chart_snapshots(pids)
     return cursor.rowcount or 0
 
 
 def get_fixed_income_summary(portfolio_ids):
-    items = get_fixed_incomes(portfolio_ids)
+    payload = get_fixed_income_payload_cached(portfolio_ids)
+    return payload.get("summary", get_fixed_income_summary_from_items(payload.get("items") or []))
+
+
+def get_fixed_income_summary_from_items(items):
+    items = items or []
     return {
         "applied_total": round(sum(item["active_applied_value"] for item in items), 2),
         "current_total": round(sum(item["current_gross_value"] for item in items), 2),
@@ -1921,6 +2140,183 @@ def get_fixed_income_summary(portfolio_ids):
         "rendimento_recebido_total": round(sum(item["rendimento"] for item in items), 2),
         "count": len(items),
     }
+
+
+def _snapshot_now():
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _snapshot_age_seconds(iso_text: str):
+    try:
+        created = datetime.fromisoformat((iso_text or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return max((datetime.now() - created).total_seconds(), 0.0)
+
+
+def _memory_cache_get(cache_store, cache_key):
+    entry = cache_store.get(cache_key)
+    if not entry:
+        return None
+    expires_at = float(entry.get("expires_at", 0.0) or 0.0)
+    if expires_at > 0 and time.time() < expires_at:
+        return entry.get("value")
+    cache_store.pop(cache_key, None)
+    return None
+
+
+def _memory_cache_set(cache_store, cache_key, value, ttl_seconds: int):
+    cache_store[cache_key] = {
+        "value": value,
+        "expires_at": time.time() + max(int(ttl_seconds), 1),
+    }
+
+
+def _clear_benchmark_cache():
+    _BENCHMARK_CACHE.clear()
+
+
+def invalidate_fixed_income_snapshot(portfolio_ids):
+    pids = normalize_portfolio_ids(portfolio_ids)
+    placeholders = ",".join(["?"] * len(pids))
+    db = get_db()
+    try:
+        db.execute(
+            "DELETE FROM fixed_income_snapshot_items WHERE portfolio_id IN (" + placeholders + ")",
+            tuple(pids),
+        )
+        db.execute(
+            "DELETE FROM fixed_income_snapshot_summary WHERE portfolio_id IN (" + placeholders + ")",
+            tuple(pids),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def rebuild_fixed_income_snapshots(portfolio_ids=None):
+    if portfolio_ids is None:
+        pids = [int(item["id"]) for item in get_portfolios()]
+    else:
+        pids = normalize_portfolio_ids(portfolio_ids)
+    if not pids:
+        return {"portfolios": 0, "items": 0}
+
+    db = get_db()
+    total_items = 0
+    stamp = _snapshot_now()
+    for pid in pids:
+        items = get_fixed_incomes([pid], sort_by="date_aporte", sort_dir="desc")
+        summary = get_fixed_income_summary_from_items(items)
+        total_items += len(items)
+        try:
+            db.execute(
+                "DELETE FROM fixed_income_snapshot_items WHERE portfolio_id = ?",
+                (pid,),
+            )
+            db.execute(
+                """
+                INSERT INTO fixed_income_snapshot_summary (portfolio_id, payload_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(portfolio_id) DO UPDATE SET
+                  payload_json = excluded.payload_json,
+                  updated_at = excluded.updated_at
+                """,
+                (pid, json.dumps(summary, ensure_ascii=False), stamp),
+            )
+            for item in items:
+                db.execute(
+                    """
+                    INSERT INTO fixed_income_snapshot_items (portfolio_id, fixed_income_id, payload_json, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(portfolio_id, fixed_income_id) DO UPDATE SET
+                      payload_json = excluded.payload_json,
+                      updated_at = excluded.updated_at
+                    """,
+                    (pid, int(item["id"]), json.dumps(item, ensure_ascii=False), stamp),
+                )
+        except Exception:
+            db.rollback()
+            raise
+    db.commit()
+    return {"portfolios": len(pids), "items": total_items}
+
+
+def get_fixed_income_payload_cached(portfolio_ids, sort_by: str = "date_aporte", sort_dir: str = "desc"):
+    pids = normalize_portfolio_ids(portfolio_ids)
+    max_age_seconds = int(current_app.config.get("FIXED_INCOME_SNAPSHOT_MAX_AGE_SECONDS", 900))
+    placeholders = ",".join(["?"] * len(pids))
+    db = get_db()
+
+    try:
+        summary_rows = db.execute(
+            """
+            SELECT portfolio_id, payload_json, updated_at
+            FROM fixed_income_snapshot_summary
+            WHERE portfolio_id IN ("""
+            + placeholders
+            + """)
+            """,
+            tuple(pids),
+        ).fetchall()
+        if len(summary_rows) != len(pids):
+            raise RuntimeError("snapshot_miss")
+
+        summary_map = {}
+        for row in summary_rows:
+            age = _snapshot_age_seconds(row["updated_at"])
+            if age is None or age > max_age_seconds:
+                raise RuntimeError("snapshot_stale")
+            summary_map[int(row["portfolio_id"])] = json.loads(row["payload_json"] or "{}")
+
+        item_rows = db.execute(
+            """
+            SELECT portfolio_id, payload_json, updated_at
+            FROM fixed_income_snapshot_items
+            WHERE portfolio_id IN ("""
+            + placeholders
+            + """)
+            """,
+            tuple(pids),
+        ).fetchall()
+
+        items = []
+        for row in item_rows:
+            age = _snapshot_age_seconds(row["updated_at"])
+            if age is None or age > max_age_seconds:
+                raise RuntimeError("snapshot_stale")
+            items.append(json.loads(row["payload_json"] or "{}"))
+
+        summary = {
+            "applied_total": 0.0,
+            "current_total": 0.0,
+            "income_total": 0.0,
+            "final_total": 0.0,
+            "total_received": 0.0,
+            "rendimento_recebido_total": 0.0,
+            "count": 0,
+        }
+        for pid in pids:
+            part = summary_map.get(int(pid), {})
+            summary["applied_total"] += float(part.get("applied_total", 0.0))
+            summary["current_total"] += float(part.get("current_total", 0.0))
+            summary["income_total"] += float(part.get("income_total", 0.0))
+            summary["final_total"] += float(part.get("final_total", 0.0))
+            summary["total_received"] += float(part.get("total_received", 0.0))
+            summary["rendimento_recebido_total"] += float(part.get("rendimento_recebido_total", 0.0))
+            summary["count"] += int(part.get("count", 0))
+        for key in ("applied_total", "current_total", "income_total", "final_total", "total_received", "rendimento_recebido_total"):
+            summary[key] = round(summary[key], 2)
+
+        return {
+            "items": _sort_fixed_income_items(items, sort_by=sort_by, sort_dir=sort_dir),
+            "summary": summary,
+            "snapshot": True,
+        }
+    except Exception:
+        items = get_fixed_incomes(pids, sort_by=sort_by, sort_dir=sort_dir)
+        summary = get_fixed_income_summary_from_items(items)
+        return {"items": items, "summary": summary, "snapshot": False}
 
 
 def get_transactions(portfolio_ids):
@@ -1981,6 +2377,7 @@ def delete_transactions(transaction_ids, portfolio_ids):
         tuple(ids + pids),
     )
     db.commit()
+    invalidate_chart_snapshots(pids)
     return cursor.rowcount
 
 
@@ -2040,6 +2437,7 @@ def delete_incomes(income_ids, portfolio_ids):
         tuple(ids + pids),
     )
     db.commit()
+    invalidate_chart_snapshots(pids)
     return cursor.rowcount or 0
 
 
@@ -2243,7 +2641,7 @@ def get_sectors_summary():
     return [dict(row) for row in rows]
 
 
-def get_portfolio_snapshot(portfolio_ids, sort_by: str = "value", sort_dir: str = "desc"):
+def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str = "asc"):
     pids = normalize_portfolio_ids(portfolio_ids)
     placeholders = ",".join(["?"] * len(pids))
     db = get_db()
@@ -2465,7 +2863,7 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "value", sort_dir: str 
         "open_pnl_pct": "open_pnl_pct",
         "weight": "weight",
     }
-    safe_sort_by = sort_key_map.get((sort_by or "").strip().lower(), "value")
+    safe_sort_by = sort_key_map.get((sort_by or "").strip().lower(), "name")
     safe_sort_dir = "asc" if (sort_dir or "").strip().lower() == "asc" else "desc"
     reverse = safe_sort_dir == "desc"
 
@@ -2524,7 +2922,7 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "value", sort_dir: str 
     }
 
 
-def get_monthly_class_summary(portfolio_ids):
+def _build_monthly_class_summary(portfolio_ids):
     pids = normalize_portfolio_ids(portfolio_ids)
     placeholders = ",".join(["?"] * len(pids))
     db = get_db()
@@ -2716,6 +3114,527 @@ def get_monthly_class_summary(portfolio_ids):
     return result
 
 
+def _build_monthly_ticker_summary(portfolio_ids, months=24):
+    pids = normalize_portfolio_ids(portfolio_ids)
+    placeholders = ",".join(["?"] * len(pids))
+    db = get_db()
+
+    try:
+        months = int(months)
+    except (TypeError, ValueError):
+        months = 8
+    months = max(1, min(months, 24))
+
+    month_names = {
+        1: "jan.",
+        2: "fev.",
+        3: "mar.",
+        4: "abr.",
+        5: "mai.",
+        6: "jun.",
+        7: "jul.",
+        8: "ago.",
+        9: "set.",
+        10: "out.",
+        11: "nov.",
+        12: "dez.",
+    }
+
+    def _month_key(date_text: str):
+        try:
+            parsed = datetime.strptime((date_text or "")[:10], "%Y-%m-%d")
+            return f"{parsed.year:04d}-{parsed.month:02d}"
+        except ValueError:
+            return None
+
+    def _month_label(month_key: str):
+        try:
+            year, month = month_key.split("-", 1)
+            month_num = int(month)
+            return f"{month_names.get(month_num, month)} / {str(year)[2:]}"
+        except (ValueError, TypeError):
+            return month_key
+
+    ticker_month_map = {}
+    month_totals = {}
+    month_set = set()
+    ticker_name_map = {}
+
+    def _ensure_values(month_map, month_key):
+        if month_key not in month_map:
+            month_map[month_key] = {"invested": 0.0, "incomes": 0.0}
+
+    tx_rows = db.execute(
+        """
+        SELECT
+            t.date,
+            t.ticker,
+            t.tx_type,
+            (t.shares * t.price) AS amount,
+            a.name
+        FROM transactions t
+        LEFT JOIN assets a ON a.ticker = t.ticker
+        WHERE t.portfolio_id IN ("""
+        + placeholders
+        + """)
+        ORDER BY t.date ASC, t.id ASC
+        """,
+        tuple(pids),
+    ).fetchall()
+
+    for row in tx_rows:
+        month_key = _month_key(row["date"])
+        if not month_key:
+            continue
+        if (row["tx_type"] or "").lower() != "buy":
+            continue
+        ticker = (row["ticker"] or "").strip().upper()
+        if not ticker:
+            continue
+
+        amount = float(row["amount"] or 0.0)
+        ticker_name_map[ticker] = (row["name"] or ticker).strip() or ticker
+
+        ticker_values = ticker_month_map.setdefault(ticker, {})
+        _ensure_values(ticker_values, month_key)
+        ticker_values[month_key]["invested"] += amount
+
+        _ensure_values(month_totals, month_key)
+        month_totals[month_key]["invested"] += amount
+        month_set.add(month_key)
+
+    income_rows = db.execute(
+        """
+        SELECT
+            i.date,
+            i.ticker,
+            i.amount,
+            a.name
+        FROM incomes i
+        LEFT JOIN assets a ON a.ticker = i.ticker
+        WHERE i.portfolio_id IN ("""
+        + placeholders
+        + """)
+        ORDER BY i.date ASC, i.id ASC
+        """,
+        tuple(pids),
+    ).fetchall()
+
+    for row in income_rows:
+        month_key = _month_key(row["date"])
+        if not month_key:
+            continue
+        ticker = (row["ticker"] or "").strip().upper()
+        if not ticker:
+            continue
+
+        amount = float(row["amount"] or 0.0)
+        ticker_name_map[ticker] = (row["name"] or ticker).strip() or ticker
+
+        ticker_values = ticker_month_map.setdefault(ticker, {})
+        _ensure_values(ticker_values, month_key)
+        ticker_values[month_key]["incomes"] += amount
+
+        _ensure_values(month_totals, month_key)
+        month_totals[month_key]["incomes"] += amount
+        month_set.add(month_key)
+
+    if not month_set:
+        return {"months": [], "totals": [], "rows": []}
+
+    ordered_months = sorted(month_set)
+    if len(ordered_months) > months:
+        ordered_months = ordered_months[-months:]
+    selected_months = set(ordered_months)
+
+    month_items = [{"key": key, "label": _month_label(key)} for key in ordered_months]
+
+    totals = []
+    for key in ordered_months:
+        values = month_totals.get(key, {"invested": 0.0, "incomes": 0.0})
+        totals.append(
+            {
+                "month_key": key,
+                "invested": round(float(values.get("invested", 0.0)), 2),
+                "incomes": round(float(values.get("incomes", 0.0)), 2),
+            }
+        )
+
+    rows = []
+    for ticker in sorted(ticker_month_map.keys()):
+        per_month = ticker_month_map[ticker]
+        month_values = {}
+        row_invested = 0.0
+        row_incomes = 0.0
+
+        for key in ordered_months:
+            values = per_month.get(key, {"invested": 0.0, "incomes": 0.0})
+            invested = round(float(values.get("invested", 0.0)), 2)
+            incomes = round(float(values.get("incomes", 0.0)), 2)
+            month_values[key] = {"invested": invested, "incomes": incomes}
+            row_invested += invested
+            row_incomes += incomes
+
+        has_any_value = any(
+            key in selected_months
+            and (
+                abs(float(per_month.get(key, {}).get("invested", 0.0))) > 0
+                or abs(float(per_month.get(key, {}).get("incomes", 0.0))) > 0
+            )
+            for key in per_month.keys()
+        )
+        if not has_any_value:
+            continue
+
+        rows.append(
+            {
+                "ticker": ticker,
+                "name": ticker_name_map.get(ticker, ticker),
+                "total_invested": round(row_invested, 2),
+                "total_incomes": round(row_incomes, 2),
+                "months": month_values,
+            }
+        )
+
+    return {"months": month_items, "totals": totals, "rows": rows}
+
+
+def _month_label_sort_key(label: str):
+    raw = (label or "").strip().lower()
+    if "/" not in raw:
+        return (0, 0)
+    month_key, year_short = raw.split("/", 1)
+    month_order = {
+        "jan": 1,
+        "fev": 2,
+        "mar": 3,
+        "abr": 4,
+        "mai": 5,
+        "jun": 6,
+        "jul": 7,
+        "ago": 8,
+        "set": 9,
+        "out": 10,
+        "nov": 11,
+        "dez": 12,
+    }
+    try:
+        return (2000 + int(year_short), month_order.get(month_key, 0))
+    except ValueError:
+        return (0, 0)
+
+
+def _combine_monthly_class_rows(parts):
+    metric_keys = (
+        "br_invested",
+        "br_incomes",
+        "us_invested",
+        "us_incomes",
+        "fii_invested",
+        "fii_incomes",
+        "fixa_invested",
+        "fixa_incomes",
+        "cripto_invested",
+        "cripto_incomes",
+    )
+    rows_map = {}
+    for rows in parts:
+        for row in rows or []:
+            label = row.get("label")
+            if not label:
+                continue
+            if label not in rows_map:
+                rows_map[label] = {"label": label}
+                for key in metric_keys:
+                    rows_map[label][key] = 0.0
+            for key in metric_keys:
+                rows_map[label][key] += float(row.get(key, 0.0) or 0.0)
+
+    result = []
+    for label in sorted(rows_map.keys(), key=_month_label_sort_key):
+        values = rows_map[label]
+        total_invested = (
+            values["br_invested"]
+            + values["us_invested"]
+            + values["fii_invested"]
+            + values["fixa_invested"]
+            + values["cripto_invested"]
+        )
+        total_incomes = (
+            values["br_incomes"]
+            + values["us_incomes"]
+            + values["fii_incomes"]
+            + values["fixa_incomes"]
+            + values["cripto_incomes"]
+        )
+        result.append(
+            {
+                "label": label,
+                "br_invested": round(values["br_invested"], 2),
+                "br_incomes": round(values["br_incomes"], 2),
+                "us_invested": round(values["us_invested"], 2),
+                "us_incomes": round(values["us_incomes"], 2),
+                "fii_invested": round(values["fii_invested"], 2),
+                "fii_incomes": round(values["fii_incomes"], 2),
+                "fixa_invested": round(values["fixa_invested"], 2),
+                "fixa_incomes": round(values["fixa_incomes"], 2),
+                "cripto_invested": round(values["cripto_invested"], 2),
+                "cripto_incomes": round(values["cripto_incomes"], 2),
+                "total_invested": round(total_invested, 2),
+                "total_incomes": round(total_incomes, 2),
+            }
+        )
+    return result
+
+
+def _trim_monthly_ticker_summary(payload, months=8):
+    if not payload:
+        return {"months": [], "totals": [], "rows": []}
+    try:
+        months = int(months)
+    except (TypeError, ValueError):
+        months = 8
+    months = max(1, min(months, 24))
+
+    ordered_months = list(payload.get("months") or [])
+    if len(ordered_months) > months:
+        ordered_months = ordered_months[-months:]
+    month_keys = [item.get("key") for item in ordered_months if item.get("key")]
+
+    totals_map = {
+        item.get("month_key"): {
+            "invested": round(float(item.get("invested", 0.0) or 0.0), 2),
+            "incomes": round(float(item.get("incomes", 0.0) or 0.0), 2),
+        }
+        for item in (payload.get("totals") or [])
+        if item.get("month_key")
+    }
+    totals = [
+        {
+            "month_key": key,
+            "invested": totals_map.get(key, {}).get("invested", 0.0),
+            "incomes": totals_map.get(key, {}).get("incomes", 0.0),
+        }
+        for key in month_keys
+    ]
+
+    rows = []
+    for row in payload.get("rows") or []:
+        per_month = {}
+        total_invested = 0.0
+        total_incomes = 0.0
+        source_months = row.get("months") or {}
+        for key in month_keys:
+            values = source_months.get(key) or {}
+            invested = round(float(values.get("invested", 0.0) or 0.0), 2)
+            incomes = round(float(values.get("incomes", 0.0) or 0.0), 2)
+            per_month[key] = {"invested": invested, "incomes": incomes}
+            total_invested += invested
+            total_incomes += incomes
+        has_any_value = any(
+            abs(float(values.get("invested", 0.0) or 0.0)) > 0
+            or abs(float(values.get("incomes", 0.0) or 0.0)) > 0
+            for values in per_month.values()
+        )
+        if not has_any_value:
+            continue
+        rows.append(
+            {
+                "ticker": row.get("ticker", ""),
+                "name": row.get("name", row.get("ticker", "")),
+                "total_invested": round(total_invested, 2),
+                "total_incomes": round(total_incomes, 2),
+                "months": per_month,
+            }
+        )
+
+    rows.sort(key=lambda item: str(item.get("ticker", "")).upper())
+    return {"months": ordered_months, "totals": totals, "rows": rows}
+
+
+def _combine_monthly_ticker_summaries(parts, months=8):
+    month_label_map = {}
+    month_totals = {}
+    ticker_rows = {}
+
+    for payload in parts:
+        for month in payload.get("months") or []:
+            month_key = month.get("key")
+            if month_key:
+                month_label_map[month_key] = month.get("label") or month_key
+
+        for total in payload.get("totals") or []:
+            month_key = total.get("month_key")
+            if not month_key:
+                continue
+            state = month_totals.setdefault(month_key, {"invested": 0.0, "incomes": 0.0})
+            state["invested"] += float(total.get("invested", 0.0) or 0.0)
+            state["incomes"] += float(total.get("incomes", 0.0) or 0.0)
+
+        for row in payload.get("rows") or []:
+            ticker = (row.get("ticker") or "").strip().upper()
+            if not ticker:
+                continue
+            state = ticker_rows.setdefault(
+                ticker,
+                {"ticker": ticker, "name": row.get("name", ticker), "months": {}},
+            )
+            for month_key, values in (row.get("months") or {}).items():
+                month_state = state["months"].setdefault(month_key, {"invested": 0.0, "incomes": 0.0})
+                month_state["invested"] += float(values.get("invested", 0.0) or 0.0)
+                month_state["incomes"] += float(values.get("incomes", 0.0) or 0.0)
+
+    ordered_month_keys = sorted(month_label_map.keys())
+    merged = {
+        "months": [{"key": key, "label": month_label_map.get(key, key)} for key in ordered_month_keys],
+        "totals": [
+            {
+                "month_key": key,
+                "invested": round(float(month_totals.get(key, {}).get("invested", 0.0)), 2),
+                "incomes": round(float(month_totals.get(key, {}).get("incomes", 0.0)), 2),
+            }
+            for key in ordered_month_keys
+        ],
+        "rows": [],
+    }
+    for ticker in sorted(ticker_rows.keys()):
+        row = ticker_rows[ticker]
+        merged["rows"].append(
+            {
+                "ticker": ticker,
+                "name": row.get("name", ticker),
+                "months": {
+                    key: {
+                        "invested": round(float(values.get("invested", 0.0) or 0.0), 2),
+                        "incomes": round(float(values.get("incomes", 0.0) or 0.0), 2),
+                    }
+                    for key, values in (row.get("months") or {}).items()
+                },
+            }
+        )
+    return _trim_monthly_ticker_summary(merged, months=months)
+
+
+def invalidate_chart_snapshots(portfolio_ids):
+    pids = normalize_portfolio_ids(portfolio_ids)
+    placeholders = ",".join(["?"] * len(pids))
+    db = get_db()
+    try:
+        db.execute(
+            "DELETE FROM chart_snapshot_monthly_class WHERE portfolio_id IN (" + placeholders + ")",
+            tuple(pids),
+        )
+        db.execute(
+            "DELETE FROM chart_snapshot_monthly_ticker WHERE portfolio_id IN (" + placeholders + ")",
+            tuple(pids),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    _clear_benchmark_cache()
+
+
+def rebuild_chart_snapshots(portfolio_ids=None):
+    if portfolio_ids is None:
+        pids = [int(item["id"]) for item in get_portfolios()]
+    else:
+        pids = normalize_portfolio_ids(portfolio_ids)
+    if not pids:
+        return {"portfolios": 0}
+
+    db = get_db()
+    stamp = _snapshot_now()
+    for pid in pids:
+        monthly_class = _build_monthly_class_summary([pid])
+        monthly_ticker = _build_monthly_ticker_summary([pid], months=24)
+        try:
+            db.execute(
+                """
+                INSERT INTO chart_snapshot_monthly_class (portfolio_id, payload_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(portfolio_id) DO UPDATE SET
+                  payload_json = excluded.payload_json,
+                  updated_at = excluded.updated_at
+                """,
+                (pid, json.dumps(monthly_class, ensure_ascii=False), stamp),
+            )
+            db.execute(
+                """
+                INSERT INTO chart_snapshot_monthly_ticker (portfolio_id, payload_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(portfolio_id) DO UPDATE SET
+                  payload_json = excluded.payload_json,
+                  updated_at = excluded.updated_at
+                """,
+                (pid, json.dumps(monthly_ticker, ensure_ascii=False), stamp),
+            )
+        except Exception:
+            db.rollback()
+            raise
+    db.commit()
+    return {"portfolios": len(pids)}
+
+
+def get_monthly_class_summary(portfolio_ids):
+    pids = normalize_portfolio_ids(portfolio_ids)
+    max_age_seconds = int(current_app.config.get("CHART_SNAPSHOT_MAX_AGE_SECONDS", 900))
+    placeholders = ",".join(["?"] * len(pids))
+    db = get_db()
+
+    try:
+        rows = db.execute(
+            """
+            SELECT portfolio_id, payload_json, updated_at
+            FROM chart_snapshot_monthly_class
+            WHERE portfolio_id IN ("""
+            + placeholders
+            + """)
+            """,
+            tuple(pids),
+        ).fetchall()
+        if len(rows) != len(pids):
+            raise RuntimeError("snapshot_miss")
+        parts = []
+        for row in rows:
+            age = _snapshot_age_seconds(row["updated_at"])
+            if age is None or age > max_age_seconds:
+                raise RuntimeError("snapshot_stale")
+            parts.append(json.loads(row["payload_json"] or "[]"))
+        return _combine_monthly_class_rows(parts)
+    except Exception:
+        return _build_monthly_class_summary(pids)
+
+
+def get_monthly_ticker_summary(portfolio_ids, months=8):
+    pids = normalize_portfolio_ids(portfolio_ids)
+    max_age_seconds = int(current_app.config.get("CHART_SNAPSHOT_MAX_AGE_SECONDS", 900))
+    placeholders = ",".join(["?"] * len(pids))
+    db = get_db()
+
+    try:
+        rows = db.execute(
+            """
+            SELECT portfolio_id, payload_json, updated_at
+            FROM chart_snapshot_monthly_ticker
+            WHERE portfolio_id IN ("""
+            + placeholders
+            + """)
+            """,
+            tuple(pids),
+        ).fetchall()
+        if len(rows) != len(pids):
+            raise RuntimeError("snapshot_miss")
+        parts = []
+        for row in rows:
+            age = _snapshot_age_seconds(row["updated_at"])
+            if age is None or age > max_age_seconds:
+                raise RuntimeError("snapshot_stale")
+            parts.append(json.loads(row["payload_json"] or "{}"))
+        return _combine_monthly_ticker_summaries(parts, months=months)
+    except Exception:
+        return _build_monthly_ticker_summary(pids, months=months)
+
+
 def _subtract_months_from_date(date_value, months_back: int):
     year = date_value.year
     month = date_value.month - months_back
@@ -2759,6 +3678,11 @@ def _month_label(month_key: str):
 def _download_monthly_close_map(symbol: str, period: str):
     if yf is None:
         return {}
+    cache_ttl = int(current_app.config.get("YAHOO_MONTHLY_CACHE_TTL_SECONDS", 21600))
+    cache_key = ((symbol or "").strip().upper(), (period or "").strip().lower())
+    cached = _memory_cache_get(_YAHOO_MONTHLY_CACHE, cache_key)
+    if cached is not None:
+        return dict(cached)
 
     def _to_map(hist):
         closes = _extract_close_series(hist)
@@ -2795,6 +3719,7 @@ def _download_monthly_close_map(symbol: str, period: str):
         hist = None
     month_map = _to_map(hist)
     if month_map:
+        _memory_cache_set(_YAHOO_MONTHLY_CACHE, cache_key, dict(month_map), cache_ttl)
         return month_map
 
     try:
@@ -2808,7 +3733,10 @@ def _download_monthly_close_map(symbol: str, period: str):
         )
     except Exception:
         hist_daily = None
-    return _to_map(hist_daily)
+    month_map = _to_map(hist_daily)
+    if month_map:
+        _memory_cache_set(_YAHOO_MONTHLY_CACHE, cache_key, dict(month_map), cache_ttl)
+    return month_map
 
 
 def _levels_from_month_map(month_keys, month_map):
@@ -2943,10 +3871,16 @@ def get_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: s
     normalized_range, months, period = _benchmark_range_config(range_key)
     valid_scopes = {"all", "br", "us", "fiis", "crypto"}
     normalized_scope = scope_key if scope_key in valid_scopes else "all"
+    pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
+    cache_ttl = int(current_app.config.get("BENCHMARK_CACHE_TTL_SECONDS", 900))
+    cache_key = (pids, normalized_range, normalized_scope)
+    cached = _memory_cache_get(_BENCHMARK_CACHE, cache_key)
+    if cached is not None:
+        return cached
 
     month_keys = _month_keys_back(months)
     labels = [_month_label(key) for key in month_keys]
-    snapshot = get_portfolio_snapshot(portfolio_ids)
+    snapshot = get_portfolio_snapshot(pids)
 
     portfolio_series = _portfolio_monthly_cumulative(snapshot, month_keys, period, normalized_scope)
     cdi_series = _cdi_monthly_cumulative(month_keys)
@@ -2967,7 +3901,7 @@ def get_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: s
     def _round_series(values):
         return [None if value is None else round(float(value), 2) for value in values]
 
-    return {
+    result = {
         "labels": labels,
         "datasets": [
             {"label": "Rentabilidade", "values": _round_series(portfolio_series), "color": "#6f8fe7"},
@@ -2978,3 +3912,5 @@ def get_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: s
         "range_key": normalized_range,
         "scope_key": normalized_scope,
     }
+    _memory_cache_set(_BENCHMARK_CACHE, cache_key, result, cache_ttl)
+    return result

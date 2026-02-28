@@ -21,10 +21,16 @@ def _run_sync_once(app):
 
 def _sync_loop(app, stop_event: Event):
     interval = int(app.config.get("MARKET_SYNC_INTERVAL_SECONDS", 300))
-    # Roda uma vez logo ao iniciar a thread e depois respeita o intervalo.
+    # Aguarda o primeiro intervalo antes da primeira execucao para nao
+    # degradar latencia das primeiras requisicoes apos subir o app.
+    stop_event.wait(interval)
     while not stop_event.is_set():
-        _run_sync_once(app)
-        app.extensions["market_sync_last_run"] = time.time()
+        app.extensions["market_sync_manual_running"] = True
+        try:
+            _run_sync_once(app)
+            app.extensions["market_sync_last_run"] = time.time()
+        finally:
+            app.extensions["market_sync_manual_running"] = False
         stop_event.wait(interval)
 
 

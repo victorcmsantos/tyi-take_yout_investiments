@@ -1,8 +1,8 @@
 # tyi-take_yout_investiments
 
-MVP de portal de investimentos em Flask, inspirado no estilo do Investidor10.
+Baseline congelada da v2 do portal de investimentos, com frontend React/Vite e backend Flask exposto como API.
 
-## Como rodar (local)
+## Como rodar o backend (local)
 
 ```bash
 python3 -m venv .venv
@@ -11,11 +11,11 @@ pip install -r backend/requirements.txt
 python backend/run.py
 ```
 
-Acesse em `http://127.0.0.1:8000`.
+A API fica em `http://127.0.0.1:8000/api`.
 
-## Frontend separado (React + Vite)
+## Frontend (React + Vite)
 
-O backend Flask agora expõe API em `/api`. O frontend em `frontend/` consome essa API.
+O frontend em `frontend/` consome a API Flask em `/api`.
 
 ```bash
 # terminal 1 (backend)
@@ -31,6 +31,26 @@ npm run dev
 Frontend: `http://127.0.0.1:5173`
 
 ## Docker
+
+### Subir com Docker Compose (recomendado para testes locais)
+
+```bash
+# opcional: sobrescrever credenciais do Basic Auth
+export BASIC_AUTH_USER=amor
+export BASIC_AUTH_PASS='250109'
+
+docker compose up -d --build
+```
+
+Acesse em `http://127.0.0.1:5173`.
+
+O `docker-compose.yml` agora cria a rede `invest-net` automaticamente.
+
+Para parar:
+
+```bash
+docker compose down
+```
 
 ### Build das imagens
 
@@ -48,17 +68,10 @@ docker build -t invest-portal-frontend ./frontend
 docker network create invest-net
 
 # backend (sem expor porta externa, usado via proxy do frontend)
-docker run -d --name backend --network invest-net \
-  -v "$(pwd)/backend:/data" \
-  -e DATABASE=/data/investments.db \
-  -e DATABASE_BACKUP_DIR=/data/backups \
-  invest-portal-backend
+docker run -d --name backend --network invest-net -p 8000:8000 -v /srv/tyi-take_yout_investiments/investments.db:/app/investments.db -e MARKET_DATA_LOG_SOURCES=1 invest-portal-backend
 
 # frontend com Basic Auth
-docker run -d --name frontend --network invest-net -p 5173:80 \
-  -e BASIC_AUTH_USER=admin \
-  -e BASIC_AUTH_PASS='troque-esta-senha' \
-  invest-portal-frontend
+docker run -d --name frontend --network invest-net -p 5173:80 -e BASIC_AUTH_USER=amor -e BASIC_AUTH_PASS='250109' invest-portal-frontend
 ```
 
 Acesse em `http://127.0.0.1:5173`.
@@ -86,14 +99,18 @@ cp backend/backups/investments_YYYYMMDD_HHMMSS.sqlite3 backend/investments.db
 
 ## Rotas
 
-- `/` dashboard com lista de ativos e destaques
-- `/api/*` endpoints JSON para frontend separado
-- `/ativo/<ticker>` pagina de detalhe do ativo
-- `/setores` redireciona para `/`
-- `/carteira` consolidacao de carteira e dividendos mensais estimados
-- `/transacoes/nova` lancamento de compra/venda (ativo novo e criado automaticamente)
-- `/proventos/novo` lancamento de proventos (dividendo, jcp e aluguel)
-- `/carteiras` criacao e selecao de multiplas carteiras
+- Frontend SPA:
+  - `/`
+  - `/carteira`
+  - `/renda-fixa`
+  - `/graficos`
+  - `/ativo/:ticker`
+  - `/nova`
+  - `/novo`
+  - `/carteiras`
+- Backend API:
+  - `/api/*`
+  - `/api/health`
 
 ## Banco SQL
 
@@ -105,10 +122,14 @@ cp backend/backups/investments_YYYYMMDD_HHMMSS.sqlite3 backend/investments.db
 
 - `backend/app/__init__.py` app factory
 - `backend/app/db.py` conexao SQLite, inicializacao e seed
-- `backend/app/routes.py` rotas Flask
 - `backend/app/services.py` regras de negocio e queries SQL
-- `backend/app/templates/` paginas HTML com Jinja2
-- `backend/app/static/css/style.css` estilos
 - `backend/app/api_routes.py` endpoints da API JSON
 - `backend/run.py` entrada do backend
 - `frontend/` app React (Vite) consumindo `/api`
+
+## Limpeza aplicada nesta baseline
+
+- backend legado baseado em templates Flask removido
+- projeto mantido em modo API + SPA
+- `frontend/node_modules` e artefatos locais removidos do versionamento
+- dependencias do frontend fixadas para preservar esta versao

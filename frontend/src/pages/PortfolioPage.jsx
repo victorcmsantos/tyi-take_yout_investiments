@@ -15,8 +15,8 @@ function PortfolioPage({ selectedPortfolioIds }) {
   const [snapshot, setSnapshot] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [sortBy, setSortBy] = useState('value')
-  const [sortDir, setSortDir] = useState('desc')
+  const [sortBy, setSortBy] = useState('name')
+  const [sortDir, setSortDir] = useState('asc')
   const [openGroups, setOpenGroups] = useState({})
 
   const toggleSort = (field) => {
@@ -62,13 +62,14 @@ function PortfolioPage({ selectedPortfolioIds }) {
     }
   }, [selectedPortfolioIds, sortBy, sortDir])
 
-  if (loading) return <p>Carregando...</p>
+  if (loading && !snapshot) return <p>Carregando...</p>
   if (error) return <p className="error">{error}</p>
   if (!snapshot) return <p>Sem dados.</p>
 
   return (
     <section>
       <h1>Renda Variavel</h1>
+      {loading && <p>Atualizando ordenacao...</p>}
       <div className="cards">
         <article className="card"><h3>Patrimonio</h3><p>{brl(snapshot.total_value)}</p></article>
         <article className="card"><h3>Investido</h3><p>{brl(snapshot.invested_value)}</p></article>
@@ -140,10 +141,10 @@ function PortfolioPage({ selectedPortfolioIds }) {
                   </div>
 
                   <div className="table-wrap">
-                    <table>
+                    <table className="asset-table">
                       <thead>
                         <tr>
-                          <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('ticker')}>{sortLabel('Ticker', 'ticker')}</button></th>
+                          <th className="sticky-col sticky-col-ticker"><button type="button" className="th-sort-btn" onClick={() => toggleSort('ticker')}>{sortLabel('Ticker', 'ticker')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('name')}>{sortLabel('Nome', 'name')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('shares')}>{sortLabel('Qtd', 'shares')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('price')}>{sortLabel('Preco', 'price')}</button></th>
@@ -151,14 +152,15 @@ function PortfolioPage({ selectedPortfolioIds }) {
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('invested_value')}>{sortLabel('Investido', 'invested_value')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('value')}>{sortLabel('Total', 'value')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('total_incomes')}>{sortLabel('Proventos', 'total_incomes')}</button></th>
-                          <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('open_pnl_value')}>{sortLabel('Aberto', 'open_pnl_value')}</button></th>
+                          <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('open_pnl_value')}>{sortLabel('Aberto (R$)', 'open_pnl_value')}</button></th>
+                          <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('open_pnl_pct')}>{sortLabel('Aberto (%)', 'open_pnl_pct')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('weight')}>{sortLabel('Peso', 'weight')}</button></th>
                         </tr>
                       </thead>
                       <tbody>
                         {items.map((item) => (
                           <tr key={`${meta.key}-${item.ticker}`}>
-                            <td><Link to={`/ativo/${item.ticker}`}>{item.ticker}</Link></td>
+                            <td className="sticky-col sticky-col-ticker"><Link to={`/ativo/${item.ticker}`}>{item.ticker}</Link></td>
                             <td>{item.name}</td>
                             <td>{Number(item.shares || 0).toFixed(4)}</td>
                             <td>{brl(item.price)}</td>
@@ -166,9 +168,8 @@ function PortfolioPage({ selectedPortfolioIds }) {
                             <td>{brl(item.invested_value)}</td>
                             <td>{brl(item.value)}</td>
                             <td>{brl(item.total_incomes)}</td>
-                            <td className={Number(item.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>
-                              {brl(item.open_pnl_value)} ({Number(item.open_pnl_pct || 0).toFixed(2)}%)
-                            </td>
+                            <td className={Number(item.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>{brl(item.open_pnl_value)}</td>
+                            <td className={Number(item.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>{Number(item.open_pnl_pct || 0).toFixed(2)}%</td>
                             <td>{Number(item.weight || 0).toFixed(2)}%</td>
                           </tr>
                         ))}

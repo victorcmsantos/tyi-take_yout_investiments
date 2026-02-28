@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Chart as ChartJS } from 'chart.js/auto'
 import { Bar, Doughnut, Line, Pie } from 'react-chartjs-2'
 import ChartDataLabels from 'chartjs-plugin-datalabels'
@@ -23,13 +23,23 @@ const MONTH_ORDER = [
 ChartJS.register(ChartDataLabels)
 
 function ChartsPage({ selectedPortfolioIds }) {
-  const [payload, setPayload] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [corePayload, setCorePayload] = useState(null)
+  const [benchmarkPayload, setBenchmarkPayload] = useState(null)
+  const [tickerPayload, setTickerPayload] = useState(null)
+  const [loadingCore, setLoadingCore] = useState(true)
+  const [loadingBenchmark, setLoadingBenchmark] = useState(true)
+  const [loadingTicker, setLoadingTicker] = useState(true)
   const [error, setError] = useState('')
+  const [benchmarkError, setBenchmarkError] = useState('')
+  const [tickerError, setTickerError] = useState('')
   const [range, setRange] = useState('12m')
   const [scope, setScope] = useState('all')
   const [annualMetrics, setAnnualMetrics] = useState(['invested', 'incomes'])
   const [annualCategories, setAnnualCategories] = useState(['br', 'us', 'fii', 'cripto', 'fixa'])
+  const [tickerSortBy, setTickerSortBy] = useState('period_value')
+  const [tickerSortMetric, setTickerSortMetric] = useState('incomes')
+  const [tickerSortMonthKey, setTickerSortMonthKey] = useState('total')
+  const [tickerSortDir, setTickerSortDir] = useState('desc')
   const [loadingMessage, setLoadingMessage] = useState('Atualizando graficos...')
   const previousPortfoliosRef = useRef('')
 
@@ -38,29 +48,76 @@ function ChartsPage({ selectedPortfolioIds }) {
     const currentPortfolioKey = JSON.stringify(selectedPortfolioIds || [])
     const portfolioChanged = previousPortfoliosRef.current !== currentPortfolioKey
     previousPortfoliosRef.current = currentPortfolioKey
-    setLoading(true)
+    setLoadingCore(true)
     setLoadingMessage(portfolioChanged ? 'Lendo carteiras selecionadas...' : 'Atualizando graficos...')
     setError('')
     ;(async () => {
       try {
-        const data = await apiGet('/api/charts/dashboard', {
+        const data = await apiGet('/api/charts/core', {
+          portfolio_id: selectedPortfolioIds,
+        })
+        if (!active) return
+        setCorePayload(data)
+      } catch (err) {
+        if (!active) return
+        setError(err.message)
+      } finally {
+        if (active) setLoadingCore(false)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [selectedPortfolioIds])
+
+  useEffect(() => {
+    let active = true
+    setLoadingBenchmark(true)
+    setBenchmarkError('')
+    ;(async () => {
+      try {
+        const data = await apiGet('/api/charts/benchmark', {
           portfolio_id: selectedPortfolioIds,
           range,
           scope,
         })
         if (!active) return
-        setPayload(data)
+        setBenchmarkPayload(data)
       } catch (err) {
         if (!active) return
-        setError(err.message)
+        setBenchmarkError(err.message)
       } finally {
-        if (active) setLoading(false)
+        if (active) setLoadingBenchmark(false)
       }
     })()
     return () => {
       active = false
     }
   }, [selectedPortfolioIds, range, scope])
+
+  useEffect(() => {
+    let active = true
+    setLoadingTicker(true)
+    setTickerError('')
+    ;(async () => {
+      try {
+        const data = await apiGet('/api/charts/ticker-summary', {
+          portfolio_id: selectedPortfolioIds,
+          months: 8,
+        })
+        if (!active) return
+        setTickerPayload(data)
+      } catch (err) {
+        if (!active) return
+        setTickerError(err.message)
+      } finally {
+        if (active) setLoadingTicker(false)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [selectedPortfolioIds])
 
   const onToggleMetric = (metric) => {
     setAnnualMetrics((current) => {
@@ -90,7 +147,7 @@ function ChartsPage({ selectedPortfolioIds }) {
   }), [])
 
   const annualSummary = useMemo(() => {
-    const rows = payload?.monthly_class_summary || []
+    const rows = corePayload?.monthly_class_summary || []
     const yearMap = new Map()
     for (const row of rows) {
       const label = String(row.label || '').toLowerCase()
@@ -144,24 +201,57 @@ function ChartsPage({ selectedPortfolioIds }) {
       }
     })
     return { months: MONTH_ORDER.map(([label]) => label), years }
-  }, [payload, annualCategories])
+  }, [corePayload, annualCategories])
 
-  if (loading && !payload) return <p>Carregando...</p>
+  if (loadingCore && !corePayload) return <p>Carregando...</p>
   if (error) return <p className="error">{error}</p>
-  if (!payload) return <p>Sem dados.</p>
+  if (!corePayload) return <p>Sem dados.</p>
 
-  const categoryChart = payload.category_chart || { labels: [], values: [] }
-  const topAssetsChart = payload.top_assets_chart || { labels: [], values: [] }
-  const allocationByGroupCharts = payload.allocation_by_group_charts || []
-  const cardsChart = payload.cards_chart || { labels: [], values: [] }
-  const resultByCategoryChart = payload.result_by_category_chart || { labels: [], values: [] }
-  const classesChart = payload.classes_chart || { labels: [], values: [] }
-  const fixedInvestmentChart = payload.fixed_income_investment_chart || { labels: [], values: [] }
-  const fixedDistributorChart = payload.fixed_income_distributor_chart || { labels: [], values: [] }
-  const fixedIssuerChart = payload.fixed_income_issuer_chart || { labels: [], investment_values: [], income_values: [] }
-  const monthlyIncomeChart = payload.monthly_income_chart || { labels: [], fii_values: [], acoes_values: [] }
-  const benchmarkChart = payload.benchmark_chart || { labels: [], datasets: [] }
-  const monthlyClassSummary = payload.monthly_class_summary || []
+  const categoryChart = corePayload.category_chart || { labels: [], values: [] }
+  const topAssetsChart = corePayload.top_assets_chart || { labels: [], values: [] }
+  const allocationByGroupCharts = corePayload.allocation_by_group_charts || []
+  const cardsChart = corePayload.cards_chart || { labels: [], values: [] }
+  const resultByCategoryChart = corePayload.result_by_category_chart || { labels: [], values: [] }
+  const classesChart = corePayload.classes_chart || { labels: [], values: [] }
+  const fixedInvestmentChart = corePayload.fixed_income_investment_chart || { labels: [], values: [] }
+  const fixedDistributorChart = corePayload.fixed_income_distributor_chart || { labels: [], values: [] }
+  const fixedIssuerChart = corePayload.fixed_income_issuer_chart || { labels: [], investment_values: [], income_values: [] }
+  const monthlyIncomeChart = corePayload.monthly_income_chart || { labels: [], fii_values: [], acoes_values: [] }
+  const benchmarkChart = benchmarkPayload || { labels: [], datasets: [] }
+  const monthlyClassSummary = corePayload.monthly_class_summary || []
+  const monthlyTickerSummary = tickerPayload || { months: [], totals: [], rows: [] }
+
+  const onToggleTickerSort = (field) => {
+    if (tickerSortBy === field) return setTickerSortDir((current) => (current === 'asc' ? 'desc' : 'asc'))
+    setTickerSortBy(field)
+    setTickerSortDir(field === 'ticker' ? 'asc' : 'desc')
+  }
+
+  const tickerSortLabel = (label, field) => {
+    if (tickerSortBy !== field) return label
+    return `${label} ${tickerSortDir === 'asc' ? '↑' : '↓'}`
+  }
+
+  const sortedTickerRows = [...(monthlyTickerSummary.rows || [])]
+  sortedTickerRows.sort((left, right) => {
+    const factor = tickerSortDir === 'asc' ? 1 : -1
+    if (tickerSortBy === 'ticker') {
+      const a = String(left.ticker || '')
+      const b = String(right.ticker || '')
+      return a.localeCompare(b, 'pt-BR') * factor
+    }
+    let a = 0
+    let b = 0
+    if (tickerSortMonthKey === 'total') {
+      a = Number(tickerSortMetric === 'invested' ? left.total_invested : left.total_incomes)
+      b = Number(tickerSortMetric === 'invested' ? right.total_invested : right.total_incomes)
+    } else {
+      a = Number(left.months?.[tickerSortMonthKey]?.[tickerSortMetric] || 0)
+      b = Number(right.months?.[tickerSortMonthKey]?.[tickerSortMetric] || 0)
+    }
+    if (a === b) return String(left.ticker || '').localeCompare(String(right.ticker || ''), 'pt-BR')
+    return (a - b) * factor
+  })
 
   const classesTotal = (classesChart.values || []).reduce((acc, value) => acc + Number(value || 0), 0)
   const categoryTotal = (categoryChart.values || []).reduce((acc, value) => acc + Number(value || 0), 0)
@@ -358,7 +448,7 @@ function ChartsPage({ selectedPortfolioIds }) {
   return (
     <section>
       <h1>Graficos</h1>
-      {loading && <p className="subtitle">{loadingMessage}</p>}
+      {loadingCore && <p className="subtitle">{loadingMessage}</p>}
 
       <div className="charts-grid">
         <article className="card chart-card">
@@ -415,6 +505,8 @@ function ChartsPage({ selectedPortfolioIds }) {
               </label>
             </div>
           </div>
+          {loadingBenchmark && <p className="subtitle">Atualizando benchmark...</p>}
+          {benchmarkError && <p className="error">{benchmarkError}</p>}
           <div className="chart-canvas-wrap">
             <Line data={benchmarkData} options={{ responsive: true, maintainAspectRatio: false, scales: { y: percentScale } }} />
           </div>
@@ -505,6 +597,99 @@ function ChartsPage({ selectedPortfolioIds }) {
               {annualSummary.years.length === 0 && (
                 <tr>
                   <td colSpan={2}>Sem dados para tabela anual.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2 style={{ marginTop: 22 }}>Resumo mensal por ticker</h2>
+        {loadingTicker && <p className="subtitle">Atualizando resumo por ticker...</p>}
+        {tickerError && <p className="error">{tickerError}</p>}
+        <div className="inline-filters" style={{ marginBottom: 8 }}>
+          <label>
+            Ordenar por
+            <select value={tickerSortMetric} onChange={(e) => setTickerSortMetric(e.target.value)}>
+              <option value="invested">investidos</option>
+              <option value="incomes">proventos</option>
+            </select>
+          </label>
+          <label>
+            Mês/ano
+            <select value={tickerSortMonthKey} onChange={(e) => setTickerSortMonthKey(e.target.value)}>
+              <option value="total">Total (todos os meses)</option>
+              {monthlyTickerSummary.months.map((month) => (
+                <option key={month.key} value={month.key}>{month.label}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Direção
+            <select value={tickerSortDir} onChange={(e) => setTickerSortDir(e.target.value)}>
+              <option value="desc">Maior para menor</option>
+              <option value="asc">Menor para maior</option>
+            </select>
+          </label>
+        </div>
+        <div className="table-wrap">
+          <table className="ticker-month-table">
+            <thead>
+              <tr>
+                <th rowSpan={2} className="ticker-month-sticky">
+                  <button type="button" className="th-sort-btn" onClick={() => onToggleTickerSort('ticker')}>
+                    {tickerSortLabel('Ticker', 'ticker')}
+                  </button>
+                </th>
+                {monthlyTickerSummary.months.map((month) => (
+                  <th key={month.key} colSpan={2}>{month.label}</th>
+                ))}
+              </tr>
+              <tr>
+                {monthlyTickerSummary.months.map((month) => (
+                  <Fragment key={`sub-${month.key}`}>
+                    <th>investidos</th>
+                    <th>proventos</th>
+                  </Fragment>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {monthlyTickerSummary.totals.length > 0 && (
+                <tr className="ticker-month-total-row">
+                  <td className="ticker-month-sticky">
+                    <strong>Total</strong>
+                  </td>
+                  {monthlyTickerSummary.totals.map((total) => (
+                    <Fragment key={`totals-${total.month_key}`}>
+                      <td><strong>{brl(total.invested)}</strong></td>
+                      <td><strong>{brl(total.incomes)}</strong></td>
+                    </Fragment>
+                  ))}
+                </tr>
+              )}
+              {sortedTickerRows.map((row) => (
+                <tr key={row.ticker}>
+                  <td className="ticker-month-sticky">
+                    <strong>{row.ticker}</strong>
+                  </td>
+                  {monthlyTickerSummary.months.map((month) => {
+                    const values = row.months?.[month.key] || { invested: 0, incomes: 0 }
+                    return (
+                      <Fragment key={`${row.ticker}-${month.key}`}>
+                        <td>{brl(values.invested)}</td>
+                        <td>{brl(values.incomes)}</td>
+                      </Fragment>
+                    )
+                  })}
+                </tr>
+              ))}
+              {sortedTickerRows.length === 0 && (
+                <tr>
+                  <td colSpan={Math.max(1, 1 + (monthlyTickerSummary.months.length * 2))}>
+                    Sem dados por ticker para o periodo selecionado.
+                  </td>
                 </tr>
               )}
             </tbody>

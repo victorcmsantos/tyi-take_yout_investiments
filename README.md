@@ -216,4 +216,5 @@ cp /srv/tyi-take_yout_investiments/app_vol/backups/investments_YYYYMMDD_HHMMSS.s
 - dependencias do frontend fixadas para preservar esta versao
 
 ## backup do banco de daddos
+
 - curl http://192.168.0.40:8000/api/backup/database

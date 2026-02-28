@@ -185,6 +185,16 @@ def ensure_schema_upgrades():
         db.execute("ALTER TABLE assets ADD COLUMN variation_30d REAL NOT NULL DEFAULT 0")
     if "logo_url" not in asset_cols:
         db.execute("ALTER TABLE assets ADD COLUMN logo_url TEXT NOT NULL DEFAULT ''")
+    if "market_data_status" not in asset_cols:
+        db.execute("ALTER TABLE assets ADD COLUMN market_data_status TEXT NOT NULL DEFAULT 'unknown'")
+    if "market_data_source" not in asset_cols:
+        db.execute("ALTER TABLE assets ADD COLUMN market_data_source TEXT NOT NULL DEFAULT ''")
+    if "market_data_updated_at" not in asset_cols:
+        db.execute("ALTER TABLE assets ADD COLUMN market_data_updated_at TEXT")
+    if "market_data_last_attempt_at" not in asset_cols:
+        db.execute("ALTER TABLE assets ADD COLUMN market_data_last_attempt_at TEXT")
+    if "market_data_last_error" not in asset_cols:
+        db.execute("ALTER TABLE assets ADD COLUMN market_data_last_error TEXT NOT NULL DEFAULT ''")
 
     db.execute(
         """

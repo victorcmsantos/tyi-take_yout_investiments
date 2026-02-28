@@ -4,6 +4,16 @@ import { apiGet, apiPost } from '../api'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const pct = (value) => `${Number(value || 0).toFixed(2)}%`
+const formatSyncLabel = (asset) => {
+  const marketData = asset?.market_data || {}
+  if (marketData.is_stale) {
+    return 'Desatualizado'
+  }
+  if (marketData.updated_at) {
+    return `Atualizado via ${(marketData.source || 'provider').toUpperCase()}`
+  }
+  return 'Sem sincronizacao'
+}
 
 function HomePage({ selectedPortfolioIds }) {
   const [assets, setAssets] = useState([])
@@ -66,19 +76,19 @@ function HomePage({ selectedPortfolioIds }) {
     }
   }, [selectedPortfolioIds])
 
-  const onSyncYahoo = async () => {
+  const onSyncMarketData = async () => {
     setSyncing(true)
     setSyncMessage('')
     setSyncStatus('')
     try {
-      const result = await apiPost('/api/sync/yahoo')
+      const result = await apiPost('/api/sync/market-data')
       const failed = Number(result.failed_count || 0)
       if (failed > 0) {
         setSyncStatus('warn')
-        setSyncMessage(`Atualizacao concluida com pendencias: ${failed} ticker(s) falharam no Yahoo.`)
+        setSyncMessage(`Atualizacao concluida com pendencias: ${failed} ticker(s) falharam no provider configurado.`)
       } else {
         setSyncStatus('ok')
-        setSyncMessage('Consulta ao Yahoo concluida com sucesso (cotacoes/indicadores recebidos).')
+        setSyncMessage('Consulta de market data concluida com sucesso.')
       }
     } catch (err) {
       setSyncStatus('warn')
@@ -124,6 +134,11 @@ function HomePage({ selectedPortfolioIds }) {
     return sorted
   }, [assets, incomesByTicker, sortBy, sortDir])
 
+  const staleAssetsCount = useMemo(
+    () => assets.filter((asset) => asset?.market_data?.is_stale).length,
+    [assets],
+  )
+
   if (loading) return <p>Carregando...</p>
   if (error) return <p className="error">{error}</p>
 
@@ -131,12 +146,17 @@ function HomePage({ selectedPortfolioIds }) {
     <section>
       <h1>Acoes</h1>
       <div className="hero-actions">
-        <button type="button" className="btn-primary" onClick={onSyncYahoo} disabled={syncing}>
-          {syncing ? 'Atualizando Yahoo...' : 'Buscar infos do Yahoo'}
+        <button type="button" className="btn-primary" onClick={onSyncMarketData} disabled={syncing}>
+          {syncing ? 'Atualizando market data...' : 'Buscar market data'}
         </button>
       </div>
       {!!syncMessage && (
         <p className={syncStatus === 'ok' ? 'notice-ok' : 'notice-warn'}>{syncMessage}</p>
+      )}
+      {staleAssetsCount > 0 && (
+        <p className="notice-warn">
+          {staleAssetsCount} ativo(s) exibem cotacao possivelmente antiga. Veja a coluna de preco para identificar quais.
+        </p>
       )}
 
       {highlights && (
@@ -187,7 +207,14 @@ function HomePage({ selectedPortfolioIds }) {
                 <td className="sticky-col sticky-col-ticker"><Link to={`/ativo/${asset.ticker}`}>{asset.ticker}</Link></td>
                 <td>{asset.name}</td>
                 <td>{asset.sector}</td>
-                <td>{brl(asset.price)}</td>
+                <td>
+                  <div className="market-data-cell">
+                    <span>{brl(asset.price)}</span>
+                    <small className={asset?.market_data?.is_stale ? 'market-data-badge stale' : 'market-data-badge live'}>
+                      {formatSyncLabel(asset)}
+                    </small>
+                  </div>
+                </td>
                 <td>{pct(asset.dy)}</td>
                 <td>{Number(asset.pl || 0).toFixed(2)}</td>
                 <td>{Number(asset.pvp || 0).toFixed(2)}</td>

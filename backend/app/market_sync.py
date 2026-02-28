@@ -2,11 +2,13 @@ import os
 import time
 from threading import Event, Thread
 
+from .observability import init_job_status, mark_job_finished, mark_job_started
 from .services import refresh_all_assets_market_data
 
 
 def _run_sync_once(app):
     with app.app_context():
+        mark_job_started(app, "market_sync")
         try:
             failed = refresh_all_assets_market_data(attempts=5)
             if failed:
@@ -15,7 +17,13 @@ def _run_sync_once(app):
                     len(failed),
                     ", ".join(failed[:10]),
                 )
-        except Exception:
+            mark_job_finished(
+                app,
+                "market_sync",
+                result={"failed_tickers": len(failed), "sample": failed[:10]},
+            )
+        except Exception as exc:
+            mark_job_finished(app, "market_sync", error=exc)
             app.logger.exception("Falha na atualizacao de mercado.")
 
 
@@ -74,6 +82,13 @@ def start_market_sync(app):
     app.config.setdefault("MARKET_SYNC_INTERVAL_SECONDS", 300)
     app.extensions.setdefault("market_sync_last_run", 0.0)
     app.extensions.setdefault("market_sync_manual_running", False)
+    init_job_status(
+        app,
+        "market_sync",
+        interval_seconds=app.config["MARKET_SYNC_INTERVAL_SECONDS"],
+        max_age_seconds=app.config["MARKET_SYNC_INTERVAL_SECONDS"] * 2,
+        enabled=app.config["MARKET_SYNC_ENABLED"],
+    )
 
     if not app.config["MARKET_SYNC_ENABLED"]:
         return

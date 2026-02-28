@@ -1,6 +1,7 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from .db import create_database_backup, list_database_backups
+from .observability import build_health_payload, get_route_metrics
 from .services import (
     add_fixed_income,
     add_income,
@@ -233,7 +234,14 @@ def _build_charts_core_payload(portfolio_ids):
 
 @api_bp.route("/health", methods=["GET"])
 def health():
-    return _json_ok({"status": "ok"})
+    payload = build_health_payload()
+    status_code = 200 if payload["status"] == "ok" else 503
+    return _json_ok(payload, status=status_code)
+
+
+@api_bp.route("/metrics", methods=["GET"])
+def metrics():
+    return _json_ok({"routes": get_route_metrics(current_app)})
 
 
 @api_bp.route("/backup/database", methods=["GET", "POST"])
@@ -451,8 +459,8 @@ def charts_dashboard():
     return _json_ok(payload)
 
 
-@api_bp.route("/sync/yahoo", methods=["POST"])
-def sync_yahoo_all():
+@api_bp.route("/sync/market-data", methods=["POST"])
+def sync_market_data_all():
     try:
         failed = refresh_all_assets_market_data()
     except Exception:
@@ -460,8 +468,8 @@ def sync_yahoo_all():
     return _json_ok({"failed": failed, "failed_count": len(failed), "success": len(failed) == 0})
 
 
-@api_bp.route("/sync/yahoo/<ticker>", methods=["POST"])
-def sync_yahoo_ticker(ticker):
+@api_bp.route("/sync/market-data/<ticker>", methods=["POST"])
+def sync_market_data_ticker(ticker):
     ok = False
     try:
         ok = refresh_asset_market_data(ticker)

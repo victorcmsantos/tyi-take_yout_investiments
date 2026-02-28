@@ -15,6 +15,20 @@ const CHART_RANGES = [
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const pct = (value) => `${Number(value || 0).toFixed(2)}%`
+const marketDataSummary = (marketData) => {
+  if (!marketData) return ''
+  const source = marketData.source ? String(marketData.source).toUpperCase() : 'provider'
+  if (marketData.is_stale) {
+    if (marketData.updated_at) {
+      return `Cotacao possivelmente antiga. Ultimo sucesso via ${source} em ${marketData.updated_at}.`
+    }
+    return 'Cotacao sem sincronizacao recente confirmada.'
+  }
+  if (marketData.updated_at) {
+    return `Ultima atualizacao confirmada via ${source} em ${marketData.updated_at}.`
+  }
+  return ''
+}
 
 function dateBr(value) {
   if (!value) return ''
@@ -65,8 +79,8 @@ function AssetPage({ selectedPortfolioIds }) {
     setSyncing(true)
     setSyncMessage('')
     try {
-      await apiPost(`/api/sync/yahoo/${ticker}`)
-      setSyncMessage('Dados atualizados com sucesso via Yahoo Finance.')
+      await apiPost(`/api/sync/market-data/${ticker}`)
+      setSyncMessage('Dados atualizados com sucesso via provider configurado.')
       const data = await apiGet(`/api/assets/${ticker}`, {
         portfolio_id: selectedPortfolioIds,
         range: rangeKey,
@@ -84,6 +98,7 @@ function AssetPage({ selectedPortfolioIds }) {
   const transactions = payload?.transactions || []
   const incomes = payload?.incomes || []
   const priceHistory = payload?.price_history || {}
+  const marketData = asset.market_data || {}
 
   const chartData = useMemo(() => ({
     labels: priceHistory.labels || [],
@@ -115,11 +130,17 @@ function AssetPage({ selectedPortfolioIds }) {
       <div className="hero-line">
         <h1>{asset.ticker} - {asset.name}</h1>
         <button type="button" className="btn-primary" onClick={onSyncTicker} disabled={syncing}>
-          {syncing ? 'Atualizando...' : 'Atualizar dados do Yahoo'}
+          {syncing ? 'Atualizando...' : 'Atualizar market data'}
         </button>
       </div>
       <p className="subtitle">Setor: {asset.sector}</p>
       {!!syncMessage && <p className="notice-warn">{syncMessage}</p>}
+      {!!marketDataSummary(marketData) && (
+        <p className={marketData.is_stale ? 'notice-warn' : 'notice-ok'}>
+          {marketDataSummary(marketData)}
+          {marketData.last_error ? ` Ultimo erro: ${marketData.last_error}.` : ''}
+        </p>
+      )}
 
       <article className="card detail-card">
         <div className="hero-line">

@@ -5,10 +5,12 @@ from .chart_sync import start_chart_sync
 from .db import init_app as init_db_app
 from .fixed_income_sync import start_fixed_income_sync
 from .market_sync import start_market_sync
+from .observability import configure_observability
 
 
 def create_app() -> Flask:
     app = Flask(__name__)
+    configure_observability(app)
     init_db_app(app)
     app.register_blueprint(api_bp, url_prefix="/api")
     start_market_sync(app)

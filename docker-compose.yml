@@ -8,7 +8,15 @@ services:
     networks:
       - invest-net
     environment:
+      ALPHA_VANTAGE_API_KEY: "${ALPHA_VANTAGE_API_KEY:-}"
+      BRAPI_TOKEN: "${BRAPI_TOKEN:-}"
+      COINGECKO_API_KEY: "${COINGECKO_API_KEY:-}"
+      TWELVE_DATA_API_KEY: "${TWELVE_DATA_API_KEY:-}"
       MARKET_DATA_LOG_SOURCES: "1"
+      MARKET_DATA_PROVIDERS: "${MARKET_DATA_PROVIDERS:-twelve_data,alpha_vantage,brapi,coingecko,google,yahoo}"
+      MARKET_DATA_PROVIDERS_US: "${MARKET_DATA_PROVIDERS_US:-}"
+      MARKET_DATA_PROVIDERS_CRYPTO: "${MARKET_DATA_PROVIDERS_CRYPTO:-}"
+      MARKET_DATA_PROVIDERS_BR: "${MARKET_DATA_PROVIDERS_BR:-}"
     ports:
       - "8000:8000"
     volumes:

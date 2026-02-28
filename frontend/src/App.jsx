@@ -177,7 +177,7 @@ function App({ themeMode, onToggleTheme }) {
 
   return (
     <Box className="app-v2-shell" sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
-      <AppBar position="static" color="secondary" elevation={0}>
+      <AppBar position="static" color="secondary" elevation={0} className="app-v2-header-bar">
         <Toolbar className="app-v2-toolbar" sx={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 1, py: 1.25 }}>
           <Box className="app-v2-header-row">
             <Box className="app-v2-header-left">

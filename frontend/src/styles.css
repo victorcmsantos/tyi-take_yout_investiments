@@ -763,6 +763,18 @@ select {
 }
 
 @media (max-width: 980px) {
+  .app-v2-header-bar {
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 60;
+  }
+
+  .app-v2-layout {
+    margin-top: 126px;
+  }
+
   .app-v2-brand-logo {
     height: 36px;
     max-width: min(54vw, 210px);
@@ -779,7 +791,17 @@ select {
   }
 
   .app-v2-header-right {
-    justify-content: space-between;
+    margin-left: auto;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: flex-start;
+    gap: 4px;
+  }
+
+  .app-v2-header-portfolios {
+    display: block;
+    max-width: 220px;
+    text-align: right;
   }
 
   .app-v2-mobile-only {
@@ -827,8 +849,8 @@ select {
   .app-v2-sidebar {
     position: fixed;
     left: -320px;
-    top: 0;
-    height: 100vh;
+    top: 126px;
+    height: calc(100vh - 126px);
     width: min(88vw, 320px);
     border-radius: 0 12px 12px 0;
     transition: left 180ms ease;
@@ -850,6 +872,47 @@ select {
 }
 
 @media (max-width: 640px) {
+  .app-v2-layout {
+    margin-top: 118px;
+  }
+
+  .app-v2-layout,
+  .app-v2-content,
+  .app-v2-content section,
+  .charts-grid,
+  .chart-card,
+  .card,
+  .table-wrap {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .chart-head-inline,
+  .inline-filters,
+  .hero-actions {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .inline-filters {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .inline-filters label {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .chart-head-inline > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .chart-canvas-wrap {
+    min-height: 240px;
+  }
+
   .app-v2-brand-logo {
     height: 32px;
     max-width: min(56vw, 180px);
@@ -860,12 +923,16 @@ select {
   }
 
   .app-v2-header-right {
-    flex-wrap: wrap;
-    gap: 8px;
+    gap: 4px;
   }
 
   .app-v2-header-portfolios {
-    max-width: 100%;
+    max-width: 190px;
+  }
+
+  .app-v2-sidebar {
+    top: 118px;
+    height: calc(100vh - 118px);
   }
 
   .cards {

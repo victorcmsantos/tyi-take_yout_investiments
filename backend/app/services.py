@@ -11,7 +11,7 @@ from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from flask import current_app
+from flask import current_app, has_request_context
 
 from .auth import get_current_user
 from .db import get_db
@@ -158,26 +158,32 @@ def get_asset(ticker: str):
 
 
 def get_portfolios():
-    current_user_id = _current_user_id()
-    if current_user_id is None:
-        return []
     db = get_db()
-    rows = db.execute(
-        "SELECT id, name FROM portfolios WHERE user_id = ? ORDER BY id ASC",
-        (current_user_id,),
-    ).fetchall()
+    current_user_id = _current_user_id()
+    if current_user_id is None and not has_request_context():
+        rows = db.execute("SELECT id, name FROM portfolios ORDER BY id ASC").fetchall()
+    elif current_user_id is None:
+        return []
+    else:
+        rows = db.execute(
+            "SELECT id, name FROM portfolios WHERE user_id = ? ORDER BY id ASC",
+            (current_user_id,),
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
 def get_portfolio(portfolio_id: int):
-    current_user_id = _current_user_id()
-    if current_user_id is None:
-        return None
     db = get_db()
-    row = db.execute(
-        "SELECT id, name FROM portfolios WHERE id = ? AND user_id = ?",
-        (portfolio_id, current_user_id),
-    ).fetchone()
+    current_user_id = _current_user_id()
+    if current_user_id is None and not has_request_context():
+        row = db.execute("SELECT id, name FROM portfolios WHERE id = ?", (portfolio_id,)).fetchone()
+    elif current_user_id is None:
+        return None
+    else:
+        row = db.execute(
+            "SELECT id, name FROM portfolios WHERE id = ? AND user_id = ?",
+            (portfolio_id, current_user_id),
+        ).fetchone()
     return _row_to_dict(row)
 
 
@@ -218,12 +224,15 @@ def normalize_portfolio_ids(raw_ids):
 def get_default_portfolio_id():
     db = get_db()
     current_user_id = _current_user_id()
-    if current_user_id is None:
+    if current_user_id is None and not has_request_context():
+        row = db.execute("SELECT id FROM portfolios ORDER BY id ASC LIMIT 1").fetchone()
+    elif current_user_id is None:
         return None
-    row = db.execute(
-        "SELECT id FROM portfolios WHERE user_id = ? ORDER BY id ASC LIMIT 1",
-        (current_user_id,),
-    ).fetchone()
+    else:
+        row = db.execute(
+            "SELECT id FROM portfolios WHERE user_id = ? ORDER BY id ASC LIMIT 1",
+            (current_user_id,),
+        ).fetchone()
     return int(row["id"]) if row else None
 
 

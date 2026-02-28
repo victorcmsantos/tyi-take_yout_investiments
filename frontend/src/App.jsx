@@ -353,9 +353,6 @@ function App({ themeMode, onToggleTheme }) {
               />
             ))}
           </FormGroup>
-          <Button component={Link} to="/carteiras" variant="outlined" fullWidth sx={{ mt: 1 }}>
-            Gerenciar
-          </Button>
         </Paper>
 
         <Box className="app-v2-content">

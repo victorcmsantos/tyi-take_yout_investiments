@@ -22,6 +22,7 @@ import NewIncomePage from './pages/NewIncomePage'
 import PortfoliosPage from './pages/PortfoliosPage'
 import LoginPage from './pages/LoginPage'
 import AdminPage from './pages/AdminPage'
+import AllocationPage from './pages/AllocationPage'
 
 function App({ themeMode, onToggleTheme }) {
   const navigate = useNavigate()
@@ -33,7 +34,10 @@ function App({ themeMode, onToggleTheme }) {
   const [loadingPortfolios, setLoadingPortfolios] = useState(true)
   const [error, setError] = useState('')
   const [assetSearch, setAssetSearch] = useState('')
+  const [assetSuggestions, setAssetSuggestions] = useState([])
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  const shouldShowAssetSuggestions = String(assetSearch || '').trim().length >= 1
 
   const refreshPortfolios = useCallback(async () => {
     const data = await apiGet('/api/portfolios')
@@ -99,6 +103,27 @@ function App({ themeMode, onToggleTheme }) {
   }, [location.pathname])
 
   useEffect(() => {
+    if (!currentUser) {
+      setAssetSuggestions([])
+      return undefined
+    }
+    let active = true
+    ;(async () => {
+      try {
+        const assets = await apiGet('/api/assets')
+        if (!active) return
+        setAssetSuggestions(Array.isArray(assets) ? assets : [])
+      } catch (err) {
+        if (!active) return
+        setAssetSuggestions([])
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [currentUser])
+
+  useEffect(() => {
     if (!sidebarOpen) return undefined
     const onKeyDown = (event) => {
       if (event.key === 'Escape') setSidebarOpen(false)
@@ -135,6 +160,7 @@ function App({ themeMode, onToggleTheme }) {
     setPortfolios([])
     setSelectedPortfolioIds([])
     setError('')
+    setAssetSuggestions([])
     navigate('/login')
   }
 
@@ -174,6 +200,7 @@ function App({ themeMode, onToggleTheme }) {
     '/nova': 'Nova transacao',
     '/novo': 'Novo provento',
     '/carteiras': 'Carteiras',
+    '/alocador': 'Alocador',
     '/admin': 'Admin',
   }
 
@@ -227,6 +254,12 @@ function App({ themeMode, onToggleTheme }) {
         items: [
           { to: '/nova', label: 'Nova transacao' },
           { to: '/novo', label: 'Novo provento' },
+        ],
+      },
+      {
+        title: 'Ferramentas',
+        items: [
+          { to: '/alocador', label: 'Alocador' },
         ],
       },
       {
@@ -293,7 +326,20 @@ function App({ themeMode, onToggleTheme }) {
               value={assetSearch}
               onChange={(event) => setAssetSearch(event.target.value)}
               placeholder="Buscar ticker (ex: ITUB4)"
+              list={shouldShowAssetSuggestions ? 'asset-ticker-suggestions' : undefined}
             />
+            <datalist id="asset-ticker-suggestions">
+              {assetSuggestions
+                .map((asset) => ({
+                  ticker: String(asset?.ticker || '').toUpperCase(),
+                  name: String(asset?.name || '').trim(),
+                }))
+                .filter((item) => item.ticker)
+                .filter((item, idx, arr) => arr.findIndex((other) => other.ticker === item.ticker) === idx)
+                .map((item) => (
+                  <option key={item.ticker} value={item.ticker}>{item.name}</option>
+                ))}
+            </datalist>
             <Button type="submit" variant="contained" color="primary">Buscar</Button>
           </Box>
         </Toolbar>
@@ -410,6 +456,10 @@ function App({ themeMode, onToggleTheme }) {
                     />
                   )
               }
+            />
+            <Route
+              path="/alocador"
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <AllocationPage assets={assetSuggestions} />}
             />
             <Route
               path="/admin"

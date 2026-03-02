@@ -1,6 +1,20 @@
 CREATE TABLE IF NOT EXISTS portfolios (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  UNIQUE(user_id, name),
+  FOREIGN KEY (user_id) REFERENCES users (id)
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  is_admin INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT,
+  last_login_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS assets (
@@ -8,6 +22,11 @@ CREATE TABLE IF NOT EXISTS assets (
   name TEXT NOT NULL,
   sector TEXT NOT NULL,
   logo_url TEXT NOT NULL DEFAULT '',
+  market_data_status TEXT NOT NULL DEFAULT 'unknown',
+  market_data_source TEXT NOT NULL DEFAULT '',
+  market_data_updated_at TEXT,
+  market_data_last_attempt_at TEXT,
+  market_data_last_error TEXT NOT NULL DEFAULT '',
   price REAL NOT NULL,
   dy REAL NOT NULL DEFAULT 0,
   pl REAL NOT NULL DEFAULT 0,

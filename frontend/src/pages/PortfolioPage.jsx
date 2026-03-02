@@ -10,6 +10,7 @@ const CATEGORY_META = [
 ]
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
+const marketStatusLabel = (item) => (item?.market_data?.is_stale ? 'Desatualizado' : 'Atualizado')
 
 function PortfolioPage({ selectedPortfolioIds }) {
   const [snapshot, setSnapshot] = useState(null)
@@ -160,7 +161,14 @@ function PortfolioPage({ selectedPortfolioIds }) {
                       <tbody>
                         {items.map((item) => (
                           <tr key={`${meta.key}-${item.ticker}`}>
-                            <td className="sticky-col sticky-col-ticker"><Link to={`/ativo/${item.ticker}`}>{item.ticker}</Link></td>
+                            <td className="sticky-col sticky-col-ticker">
+                              <div className="market-data-cell">
+                                <Link to={`/ativo/${item.ticker}`}>{item.ticker}</Link>
+                                <small className={item?.market_data?.is_stale ? 'market-data-badge stale' : 'market-data-badge live'}>
+                                  {marketStatusLabel(item)}
+                                </small>
+                              </div>
+                            </td>
                             <td>{item.name}</td>
                             <td>{Number(item.shares || 0).toFixed(4)}</td>
                             <td>{brl(item.price)}</td>

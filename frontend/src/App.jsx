@@ -8,11 +8,10 @@ import {
   FormControlLabel,
   FormGroup,
   Paper,
-  Stack,
   Toolbar,
   Typography,
 } from '@mui/material'
-import { apiGet } from './api'
+import { apiGet, apiPost } from './api'
 import HomePage from './pages/HomePage'
 import PortfolioPage from './pages/PortfolioPage'
 import FixedIncomePage from './pages/FixedIncomePage'
@@ -21,16 +20,24 @@ import AssetPage from './pages/AssetPage'
 import NewTransactionPage from './pages/NewTransactionPage'
 import NewIncomePage from './pages/NewIncomePage'
 import PortfoliosPage from './pages/PortfoliosPage'
+import LoginPage from './pages/LoginPage'
+import AdminPage from './pages/AdminPage'
+import AllocationPage from './pages/AllocationPage'
 
 function App({ themeMode, onToggleTheme }) {
   const navigate = useNavigate()
   const location = useLocation()
+  const [currentUser, setCurrentUser] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
   const [portfolios, setPortfolios] = useState([])
   const [selectedPortfolioIds, setSelectedPortfolioIds] = useState([])
   const [loadingPortfolios, setLoadingPortfolios] = useState(true)
   const [error, setError] = useState('')
   const [assetSearch, setAssetSearch] = useState('')
+  const [assetSuggestions, setAssetSuggestions] = useState([])
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  const shouldShowAssetSuggestions = String(assetSearch || '').trim().length >= 1
 
   const refreshPortfolios = useCallback(async () => {
     const data = await apiGet('/api/portfolios')
@@ -44,13 +51,25 @@ function App({ themeMode, onToggleTheme }) {
     return data
   }, [])
 
+  const refreshAuth = useCallback(async () => {
+    const payload = await apiGet('/api/auth/me')
+    const user = payload?.user || null
+    setCurrentUser(user)
+    return user
+  }, [])
+
   useEffect(() => {
     let active = true
     ;(async () => {
       try {
-        const data = await apiGet('/api/portfolios')
+        const user = await refreshAuth()
         if (!active) return
-        setPortfolios(data)
+        if (!user) {
+          setLoadingPortfolios(false)
+          return
+        }
+        const data = await refreshPortfolios()
+        if (!active) return
         const saved = localStorage.getItem('selectedPortfolioIds')
         const parsed = saved ? JSON.parse(saved) : []
         const validIds = parsed.filter((id) => data.some((p) => Number(p.id) === Number(id)))
@@ -63,14 +82,17 @@ function App({ themeMode, onToggleTheme }) {
         if (!active) return
         setError(err.message)
       } finally {
-        if (active) setLoadingPortfolios(false)
+        if (active) {
+          setAuthLoading(false)
+          setLoadingPortfolios(false)
+        }
       }
     })()
 
     return () => {
       active = false
     }
-  }, [])
+  }, [refreshAuth, refreshPortfolios])
 
   useEffect(() => {
     localStorage.setItem('selectedPortfolioIds', JSON.stringify(selectedPortfolioIds))
@@ -81,6 +103,27 @@ function App({ themeMode, onToggleTheme }) {
   }, [location.pathname])
 
   useEffect(() => {
+    if (!currentUser) {
+      setAssetSuggestions([])
+      return undefined
+    }
+    let active = true
+    ;(async () => {
+      try {
+        const assets = await apiGet('/api/assets')
+        if (!active) return
+        setAssetSuggestions(Array.isArray(assets) ? assets : [])
+      } catch (err) {
+        if (!active) return
+        setAssetSuggestions([])
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [currentUser])
+
+  useEffect(() => {
     if (!sidebarOpen) return undefined
     const onKeyDown = (event) => {
       if (event.key === 'Escape') setSidebarOpen(false)
@@ -88,6 +131,38 @@ function App({ themeMode, onToggleTheme }) {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [sidebarOpen])
+
+  const onLoggedIn = async (user) => {
+    setCurrentUser(user)
+    setAuthLoading(false)
+    setLoadingPortfolios(true)
+    setError('')
+    try {
+      const data = await refreshPortfolios()
+      if (data.length > 0) {
+        setSelectedPortfolioIds(data.map((item) => item.id))
+      }
+      navigate('/')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoadingPortfolios(false)
+    }
+  }
+
+  const onLogout = async () => {
+    try {
+      await apiPost('/api/auth/logout')
+    } catch (err) {
+      // ignora erro e limpa estado local mesmo assim
+    }
+    setCurrentUser(null)
+    setPortfolios([])
+    setSelectedPortfolioIds([])
+    setError('')
+    setAssetSuggestions([])
+    navigate('/login')
+  }
 
   const activePortfolioNames = useMemo(() => {
     const names = selectedPortfolioIds
@@ -125,6 +200,8 @@ function App({ themeMode, onToggleTheme }) {
     '/nova': 'Nova transacao',
     '/novo': 'Novo provento',
     '/carteiras': 'Carteiras',
+    '/alocador': 'Alocador',
+    '/admin': 'Admin',
   }
 
   const breadcrumbs = useMemo(() => {
@@ -145,35 +222,68 @@ function App({ themeMode, onToggleTheme }) {
     ]
   }, [location.pathname])
 
-  const menuSections = [
-    {
-      title: 'Visao Geral',
-      items: [
-        { to: '/', label: 'Dashboard' },
-        { to: '/graficos', label: 'Graficos' },
-      ],
-    },
-    {
-      title: 'Carteira',
-      items: [
-        { to: '/carteira', label: 'Renda Variavel' },
-        { to: '/renda-fixa', label: 'Renda Fixa' },
-      ],
-    },
-    {
-      title: 'Lancamentos',
-      items: [
-        { to: '/nova', label: 'Nova transacao' },
-        { to: '/novo', label: 'Novo provento' },
-      ],
-    },
-    {
-      title: 'Configuracao',
-      items: [
-        { to: '/carteiras', label: 'Carteiras' },
-      ],
-    },
-  ]
+  const menuSections = useMemo(() => {
+    if (currentUser?.is_admin) {
+      return [
+        {
+          title: 'Administracao',
+          items: [
+            { to: '/admin', label: 'Usuarios' },
+          ],
+        },
+      ]
+    }
+
+    const sections = [
+      {
+        title: 'Visao Geral',
+        items: [
+          { to: '/', label: 'Dashboard' },
+          { to: '/graficos', label: 'Graficos' },
+        ],
+      },
+      {
+        title: 'Carteira',
+        items: [
+          { to: '/carteira', label: 'Renda Variavel' },
+          { to: '/renda-fixa', label: 'Renda Fixa' },
+        ],
+      },
+      {
+        title: 'Lancamentos',
+        items: [
+          { to: '/nova', label: 'Nova transacao' },
+          { to: '/novo', label: 'Novo provento' },
+        ],
+      },
+      {
+        title: 'Ferramentas',
+        items: [
+          { to: '/alocador', label: 'Alocador' },
+        ],
+      },
+      {
+        title: 'Configuracao',
+        items: [
+          { to: '/carteiras', label: 'Carteiras' },
+        ],
+      },
+    ]
+    return sections
+  }, [currentUser])
+
+  if (authLoading) {
+    return <main className="auth-shell"><p>Carregando autenticacao...</p></main>
+  }
+
+  if (!currentUser) {
+    return (
+      <Routes>
+        <Route path="/login" element={<LoginPage onLoggedIn={onLoggedIn} />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    )
+  }
 
   return (
     <Box className="app-v2-shell" sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
@@ -200,10 +310,13 @@ function App({ themeMode, onToggleTheme }) {
             </Box>
             <Box className="app-v2-header-right">
               <Typography variant="body2" className="app-v2-header-portfolios" title={activePortfolioNames}>
-                Carteiras selecionadas: {activePortfolioNames}
+                {currentUser.username}{currentUser.is_admin ? ' · Admin' : ` · ${activePortfolioNames}`}
               </Typography>
               <Button color="inherit" variant="outlined" onClick={onToggleTheme} sx={{ borderColor: 'rgba(255,255,255,0.35)' }}>
                 {themeMode === 'dark' ? 'Modo claro' : 'Modo escuro'}
+              </Button>
+              <Button color="inherit" variant="outlined" onClick={onLogout} sx={{ borderColor: 'rgba(255,255,255,0.35)' }}>
+                Sair
               </Button>
             </Box>
           </Box>
@@ -213,7 +326,20 @@ function App({ themeMode, onToggleTheme }) {
               value={assetSearch}
               onChange={(event) => setAssetSearch(event.target.value)}
               placeholder="Buscar ticker (ex: ITUB4)"
+              list={shouldShowAssetSuggestions ? 'asset-ticker-suggestions' : undefined}
             />
+            <datalist id="asset-ticker-suggestions">
+              {assetSuggestions
+                .map((asset) => ({
+                  ticker: String(asset?.ticker || '').toUpperCase(),
+                  name: String(asset?.name || '').trim(),
+                }))
+                .filter((item) => item.ticker)
+                .filter((item, idx, arr) => arr.findIndex((other) => other.ticker === item.ticker) === idx)
+                .map((item) => (
+                  <option key={item.ticker} value={item.ticker}>{item.name}</option>
+                ))}
+            </datalist>
             <Button type="submit" variant="contained" color="primary">Buscar</Button>
           </Box>
         </Toolbar>
@@ -273,9 +399,6 @@ function App({ themeMode, onToggleTheme }) {
               />
             ))}
           </FormGroup>
-          <Button component={Link} to="/carteiras" variant="outlined" fullWidth sx={{ mt: 1 }}>
-            Gerenciar
-          </Button>
         </Paper>
 
         <Box className="app-v2-content">
@@ -288,29 +411,61 @@ function App({ themeMode, onToggleTheme }) {
             ))}
           </div>
           <Routes>
-            <Route path="/" element={<HomePage selectedPortfolioIds={selectedPortfolioIds} />} />
-            <Route path="/carteira" element={<PortfolioPage selectedPortfolioIds={selectedPortfolioIds} />} />
-            <Route path="/renda-fixa" element={<FixedIncomePage selectedPortfolioIds={selectedPortfolioIds} />} />
-            <Route path="/graficos" element={<ChartsPage selectedPortfolioIds={selectedPortfolioIds} />} />
-            <Route path="/ativo/:ticker" element={<AssetPage selectedPortfolioIds={selectedPortfolioIds} />} />
+            <Route
+              path="/"
+              element={
+                currentUser.is_admin
+                  ? <Navigate to="/admin" replace />
+                  : <HomePage selectedPortfolioIds={selectedPortfolioIds} />
+              }
+            />
+            <Route
+              path="/carteira"
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <PortfolioPage selectedPortfolioIds={selectedPortfolioIds} />}
+            />
+            <Route
+              path="/renda-fixa"
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <FixedIncomePage selectedPortfolioIds={selectedPortfolioIds} />}
+            />
+            <Route
+              path="/graficos"
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <ChartsPage selectedPortfolioIds={selectedPortfolioIds} />}
+            />
+            <Route
+              path="/ativo/:ticker"
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <AssetPage selectedPortfolioIds={selectedPortfolioIds} />}
+            />
             <Route
               path="/nova"
-              element={<NewTransactionPage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <NewTransactionPage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
             />
             <Route
               path="/novo"
-              element={<NewIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <NewIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
             />
             <Route
               path="/carteiras"
-              element={(
-                <PortfoliosPage
-                  portfolios={portfolios}
-                  selectedPortfolioIds={selectedPortfolioIds}
-                  refreshPortfolios={refreshPortfolios}
-                />
-              )}
+              element={
+                currentUser.is_admin
+                  ? <Navigate to="/admin" replace />
+                  : (
+                    <PortfoliosPage
+                      portfolios={portfolios}
+                      selectedPortfolioIds={selectedPortfolioIds}
+                      refreshPortfolios={refreshPortfolios}
+                    />
+                  )
+              }
             />
+            <Route
+              path="/alocador"
+              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <AllocationPage assets={assetSuggestions} />}
+            />
+            <Route
+              path="/admin"
+              element={currentUser.is_admin ? <AdminPage currentUser={currentUser} /> : <Navigate to="/" replace />}
+            />
+            <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="/transacoes/nova" element={<Navigate to="/nova" replace />} />
             <Route path="/proventos/novo" element={<Navigate to="/novo" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />

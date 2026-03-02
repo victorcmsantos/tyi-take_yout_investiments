@@ -1,6 +1,16 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
+from .auth import (
+    create_user_account,
+    get_current_user,
+    list_users,
+    login_user,
+    logout_current_user,
+    require_admin_user,
+    set_user_active_state,
+)
 from .db import create_database_backup, list_database_backups
+from .observability import build_health_payload, get_route_metrics
 from .services import (
     add_fixed_income,
     add_income,
@@ -57,6 +67,12 @@ def _json_error(message, status=400, details=None):
     if details is not None:
         payload["details"] = details
     return jsonify(payload), status
+
+
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _build_charts_core_payload(portfolio_ids):
@@ -233,7 +249,66 @@ def _build_charts_core_payload(portfolio_ids):
 
 @api_bp.route("/health", methods=["GET"])
 def health():
-    return _json_ok({"status": "ok"})
+    payload = build_health_payload()
+    status_code = 200 if payload["status"] == "ok" else 503
+    return _json_ok(payload, status=status_code)
+
+
+@api_bp.route("/auth/me", methods=["GET"])
+def auth_me():
+    user = get_current_user()
+    return _json_ok({"authenticated": bool(user), "user": user})
+
+
+@api_bp.route("/auth/login", methods=["POST"])
+def auth_login():
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    user = login_user(payload.get("username", ""), payload.get("password", ""))
+    if not user:
+        return _json_error("Usuario ou senha invalidos.", status=401)
+    return _json_ok({"authenticated": True, "user": user})
+
+
+@api_bp.route("/auth/logout", methods=["POST"])
+def auth_logout():
+    logout_current_user()
+    return _json_ok({"authenticated": False})
+
+
+@api_bp.route("/admin/users", methods=["GET", "POST"])
+def admin_users():
+    admin = require_admin_user()
+    if request.method == "GET":
+        return _json_ok({"users": list_users(), "current_user_id": admin["id"]})
+
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    ok, message, user = create_user_account(
+        payload.get("username", ""),
+        payload.get("password", ""),
+        _as_bool(payload.get("is_admin")),
+    )
+    if not ok:
+        return _json_error(message, status=400)
+    return _json_ok({"message": message, "user": user}, status=201)
+
+
+@api_bp.route("/admin/users/<int:user_id>/status", methods=["POST"])
+def admin_user_status(user_id: int):
+    admin = require_admin_user()
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    ok, message, user = set_user_active_state(
+        user_id,
+        _as_bool(payload.get("is_active")),
+        acting_user_id=admin["id"],
+    )
+    if not ok:
+        return _json_error(message, status=400)
+    return _json_ok({"message": message, "user": user})
+
+
+@api_bp.route("/metrics", methods=["GET"])
+def metrics():
+    return _json_ok({"routes": get_route_metrics(current_app)})
 
 
 @api_bp.route("/backup/database", methods=["GET", "POST"])
@@ -451,8 +526,8 @@ def charts_dashboard():
     return _json_ok(payload)
 
 
-@api_bp.route("/sync/yahoo", methods=["POST"])
-def sync_yahoo_all():
+@api_bp.route("/sync/market-data", methods=["POST"])
+def sync_market_data_all():
     try:
         failed = refresh_all_assets_market_data()
     except Exception:
@@ -460,8 +535,8 @@ def sync_yahoo_all():
     return _json_ok({"failed": failed, "failed_count": len(failed), "success": len(failed) == 0})
 
 
-@api_bp.route("/sync/yahoo/<ticker>", methods=["POST"])
-def sync_yahoo_ticker(ticker):
+@api_bp.route("/sync/market-data/<ticker>", methods=["POST"])
+def sync_market_data_ticker(ticker):
     ok = False
     try:
         ok = refresh_asset_market_data(ticker)

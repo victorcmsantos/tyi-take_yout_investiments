@@ -8,10 +8,12 @@ import re
 import time
 from datetime import datetime, timedelta
 from urllib.error import URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from flask import current_app
+from flask import current_app, has_request_context
 
+from .auth import get_current_user
 from .db import get_db
 
 try:
@@ -21,19 +23,129 @@ except ImportError:  # pragma: no cover
 
 _FX_CACHE = {"usdbrl": None, "expires_at": 0.0}
 _BCB_SERIES_CACHE = {}
+_COINGECKO_CACHE = {}
+_TWELVE_DATA_CACHE = {}
+_ALPHA_VANTAGE_CACHE = {}
 _YAHOO_MONTHLY_CACHE = {}
 _BENCHMARK_CACHE = {}
 _LOGGER = logging.getLogger(__name__)
+_MARKET_DATA_PROVIDER_CAPABILITIES = {
+    "alpha_vantage": {"metrics", "profile", "history"},
+    "brapi": {"metrics", "profile", "history"},
+    "coingecko": {"metrics", "profile", "history"},
+    "twelve_data": {"metrics", "history"},
+    "google": {"metrics"},
+    "yahoo": {"metrics", "profile", "history"},
+}
 
 
 def _row_to_dict(row):
     return dict(row) if row else None
 
 
+def _now_iso():
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _market_data_stale_after_seconds():
+    raw = os.getenv("MARKET_DATA_STALE_AFTER_SECONDS") or "43200"
+    try:
+        return max(int(raw), 60)
+    except (TypeError, ValueError):
+        return 43200
+
+
+def _parse_iso_datetime(value):
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        try:
+            return parsed.astimezone().replace(tzinfo=None)
+        except Exception:
+            return parsed.replace(tzinfo=None)
+    return parsed
+
+
+def _market_data_meta_from_asset(asset):
+    if not asset:
+        return {
+            "status": "unknown",
+            "source": "",
+            "updated_at": None,
+            "last_attempt_at": None,
+            "last_error": "",
+            "age_seconds": None,
+            "stale_after_seconds": _market_data_stale_after_seconds(),
+            "is_stale": True,
+            "is_live": False,
+        }
+
+    stale_after_seconds = _market_data_stale_after_seconds()
+    updated_at = asset.get("market_data_updated_at")
+    updated_dt = _parse_iso_datetime(updated_at)
+    age_seconds = None
+    if updated_dt is not None:
+        age_seconds = max(int((datetime.utcnow() - updated_dt).total_seconds()), 0)
+
+    status = (asset.get("market_data_status") or "unknown").strip().lower()
+    is_stale = status in {"stale", "failed", "unknown"} or updated_dt is None
+    if age_seconds is not None and age_seconds > stale_after_seconds:
+        is_stale = True
+
+    return {
+        "status": status or "unknown",
+        "source": (asset.get("market_data_source") or "").strip(),
+        "updated_at": updated_at,
+        "last_attempt_at": asset.get("market_data_last_attempt_at"),
+        "last_error": (asset.get("market_data_last_error") or "").strip(),
+        "age_seconds": age_seconds,
+        "stale_after_seconds": stale_after_seconds,
+        "is_stale": bool(is_stale),
+        "is_live": not bool(is_stale),
+    }
+
+
+def _serialize_asset(asset):
+    if not asset:
+        return None
+    item = dict(asset)
+    item["market_data"] = _market_data_meta_from_asset(item)
+    return item
+
+
+def _mark_asset_market_data_failed(ticker: str, error_message: str):
+    db = get_db()
+    db.execute(
+        """
+        UPDATE assets
+        SET
+            market_data_status = 'stale',
+            market_data_last_attempt_at = ?,
+            market_data_last_error = ?
+        WHERE ticker = ?
+        """,
+        (_now_iso(), (error_message or "").strip(), (ticker or "").strip().upper()),
+    )
+    db.commit()
+
+
 def get_top_assets():
     db = get_db()
     rows = db.execute("SELECT * FROM assets ORDER BY market_cap_bi DESC").fetchall()
-    return [dict(row) for row in rows]
+    return [_serialize_asset(row) for row in rows]
+
+
+def _current_user_id():
+    user = get_current_user()
+    if not user or user.get("is_admin"):
+        return None
+    return int(user["id"])
 
 
 def get_asset(ticker: str):
@@ -42,19 +154,43 @@ def get_asset(ticker: str):
         "SELECT * FROM assets WHERE ticker = ?",
         (ticker.upper(),),
     ).fetchone()
-    return _row_to_dict(row)
+    return _serialize_asset(row)
 
 
 def get_portfolios():
     db = get_db()
-    rows = db.execute("SELECT id, name FROM portfolios ORDER BY id ASC").fetchall()
+    current_user_id = _current_user_id()
+    if current_user_id is None and not has_request_context():
+        rows = db.execute("SELECT id, name FROM portfolios ORDER BY id ASC").fetchall()
+    elif current_user_id is None:
+        return []
+    else:
+        rows = db.execute(
+            "SELECT id, name FROM portfolios WHERE user_id = ? ORDER BY id ASC",
+            (current_user_id,),
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
 def get_portfolio(portfolio_id: int):
     db = get_db()
-    row = db.execute("SELECT id, name FROM portfolios WHERE id = ?", (portfolio_id,)).fetchone()
+    current_user_id = _current_user_id()
+    if current_user_id is None and not has_request_context():
+        row = db.execute("SELECT id, name FROM portfolios WHERE id = ?", (portfolio_id,)).fetchone()
+    elif current_user_id is None:
+        return None
+    else:
+        row = db.execute(
+            "SELECT id, name FROM portfolios WHERE id = ? AND user_id = ?",
+            (portfolio_id, current_user_id),
+        ).fetchone()
     return _row_to_dict(row)
+
+
+def _all_portfolio_ids():
+    db = get_db()
+    rows = db.execute("SELECT id FROM portfolios ORDER BY id ASC").fetchall()
+    return [int(row["id"]) for row in rows]
 
 
 def normalize_portfolio_ids(raw_ids):
@@ -80,40 +216,57 @@ def normalize_portfolio_ids(raw_ids):
             result.append(pid)
 
     if not result:
-        result = [get_default_portfolio_id()]
+        default_portfolio_id = get_default_portfolio_id()
+        result = [default_portfolio_id] if default_portfolio_id is not None else []
     return result
 
 
 def get_default_portfolio_id():
     db = get_db()
-    row = db.execute("SELECT id FROM portfolios ORDER BY id ASC LIMIT 1").fetchone()
-    return int(row["id"]) if row else 1
+    current_user_id = _current_user_id()
+    if current_user_id is None and not has_request_context():
+        row = db.execute("SELECT id FROM portfolios ORDER BY id ASC LIMIT 1").fetchone()
+    elif current_user_id is None:
+        return None
+    else:
+        row = db.execute(
+            "SELECT id FROM portfolios WHERE user_id = ? ORDER BY id ASC LIMIT 1",
+            (current_user_id,),
+        ).fetchone()
+    return int(row["id"]) if row else None
 
 
 def resolve_portfolio_id(raw_portfolio_id):
+    default_portfolio_id = get_default_portfolio_id()
     if raw_portfolio_id in (None, ""):
-        return get_default_portfolio_id()
+        return default_portfolio_id
     try:
         pid = int(raw_portfolio_id)
     except (TypeError, ValueError):
-        return get_default_portfolio_id()
-    return pid if get_portfolio(pid) else get_default_portfolio_id()
+        return default_portfolio_id
+    return pid if get_portfolio(pid) else default_portfolio_id
 
 
 def create_portfolio(name: str):
     clean_name = (name or "").strip()
     if not clean_name:
         return False, "Nome da carteira e obrigatorio."
+    current_user_id = _current_user_id()
+    if current_user_id is None:
+        return False, "Usuario sem contexto de carteira."
     db = get_db()
     existing = db.execute(
-        "SELECT id FROM portfolios WHERE LOWER(name) = LOWER(?)",
-        (clean_name,),
+        "SELECT id FROM portfolios WHERE user_id = ? AND LOWER(name) = LOWER(?)",
+        (current_user_id, clean_name),
     ).fetchone()
     if existing:
         return False, "Ja existe uma carteira com esse nome."
-    db.execute("INSERT INTO portfolios (name) VALUES (?)", (clean_name,))
+    db.execute("INSERT INTO portfolios (user_id, name) VALUES (?, ?)", (current_user_id, clean_name))
     db.commit()
-    row = db.execute("SELECT id FROM portfolios WHERE name = ?", (clean_name,)).fetchone()
+    row = db.execute(
+        "SELECT id FROM portfolios WHERE user_id = ? AND name = ?",
+        (current_user_id, clean_name),
+    ).fetchone()
     return True, int(row["id"])
 
 
@@ -124,11 +277,20 @@ def delete_portfolio(portfolio_id):
         return False, "Carteira invalida."
 
     db = get_db()
-    portfolio = db.execute("SELECT id, name FROM portfolios WHERE id = ?", (pid,)).fetchone()
+    current_user_id = _current_user_id()
+    if current_user_id is None:
+        return False, "Usuario sem contexto de carteira."
+    portfolio = db.execute(
+        "SELECT id, name FROM portfolios WHERE id = ? AND user_id = ?",
+        (pid, current_user_id),
+    ).fetchone()
     if not portfolio:
         return False, "Carteira nao encontrada."
 
-    total_row = db.execute("SELECT COUNT(*) AS total FROM portfolios").fetchone()
+    total_row = db.execute(
+        "SELECT COUNT(*) AS total FROM portfolios WHERE user_id = ?",
+        (current_user_id,),
+    ).fetchone()
     total_portfolios = int(total_row["total"]) if total_row else 0
     if total_portfolios <= 1:
         return False, "Nao e possivel remover a unica carteira. Crie outra primeiro."
@@ -237,19 +399,22 @@ def _candidate_yahoo_symbols(ticker: str):
     return symbols
 
 
-def _http_get_json(url: str):
+def _http_get_json(url: str, headers=None, timeout: float = 8.0):
+    request_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
+    }
+    if headers:
+        request_headers.update(headers)
     request = Request(
         url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
-        },
+        headers=request_headers,
     )
     for _ in range(2):
         try:
-            with urlopen(request, timeout=8) as response:
+            with urlopen(request, timeout=timeout) as response:
                 body = response.read()
             if not body:
                 continue
@@ -338,6 +503,611 @@ def _parse_market_cap_to_bi(value):
     return numeric * multiplier
 
 
+def _is_crypto_ticker(ticker: str):
+    ticker_up = (ticker or "").strip().upper()
+    return ticker_up.endswith("-USD")
+
+
+def _get_coingecko_api_key():
+    return (
+        os.getenv("COINGECKO_API_KEY")
+        or os.getenv("COINGECKO_DEMO_API_KEY")
+        or ""
+    ).strip()
+
+
+def _get_coingecko_headers():
+    headers = {}
+    api_key = _get_coingecko_api_key()
+    if api_key:
+        headers["x-cg-demo-api-key"] = api_key
+    return headers
+
+
+def _get_coingecko_base_url():
+    return (os.getenv("COINGECKO_BASE_URL") or "https://api.coingecko.com/api/v3").rstrip("/")
+
+
+def _coingecko_symbol_from_ticker(ticker: str):
+    raw = (ticker or "").strip().upper()
+    if not _is_crypto_ticker(raw):
+        return ""
+    return raw[:-4].strip().lower()
+
+
+def _coingecko_history_config(range_key: str):
+    key = (range_key or "1y").lower()
+    configs = {
+        "1d": {"days": "1", "date_fmt": "%H:%M", "supported": True},
+        "7d": {"days": "7", "date_fmt": "%d/%m", "supported": True},
+        "30d": {"days": "30", "date_fmt": "%d/%m", "supported": True},
+        "6m": {"days": "180", "date_fmt": "%d/%m", "supported": True},
+        "1y": {"days": "365", "date_fmt": "%d/%m/%y", "supported": True},
+        "5y": {"days": None, "date_fmt": "%d/%m/%y", "supported": False},
+    }
+    return key if key in configs else "1y", configs.get(key, configs["1y"])
+
+
+def _fetch_coingecko_market_item(ticker: str):
+    symbol = _coingecko_symbol_from_ticker(ticker)
+    if not symbol:
+        return None
+
+    cache_key = ("cg_market", symbol)
+    cached = _memory_cache_get(_COINGECKO_CACHE, cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    payload = _http_get_json(
+        (
+            f"{_get_coingecko_base_url()}/coins/markets"
+            f"?vs_currency=usd&symbols={symbol}&price_change_percentage=24h,7d,30d"
+        ),
+        headers=_get_coingecko_headers(),
+        timeout=12.0,
+    ) or []
+    try:
+        item = (payload[0] if payload else None) or None
+    except Exception:
+        item = None
+    if item:
+        _memory_cache_set(_COINGECKO_CACHE, cache_key, dict(item), 120)
+        return item
+    return None
+
+
+def _resolve_coingecko_coin_id(ticker: str):
+    symbol = _coingecko_symbol_from_ticker(ticker)
+    if not symbol:
+        return None
+    item = _fetch_coingecko_market_item(ticker)
+    if not item:
+        return None
+    return (item.get("id") or "").strip() or None
+
+
+def _fetch_coingecko_profile(ticker: str):
+    item = _fetch_coingecko_market_item(ticker)
+    if not item:
+        return {}
+    return {
+        "name": (item.get("name") or item.get("symbol") or "").strip(),
+        "sector": "Cripto",
+        "logo_url": (item.get("image") or "").strip(),
+    }
+
+
+def _fetch_coingecko_metrics(ticker: str):
+    item = _fetch_coingecko_market_item(ticker)
+    if not item:
+        return None
+    metrics = {
+        "price": _to_number(item.get("current_price")),
+        "pl": None,
+        "pvp": None,
+        "dy": None,
+        "variation_day": _to_number(item.get("price_change_percentage_24h_in_currency"))
+        or _to_number(item.get("price_change_percentage_24h")),
+        "variation_7d": _to_number(item.get("price_change_percentage_7d_in_currency")),
+        "variation_30d": _to_number(item.get("price_change_percentage_30d_in_currency")),
+        "market_cap_bi": (
+            _to_number(item.get("market_cap")) / 1_000_000_000
+            if _to_number(item.get("market_cap")) is not None
+            else None
+        ),
+    }
+    return _metrics_in_brl_if_needed(ticker, metrics) if _has_market_metrics(metrics) else None
+
+
+def _fetch_coingecko_history(ticker: str, range_key: str = "1y"):
+    normalized_key, cfg = _coingecko_history_config(range_key)
+    result = {
+        "range_key": normalized_key,
+        "labels": [],
+        "prices": [],
+        "change_pct": None,
+    }
+    if not cfg.get("supported", True):
+        return result
+
+    coin_id = _resolve_coingecko_coin_id(ticker)
+    if not coin_id:
+        return result
+
+    cache_key = ("cg_history", coin_id, normalized_key)
+    cached = _memory_cache_get(_COINGECKO_CACHE, cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    payload = _http_get_json(
+        f"{_get_coingecko_base_url()}/coins/{coin_id}/market_chart?vs_currency=usd&days={cfg['days']}",
+        headers=_get_coingecko_headers(),
+        timeout=12.0,
+    ) or {}
+    prices_payload = payload.get("prices") or []
+    if not prices_payload:
+        return result
+
+    usdbrl = _get_usdbrl_rate() if _is_usd_quoted_ticker(ticker) else None
+    prices = []
+    labels = []
+    for point in prices_payload:
+        try:
+            timestamp_ms, close_value = point[0], point[1]
+        except Exception:
+            continue
+        price_value = _to_number(close_value)
+        if price_value is None:
+            continue
+        try:
+            dt = datetime.fromtimestamp(float(timestamp_ms) / 1000.0)
+        except Exception:
+            continue
+        if usdbrl is not None and usdbrl > 0:
+            price_value *= usdbrl
+        prices.append(round(float(price_value), 2))
+        labels.append(dt.strftime(cfg["date_fmt"]))
+
+    if not prices:
+        return result
+
+    first = prices[0]
+    last = prices[-1]
+    result["labels"] = labels
+    result["prices"] = prices
+    result["change_pct"] = ((last / first) - 1) * 100 if first not in (None, 0) else None
+    _memory_cache_set(_COINGECKO_CACHE, cache_key, dict(result), 300)
+    return result
+
+
+def _get_alpha_vantage_api_key():
+    return (os.getenv("ALPHA_VANTAGE_API_KEY") or "").strip()
+
+
+def _get_alpha_vantage_base_url():
+    return (os.getenv("ALPHA_VANTAGE_BASE_URL") or "https://www.alphavantage.co/query").rstrip("/")
+
+
+def _fetch_alpha_vantage(function_name: str, params=None, ttl_seconds: int = 300):
+    api_key = _get_alpha_vantage_api_key()
+    if not api_key:
+        return None
+
+    query = {"function": function_name, "apikey": api_key}
+    if params:
+        query.update(params)
+    cache_key = (function_name, tuple(sorted(query.items())))
+    cached = _memory_cache_get(_ALPHA_VANTAGE_CACHE, cache_key)
+    if cached is not None:
+        return dict(cached) if isinstance(cached, dict) else cached
+
+    payload = _http_get_json(
+        f"{_get_alpha_vantage_base_url()}?{urlencode(query)}",
+        timeout=15.0,
+    )
+    if not payload:
+        return None
+    if payload.get("Information") or payload.get("Note") or payload.get("Error Message"):
+        return None
+    _memory_cache_set(_ALPHA_VANTAGE_CACHE, cache_key, payload, ttl_seconds)
+    return payload
+
+
+def _fetch_alpha_vantage_quote(ticker: str):
+    if not _is_us_stock_ticker(ticker):
+        return None
+    payload = _fetch_alpha_vantage(
+        "GLOBAL_QUOTE",
+        {"symbol": (ticker or "").strip().upper()},
+        ttl_seconds=300,
+    ) or {}
+    quote = payload.get("Global Quote") or {}
+    return quote or None
+
+
+def _fetch_alpha_vantage_overview(ticker: str):
+    if not _is_us_stock_ticker(ticker):
+        return None
+    payload = _fetch_alpha_vantage(
+        "OVERVIEW",
+        {"symbol": (ticker or "").strip().upper()},
+        ttl_seconds=21600,
+    ) or {}
+    return payload or None
+
+
+def _fetch_alpha_vantage_profile(ticker: str):
+    overview = _fetch_alpha_vantage_overview(ticker)
+    if not overview:
+        return {}
+    return {
+        "name": (overview.get("Name") or "").strip(),
+        "sector": (overview.get("Sector") or "").strip(),
+        "logo_url": "",
+    }
+
+
+def _fetch_alpha_vantage_metrics(ticker: str):
+    quote = _fetch_alpha_vantage_quote(ticker) or {}
+    overview = _fetch_alpha_vantage_overview(ticker) or {}
+    if not quote and not overview:
+        return None
+
+    price = _to_number(quote.get("05. price"))
+    previous_close = _to_number(quote.get("08. previous close"))
+    variation_day = None
+    if price is not None and previous_close not in (None, 0):
+        variation_day = ((price / previous_close) - 1) * 100
+    else:
+        change_pct_text = (quote.get("10. change percent") or "").replace("%", "")
+        variation_day = _to_number(change_pct_text)
+
+    dy_raw = _to_number(overview.get("DividendYield"))
+    dy = None if dy_raw is None else (dy_raw * 100 if dy_raw <= 1.5 else dy_raw)
+    market_cap = _to_number(overview.get("MarketCapitalization"))
+    metrics = {
+        "price": price,
+        "pl": _to_number(overview.get("PERatio")),
+        "pvp": _to_number(overview.get("PriceToBookRatio")),
+        "dy": dy,
+        "variation_day": variation_day,
+        "variation_7d": None,
+        "variation_30d": None,
+        "market_cap_bi": (market_cap / 1_000_000_000) if market_cap is not None else None,
+    }
+
+    history_30d = _fetch_alpha_vantage_history(ticker, "30d")
+    prices_30d = history_30d.get("prices") or []
+    metrics["variation_30d"] = history_30d.get("change_pct")
+    if len(prices_30d) >= 8:
+        base_7 = _to_number(prices_30d[-8])
+        last = _to_number(prices_30d[-1])
+        if base_7 not in (None, 0) and last is not None:
+            metrics["variation_7d"] = ((last / base_7) - 1) * 100
+
+    return _metrics_in_brl_if_needed(ticker, metrics) if _has_market_metrics(metrics) else None
+
+
+def _alpha_vantage_history_config(range_key: str):
+    key = (range_key or "1y").lower()
+    configs = {
+        "1d": {"function": None, "series_key": None, "date_fmt": "%H:%M", "supported": False},
+        "7d": {
+            "function": "TIME_SERIES_DAILY_ADJUSTED",
+            "series_key": "Time Series (Daily)",
+            "date_fmt": "%d/%m",
+            "supported": True,
+            "outputsize": "compact",
+            "limit": 7,
+        },
+        "30d": {
+            "function": "TIME_SERIES_DAILY_ADJUSTED",
+            "series_key": "Time Series (Daily)",
+            "date_fmt": "%d/%m",
+            "supported": True,
+            "outputsize": "compact",
+            "limit": 30,
+        },
+        "6m": {
+            "function": "TIME_SERIES_DAILY_ADJUSTED",
+            "series_key": "Time Series (Daily)",
+            "date_fmt": "%d/%m",
+            "supported": True,
+            "outputsize": "full",
+            "limit": 180,
+        },
+        "1y": {
+            "function": "TIME_SERIES_DAILY_ADJUSTED",
+            "series_key": "Time Series (Daily)",
+            "date_fmt": "%d/%m/%y",
+            "supported": True,
+            "outputsize": "full",
+            "limit": 365,
+        },
+        "5y": {
+            "function": "TIME_SERIES_WEEKLY_ADJUSTED",
+            "series_key": "Weekly Adjusted Time Series",
+            "date_fmt": "%d/%m/%y",
+            "supported": True,
+            "limit": 260,
+        },
+    }
+    return key if key in configs else "1y", configs.get(key, configs["1y"])
+
+
+def _fetch_alpha_vantage_history(ticker: str, range_key: str = "1y"):
+    normalized_key, cfg = _alpha_vantage_history_config(range_key)
+    result = {
+        "range_key": normalized_key,
+        "labels": [],
+        "prices": [],
+        "change_pct": None,
+    }
+    if not _is_us_stock_ticker(ticker) or not cfg.get("supported", False):
+        return result
+
+    params = {"symbol": (ticker or "").strip().upper()}
+    if cfg.get("outputsize"):
+        params["outputsize"] = cfg["outputsize"]
+    payload = _fetch_alpha_vantage(
+        cfg["function"],
+        params,
+        ttl_seconds=3600,
+    ) or {}
+    series = payload.get(cfg["series_key"]) or {}
+    if not series:
+        return result
+
+    usdbrl = _get_usdbrl_rate() if _is_usd_quoted_ticker(ticker) else None
+    items = []
+    for date_text, values in sorted(series.items()):
+        try:
+            dt = datetime.strptime(date_text, "%Y-%m-%d")
+        except ValueError:
+            continue
+        close_value = _to_number(values.get("5. adjusted close")) or _to_number(values.get("4. close"))
+        if close_value is None:
+            continue
+        if usdbrl is not None and usdbrl > 0:
+            close_value *= usdbrl
+        items.append((dt, round(float(close_value), 2)))
+
+    if not items:
+        return result
+
+    limit = int(cfg.get("limit") or len(items))
+    items = items[-limit:]
+    prices = [price for _, price in items]
+    labels = [dt.strftime(cfg["date_fmt"]) for dt, _ in items]
+    first = prices[0]
+    last = prices[-1]
+    result["labels"] = labels
+    result["prices"] = prices
+    result["change_pct"] = ((last / first) - 1) * 100 if first not in (None, 0) else None
+    return result
+
+
+def _get_twelve_data_api_key():
+    return (os.getenv("TWELVE_DATA_API_KEY") or "").strip()
+
+
+def _get_twelve_data_base_url():
+    return (os.getenv("TWELVE_DATA_BASE_URL") or "https://api.twelvedata.com").rstrip("/")
+
+
+def _fetch_twelve_data(path: str, params=None, ttl_seconds: int = 300):
+    api_key = _get_twelve_data_api_key()
+    if not api_key:
+        return None
+    params = params or {}
+    cache_key = (path, tuple(sorted(params.items())))
+    cached = _memory_cache_get(_TWELVE_DATA_CACHE, cache_key)
+    if cached is not None:
+        return dict(cached) if isinstance(cached, dict) else cached
+
+    payload = _http_get_json(
+        f"{_get_twelve_data_base_url()}/{path}?{urlencode(params)}",
+        headers={
+            "Authorization": f"apikey {api_key}",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ),
+        },
+        timeout=15.0,
+    )
+    if not payload:
+        return None
+    if payload.get("status") == "error" or payload.get("code"):
+        return None
+    _memory_cache_set(_TWELVE_DATA_CACHE, cache_key, payload, ttl_seconds)
+    return payload
+
+
+def _fetch_twelve_data_quote(ticker: str):
+    if not _is_us_stock_ticker(ticker):
+        return None
+    return _fetch_twelve_data(
+        "quote",
+        {"symbol": (ticker or "").strip().upper()},
+        ttl_seconds=300,
+    )
+
+
+def _twelve_data_history_config(range_key: str):
+    key = (range_key or "1y").lower()
+    configs = {
+        "1d": {"interval": "1h", "outputsize": 24, "date_fmt": "%H:%M"},
+        "7d": {"interval": "1day", "outputsize": 7, "date_fmt": "%d/%m"},
+        "30d": {"interval": "1day", "outputsize": 30, "date_fmt": "%d/%m"},
+        "6m": {"interval": "1day", "outputsize": 180, "date_fmt": "%d/%m"},
+        "1y": {"interval": "1day", "outputsize": 365, "date_fmt": "%d/%m/%y"},
+        "5y": {"interval": "1week", "outputsize": 260, "date_fmt": "%d/%m/%y"},
+    }
+    return key if key in configs else "1y", configs.get(key, configs["1y"])
+
+
+def _fetch_twelve_data_history(ticker: str, range_key: str = "1y"):
+    normalized_key, cfg = _twelve_data_history_config(range_key)
+    result = {
+        "range_key": normalized_key,
+        "labels": [],
+        "prices": [],
+        "change_pct": None,
+    }
+    if not _is_us_stock_ticker(ticker):
+        return result
+
+    payload = _fetch_twelve_data(
+        "time_series",
+        {
+            "symbol": (ticker or "").strip().upper(),
+            "interval": cfg["interval"],
+            "outputsize": cfg["outputsize"],
+            "order": "ASC",
+        },
+        ttl_seconds=1800,
+    ) or {}
+    values = payload.get("values") or []
+    if not values:
+        return result
+
+    usdbrl = _get_usdbrl_rate() if _is_usd_quoted_ticker(ticker) else None
+    prices = []
+    labels = []
+    for item in values:
+        close_value = _to_number(item.get("close"))
+        date_text = (item.get("datetime") or "").strip()
+        if close_value is None or not date_text:
+            continue
+        parsed = None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(date_text, fmt)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            continue
+        if usdbrl is not None and usdbrl > 0:
+            close_value *= usdbrl
+        prices.append(round(float(close_value), 2))
+        labels.append(parsed.strftime(cfg["date_fmt"]))
+
+    if not prices:
+        return result
+    first = prices[0]
+    last = prices[-1]
+    result["labels"] = labels
+    result["prices"] = prices
+    result["change_pct"] = ((last / first) - 1) * 100 if first not in (None, 0) else None
+    return result
+
+
+def _fetch_twelve_data_metrics(ticker: str):
+    quote = _fetch_twelve_data_quote(ticker) or {}
+    if not quote:
+        return None
+    price = _to_number(quote.get("close"))
+    previous_close = _to_number(quote.get("previous_close"))
+    variation_day = None
+    if price is not None and previous_close not in (None, 0):
+        variation_day = ((price / previous_close) - 1) * 100
+    else:
+        variation_day = _to_number(quote.get("percent_change"))
+
+    metrics = {
+        "price": price,
+        "pl": None,
+        "pvp": None,
+        "dy": None,
+        "variation_day": variation_day,
+        "variation_7d": None,
+        "variation_30d": None,
+        "market_cap_bi": None,
+    }
+    history_30d = _fetch_twelve_data_history(ticker, "30d")
+    prices_30d = history_30d.get("prices") or []
+    metrics["variation_30d"] = history_30d.get("change_pct")
+    if len(prices_30d) >= 8:
+        base_7 = _to_number(prices_30d[-8])
+        last = _to_number(prices_30d[-1])
+        if base_7 not in (None, 0) and last is not None:
+            metrics["variation_7d"] = ((last / base_7) - 1) * 100
+
+    return _metrics_in_brl_if_needed(ticker, metrics) if _has_market_metrics(metrics) else None
+
+
+def _is_brazilian_market_ticker(ticker: str):
+    ticker_up = (ticker or "").strip().upper()
+    if not ticker_up:
+        return False
+    if ticker_up.endswith("-USD") or _is_us_stock_ticker(ticker_up):
+        return False
+    return True
+
+
+def _get_brapi_token():
+    return (os.getenv("BRAPI_TOKEN") or "").strip()
+
+
+def _get_brapi_headers():
+    token = _get_brapi_token()
+    if not token:
+        return None
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _get_brapi_base_url():
+    return (os.getenv("BRAPI_BASE_URL") or "https://brapi.dev/api").rstrip("/")
+
+
+def _fetch_brapi_quote_result(ticker: str, range_key: str = None, interval: str = None, modules=None):
+    if not _is_brazilian_market_ticker(ticker):
+        return None
+
+    headers = _get_brapi_headers()
+    if not headers:
+        return None
+
+    params = []
+    if range_key:
+        params.append(f"range={range_key}")
+    if interval:
+        params.append(f"interval={interval}")
+    if modules:
+        params.append(f"modules={','.join(modules)}")
+    query = ("?" + "&".join(params)) if params else ""
+
+    payload = _http_get_json(
+        f"{_get_brapi_base_url()}/quote/{(ticker or '').strip().upper()}{query}",
+        headers=headers,
+        timeout=12.0,
+    )
+    if not payload:
+        return None
+    try:
+        results = payload.get("results") or []
+        if not results:
+            return None
+        return results[0] or None
+    except Exception:
+        return None
+
+
+def _history_config_for_brapi(range_key: str):
+    key = (range_key or "1y").lower()
+    configs = {
+        "1d": {"range": "5d", "interval": "1h", "date_fmt": "%H:%M"},
+        "7d": {"range": "5d", "interval": "1h", "date_fmt": "%d/%m"},
+        "30d": {"range": "1mo", "interval": "1d", "date_fmt": "%d/%m"},
+        "6m": {"range": "6mo", "interval": "1d", "date_fmt": "%d/%m"},
+        "1y": {"range": "1y", "interval": "1d", "date_fmt": "%d/%m/%y"},
+        "5y": {"range": "5y", "interval": "1wk", "date_fmt": "%d/%m/%y"},
+    }
+    return key if key in configs else "1y", configs.get(key, configs["1y"])
+
+
 def _candidate_google_quotes(ticker: str):
     raw = (ticker or "").strip().upper()
     if not raw:
@@ -398,6 +1168,118 @@ def _fetch_google_metrics(ticker: str):
         if any(metrics.get(field) is not None for field in ("price", "pl", "pvp", "dy", "market_cap_bi")):
             return _metrics_in_brl_if_needed(ticker, metrics)
     return None
+
+
+def _fetch_brapi_profile(ticker: str):
+    modules = ["summaryProfile", "defaultKeyStatistics", "summaryDetail"]
+    result = _fetch_brapi_quote_result(ticker, modules=modules)
+    if not result:
+        return {}
+
+    summary_profile = result.get("summaryProfile") or {}
+    name = (
+        (result.get("longName") or result.get("shortName") or "").strip()
+        or (summary_profile.get("name") or "").strip()
+    )
+    sector = (
+        (summary_profile.get("sectorDisp") or summary_profile.get("sector") or "").strip()
+        or (summary_profile.get("industryDisp") or summary_profile.get("industry") or "").strip()
+    )
+    logo_url = (
+        (result.get("logourl") or "").strip()
+        or (summary_profile.get("logoUrl") or "").strip()
+    )
+    return {"name": name, "sector": sector, "logo_url": logo_url}
+
+
+def _fetch_brapi_metrics(ticker: str):
+    modules = ["summaryProfile", "defaultKeyStatistics", "summaryDetail"]
+    result = _fetch_brapi_quote_result(ticker, modules=modules)
+    if not result:
+        return None
+
+    summary_detail = result.get("summaryDetail") or {}
+    default_key_statistics = result.get("defaultKeyStatistics") or {}
+
+    price = _to_number(result.get("regularMarketPrice"))
+    previous_close = _to_number(result.get("regularMarketPreviousClose"))
+    variation_day = None
+    if price is not None and previous_close not in (None, 0):
+        variation_day = ((price / previous_close) - 1) * 100
+    else:
+        variation_day = _to_number(result.get("regularMarketChangePercent"))
+
+    dy_raw = _to_number(summary_detail.get("dividendYield")) or _to_number(result.get("dividendYield"))
+    dy = None if dy_raw is None else (dy_raw * 100 if dy_raw <= 1.5 else dy_raw)
+
+    pvp = _to_number(default_key_statistics.get("priceToBook")) or _to_number(result.get("priceToBook"))
+    pl = _to_number(result.get("priceEarnings")) or _to_number(default_key_statistics.get("forwardPE"))
+    market_cap = _to_number(result.get("marketCap")) or _to_number(default_key_statistics.get("marketCap"))
+
+    history = _fetch_brapi_history(ticker, "30d")
+    prices = history.get("prices") or []
+    variation_30d = history.get("change_pct")
+    variation_7d = None
+    if len(prices) >= 8:
+        base_7 = _to_number(prices[-8])
+        last = _to_number(prices[-1])
+        if base_7 not in (None, 0) and last is not None:
+            variation_7d = ((last / base_7) - 1) * 100
+
+    metrics = {
+        "price": price,
+        "pl": pl,
+        "pvp": pvp,
+        "dy": dy,
+        "variation_day": variation_day,
+        "variation_7d": variation_7d,
+        "variation_30d": variation_30d,
+        "market_cap_bi": (market_cap / 1_000_000_000) if market_cap is not None else None,
+    }
+    return metrics if _has_market_metrics(metrics) else None
+
+
+def _fetch_brapi_history(ticker: str, range_key: str = "1y"):
+    normalized_key, cfg = _history_config_for_brapi(range_key)
+    result = {
+        "range_key": normalized_key,
+        "labels": [],
+        "prices": [],
+        "change_pct": None,
+    }
+
+    quote = _fetch_brapi_quote_result(
+        ticker,
+        range_key=cfg["range"],
+        interval=cfg["interval"],
+    )
+    if not quote:
+        return result
+
+    points = quote.get("historicalDataPrice") or []
+    prices = []
+    labels = []
+    for item in points:
+        close_value = _to_number(item.get("close"))
+        timestamp = item.get("date")
+        if close_value is None or timestamp is None:
+            continue
+        try:
+            dt = datetime.fromtimestamp(int(timestamp))
+        except Exception:
+            continue
+        prices.append(round(float(close_value), 2))
+        labels.append(dt.strftime(cfg["date_fmt"]))
+
+    if not prices:
+        return result
+
+    first = prices[0]
+    last = prices[-1]
+    result["labels"] = labels
+    result["prices"] = prices
+    result["change_pct"] = ((last / first) - 1) * 100 if first not in (None, 0) else None
+    return result
 
 
 def _fetch_bcb_series(series_code: int, date_start: str, date_end: str):
@@ -750,7 +1632,7 @@ def _fetch_chart_points(symbol: str, range_key: str):
     return points
 
 
-def get_asset_price_history(ticker: str, range_key: str = "1y"):
+def _get_yahoo_asset_price_history(ticker: str, range_key: str = "1y"):
     normalized_key, cfg = _history_config(range_key)
     result = {
         "range_key": normalized_key,
@@ -825,6 +1707,25 @@ def get_asset_price_history(ticker: str, range_key: str = "1y"):
         }
 
     return result
+
+
+def get_asset_price_history(ticker: str, range_key: str = "1y"):
+    history, history_source = _fetch_market_history(ticker, range_key)
+    if _is_truthy_env("MARKET_DATA_LOG_SOURCES", "0"):
+        logger = _LOGGER
+        try:
+            logger = current_app.logger
+        except Exception:
+            pass
+        logger.info(
+            "market_history_source ticker=%s history_source=%s providers=%s range_key=%s points=%s",
+            (ticker or "").strip().upper(),
+            history_source or "none",
+            _market_data_provider_label(ticker),
+            history.get("range_key") or (range_key or "1y").lower(),
+            len(history.get("prices") or []),
+        )
+    return history
 
 
 def _fetch_yahoo_info(ticker: str):
@@ -998,16 +1899,76 @@ def _has_market_metrics(metrics: dict):
     )
 
 
-def _market_data_provider_order():
-    allowed = {"google", "yahoo"}
-    primary = (os.getenv("MARKET_DATA_PRIMARY") or "google").strip().lower()
-    fallback = (os.getenv("MARKET_DATA_FALLBACK") or "yahoo").strip().lower()
+def _market_data_class_key(ticker: str):
+    raw_ticker = (ticker or "").strip().upper()
+    if _is_crypto_ticker(raw_ticker):
+        return "crypto"
+    if _is_us_stock_ticker(raw_ticker):
+        return "us"
+    return "br"
+
+
+def _providers_from_csv(raw_value: str):
+    return [item.strip().lower() for item in (raw_value or "").split(",") if item.strip()]
+
+
+def _default_market_data_providers(class_key: str):
+    defaults = {
+        "crypto": ["coingecko", "yahoo"],
+        "us": ["twelve_data", "alpha_vantage", "yahoo"],
+        "br": ["brapi", "yahoo", "google"],
+    }
+    return list(defaults.get(class_key, ["yahoo"]))
+
+
+def _market_data_providers_from_env(ticker: str = ""):
+    configured = []
+    class_key = _market_data_class_key(ticker)
+
+    class_specific_env = {
+        "crypto": "MARKET_DATA_PROVIDERS_CRYPTO",
+        "us": "MARKET_DATA_PROVIDERS_US",
+        "br": "MARKET_DATA_PROVIDERS_BR",
+    }
+    class_specific_value = os.getenv(class_specific_env.get(class_key, ""), "")
+    configured.extend(_providers_from_csv(class_specific_value))
+
+    raw_list = (os.getenv("MARKET_DATA_PROVIDERS") or "").strip()
+    configured.extend(_providers_from_csv(raw_list))
+
+    single = (os.getenv("MARKET_DATA_PROVIDER") or "").strip().lower()
+    if single:
+        configured.append(single)
+
+    # Compatibilidade com a configuracao antiga.
+    primary = (os.getenv("MARKET_DATA_PRIMARY") or "").strip().lower()
+    fallback = (os.getenv("MARKET_DATA_FALLBACK") or "").strip().lower()
+    configured.extend([primary, fallback])
+
+    if not configured:
+        configured.extend(_default_market_data_providers(class_key))
 
     order = []
-    for provider in (primary, fallback, "yahoo"):
-        if provider in allowed and provider not in order:
+    for provider in configured:
+        if provider in _MARKET_DATA_PROVIDER_CAPABILITIES and provider not in order:
             order.append(provider)
-    return order or ["yahoo"]
+
+    if not order:
+        order.extend(_default_market_data_providers(class_key))
+    return order
+
+
+def _market_data_provider_order(capability: str, ticker: str = ""):
+    order = []
+    for provider in _market_data_providers_from_env(ticker):
+        capabilities = _MARKET_DATA_PROVIDER_CAPABILITIES.get(provider, set())
+        if capability in capabilities and provider not in order:
+            order.append(provider)
+    return order
+
+
+def _market_data_provider_label(ticker: str = ""):
+    return ",".join(_market_data_providers_from_env(ticker))
 
 
 def _is_truthy_env(name: str, default: str = "0"):
@@ -1015,10 +1976,43 @@ def _is_truthy_env(name: str, default: str = "0"):
     return value in {"1", "true", "yes", "on"}
 
 
-def _fetch_market_metrics(ticker: str):
-    for provider in _market_data_provider_order():
+def _fetch_market_profile(ticker: str):
+    for provider in _market_data_provider_order("profile", ticker):
         try:
-            metrics = _fetch_google_metrics(ticker) if provider == "google" else _fetch_yahoo_metrics(ticker)
+            if provider == "alpha_vantage":
+                profile = _fetch_alpha_vantage_profile(ticker)
+            elif provider == "twelve_data":
+                profile = None
+            elif provider == "coingecko":
+                profile = _fetch_coingecko_profile(ticker)
+            elif provider == "brapi":
+                profile = _fetch_brapi_profile(ticker)
+            elif provider == "yahoo":
+                profile = _fetch_yahoo_profile(ticker)
+            else:
+                profile = None
+        except Exception:
+            profile = None
+        if profile and any((profile.get("name"), profile.get("sector"))):
+            return profile, provider
+    return {}, None
+
+
+def _fetch_market_metrics(ticker: str):
+    for provider in _market_data_provider_order("metrics", ticker):
+        try:
+            if provider == "alpha_vantage":
+                metrics = _fetch_alpha_vantage_metrics(ticker)
+            elif provider == "twelve_data":
+                metrics = _fetch_twelve_data_metrics(ticker)
+            elif provider == "coingecko":
+                metrics = _fetch_coingecko_metrics(ticker)
+            elif provider == "brapi":
+                metrics = _fetch_brapi_metrics(ticker)
+            elif provider == "google":
+                metrics = _fetch_google_metrics(ticker)
+            else:
+                metrics = _fetch_yahoo_metrics(ticker)
         except Exception:
             metrics = None
         if _has_market_metrics(metrics):
@@ -1026,25 +2020,60 @@ def _fetch_market_metrics(ticker: str):
     return {}, None
 
 
+def _fetch_market_history(ticker: str, range_key: str):
+    for provider in _market_data_provider_order("history", ticker):
+        try:
+            if provider == "alpha_vantage":
+                history = _fetch_alpha_vantage_history(ticker, range_key)
+            elif provider == "twelve_data":
+                history = _fetch_twelve_data_history(ticker, range_key)
+            elif provider == "coingecko":
+                history = _fetch_coingecko_history(ticker, range_key)
+            elif provider == "brapi":
+                history = _fetch_brapi_history(ticker, range_key)
+            elif provider == "yahoo":
+                history = _get_yahoo_asset_price_history(ticker, range_key)
+            else:
+                history = None
+        except Exception:
+            history = None
+        if history and history.get("prices"):
+            return history, provider
+    return {
+        "range_key": _history_config(range_key)[0],
+        "labels": [],
+        "prices": [],
+        "change_pct": None,
+    }, None
+
+
 def refresh_asset_market_data(ticker: str):
     asset = get_asset(ticker)
     if not asset:
         return False
 
-    profile = _fetch_yahoo_profile(ticker)
+    profile, profile_source = _fetch_market_profile(ticker)
     metrics, metrics_source = _fetch_market_metrics(ticker)
     if not metrics and not profile:
+        _mark_asset_market_data_failed(ticker, "Nenhum provider retornou dados de mercado.")
         return False
     has_market_metrics = _has_market_metrics(metrics)
+    attempted_at = _now_iso()
+    market_data_status = "fresh" if has_market_metrics else "stale"
+    market_data_updated_at = attempted_at if has_market_metrics else asset.get("market_data_updated_at")
+    market_data_source = metrics_source or asset.get("market_data_source", "")
+    market_data_last_error = "" if has_market_metrics else "Atualizacao sem metricas novas."
 
     db = get_db()
     name = asset["name"]
     sector = asset["sector"]
+    logo_url = asset.get("logo_url", "")
     if profile:
-        # Sempre prioriza perfil do Yahoo quando houver valor.
+        # Sempre prioriza perfil retornado pelo provider quando houver valor.
         # Isso evita ativo ficar preso com nome/setor antigo apos importacoes.
         name = profile.get("name") or name
         sector = profile.get("sector") or sector
+        logo_url = profile.get("logo_url") or logo_url
 
     db.execute(
         """
@@ -1059,7 +2088,13 @@ def refresh_asset_market_data(ticker: str):
             variation_day = ?,
             variation_7d = ?,
             variation_30d = ?,
-            market_cap_bi = ?
+            market_cap_bi = ?,
+            logo_url = ?,
+            market_data_status = ?,
+            market_data_source = ?,
+            market_data_updated_at = ?,
+            market_data_last_attempt_at = ?,
+            market_data_last_error = ?
         WHERE ticker = ?
         """,
         (
@@ -1081,6 +2116,12 @@ def refresh_asset_market_data(ticker: str):
             metrics.get("market_cap_bi")
             if metrics.get("market_cap_bi") is not None
             else asset["market_cap_bi"],
+            logo_url,
+            market_data_status,
+            market_data_source,
+            market_data_updated_at,
+            attempted_at,
+            market_data_last_error,
             ticker.upper(),
         ),
     )
@@ -1092,9 +2133,11 @@ def refresh_asset_market_data(ticker: str):
         except Exception:
             pass
         logger.info(
-            "market_data_source ticker=%s metrics_source=%s profile_source=yahoo price=%s dy=%s pl=%s pvp=%s variation_day=%s variation_7d=%s variation_30d=%s market_cap_bi=%s",
+            "market_data_source ticker=%s providers=%s metrics_source=%s profile_source=%s price=%s dy=%s pl=%s pvp=%s variation_day=%s variation_7d=%s variation_30d=%s market_cap_bi=%s",
             ticker.upper(),
+            _market_data_provider_label(ticker),
             metrics_source or "none",
+            profile_source or "none",
             metrics.get("price"),
             metrics.get("dy"),
             metrics.get("pl"),
@@ -1133,7 +2176,8 @@ def refresh_market_data_for_tickers(tickers, attempts: int = 2):
         for ticker in list(failed):
             try:
                 ok = refresh_asset_market_data(ticker)
-            except Exception:
+            except Exception as exc:
+                _mark_asset_market_data_failed(ticker, str(exc))
                 ok = False
             if not ok:
                 next_failed.add(ticker)
@@ -1335,14 +2379,14 @@ def add_transaction(form_data: dict):
     if not asset:
         if tx_type == "sell":
             return False, "Nao existe posicao para esse ticker."
-        profile = _fetch_yahoo_profile(ticker)
+        profile, _ = _fetch_market_profile(ticker)
         name = (
-            profile["name"]
+            profile.get("name")
             or (form_data.get("name") or "").strip()
             or ticker
         )
         sector = (
-            profile["sector"]
+            profile.get("sector")
             or (form_data.get("sector") or "").strip()
             or "Nao informado"
         )
@@ -1357,9 +2401,9 @@ def add_transaction(form_data: dict):
     else:
         should_update_profile = asset["name"] == ticker or asset["sector"] == "Nao informado"
         if should_update_profile:
-            profile = _fetch_yahoo_profile(ticker)
-            name = profile["name"] or asset["name"]
-            sector = profile["sector"] or asset["sector"]
+            profile, _ = _fetch_market_profile(ticker)
+            name = profile.get("name") or asset["name"]
+            sector = profile.get("sector") or asset["sector"]
             db.execute(
                 "UPDATE assets SET name = ?, sector = ? WHERE ticker = ?",
                 (name, sector, ticker),
@@ -2196,7 +3240,7 @@ def invalidate_fixed_income_snapshot(portfolio_ids):
 
 def rebuild_fixed_income_snapshots(portfolio_ids=None):
     if portfolio_ids is None:
-        pids = [int(item["id"]) for item in get_portfolios()]
+        pids = _all_portfolio_ids()
     else:
         pids = normalize_portfolio_ids(portfolio_ids)
     if not pids:
@@ -2651,6 +3695,12 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str =
             a.ticker,
             a.name,
             a.sector,
+            a.logo_url,
+            a.market_data_status,
+            a.market_data_source,
+            a.market_data_updated_at,
+            a.market_data_last_attempt_at,
+            a.market_data_last_error,
             b.shares,
             a.price,
             a.dy,
@@ -2690,9 +3740,11 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str =
                 "ticker": item["ticker"],
                 "name": item["name"],
                 "sector": item["sector"],
+                "logo_url": item.get("logo_url", ""),
                 "shares": item["shares"],
                 "price": item["price"],
                 "value": item["value"],
+                "market_data": _market_data_meta_from_asset(item),
             }
         )
 
@@ -3536,7 +4588,7 @@ def invalidate_chart_snapshots(portfolio_ids):
 
 def rebuild_chart_snapshots(portfolio_ids=None):
     if portfolio_ids is None:
-        pids = [int(item["id"]) for item in get_portfolios()]
+        pids = _all_portfolio_ids()
     else:
         pids = normalize_portfolio_ids(portfolio_ids)
     if not pids:

@@ -15,6 +15,8 @@ function AdminPage({ currentUser }) {
   const [submitting, setSubmitting] = useState(false)
   const [backupLoading, setBackupLoading] = useState(false)
   const [lastBackup, setLastBackup] = useState(null)
+  const [backups, setBackups] = useState([])
+  const [backupsLoading, setBackupsLoading] = useState(false)
 
   const loadUsers = async () => {
     setLoading(true)
@@ -32,6 +34,33 @@ function AdminPage({ currentUser }) {
   useEffect(() => {
     loadUsers()
   }, [])
+
+  const loadBackups = async () => {
+    setBackupsLoading(true)
+    setError('')
+    try {
+      const payload = await apiGet('/api/backup/database')
+      setBackups(payload.backups || [])
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBackupsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadBackups()
+  }, [])
+
+  const formatBytes = (value) => {
+    const size = Number(value)
+    if (!Number.isFinite(size) || size <= 0) return '0 B'
+    const units = ['B', 'KB', 'MB', 'GB', 'TB']
+    const exponent = Math.min(Math.floor(Math.log(size) / Math.log(1024)), units.length - 1)
+    const number = size / 1024 ** exponent
+    const digits = exponent === 0 ? 0 : number < 10 ? 2 : 1
+    return `${number.toFixed(digits)} ${units[exponent]}`
+  }
 
   const onCreateUser = async (event) => {
     event.preventDefault()
@@ -79,6 +108,7 @@ function AdminPage({ currentUser }) {
       const backup = payload?.backup || null
       setLastBackup(backup)
       setMessage(backup ? `Backup criado: ${backup.filename}` : 'Backup criado com sucesso.')
+      await loadBackups()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -117,6 +147,47 @@ function AdminPage({ currentUser }) {
             <span>Criado em: {lastBackup.created_at}</span>
           </div>
         )}
+
+        <div style={{ marginTop: 16 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1, opacity: 0.85 }}>Backups existentes</Typography>
+          {backupsLoading ? (
+            <p>Carregando backups...</p>
+          ) : backups.length === 0 ? (
+            <p>Nenhum backup encontrado.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="asset-table">
+                <thead>
+                  <tr>
+                    <th>Arquivo</th>
+                    <th>Modificado em</th>
+                    <th>Tamanho</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {backups.map((backup) => (
+                    <tr key={backup.filename}>
+                      <td>{backup.filename}</td>
+                      <td>{backup.modified_at}</td>
+                      <td>{formatBytes(backup.size_bytes)}</td>
+                      <td style={{ textAlign: 'right' }}>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          component="a"
+                          href={`/api/backup/database/${encodeURIComponent(backup.filename)}`}
+                        >
+                          Download
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </Paper>
 
       <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>

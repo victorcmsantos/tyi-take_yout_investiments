@@ -29,6 +29,11 @@ _ALPHA_VANTAGE_CACHE = {}
 _YAHOO_MONTHLY_CACHE = {}
 _BENCHMARK_CACHE = {}
 _LOGGER = logging.getLogger(__name__)
+_BRAPI_DIAG = {
+    "missing_token_logged": False,
+    "empty_payload_tickers": set(),
+    "empty_results_tickers": set(),
+}
 _MARKET_DATA_PROVIDER_CAPABILITIES = {
     "alpha_vantage": {"metrics", "profile", "history"},
     "brapi": {"metrics", "profile", "history"},
@@ -37,6 +42,19 @@ _MARKET_DATA_PROVIDER_CAPABILITIES = {
     "google": {"metrics"},
     "yahoo": {"metrics", "profile", "history"},
 }
+
+
+def _get_app_logger():
+    logger = _LOGGER
+    try:
+        logger = current_app.logger
+    except Exception:
+        pass
+    return logger
+
+
+def _should_log_market_sources():
+    return _is_truthy_env("MARKET_DATA_LOG_SOURCES", "0")
 
 
 def _row_to_dict(row):
@@ -1068,6 +1086,12 @@ def _fetch_brapi_quote_result(ticker: str, range_key: str = None, interval: str 
 
     headers = _get_brapi_headers()
     if not headers:
+        if _should_log_market_sources() and not _BRAPI_DIAG["missing_token_logged"]:
+            _get_app_logger().warning(
+                "BRAPI desabilitado: BRAPI_TOKEN ausente (ticker=%s)",
+                (ticker or "").strip().upper() or "?",
+            )
+            _BRAPI_DIAG["missing_token_logged"] = True
         return None
 
     params = []
@@ -1085,10 +1109,34 @@ def _fetch_brapi_quote_result(ticker: str, range_key: str = None, interval: str 
         timeout=12.0,
     )
     if not payload:
+        if _should_log_market_sources():
+            normalized = (ticker or "").strip().upper() or "?"
+            if (
+                normalized not in _BRAPI_DIAG["empty_payload_tickers"]
+                and len(_BRAPI_DIAG["empty_payload_tickers"]) < 15
+            ):
+                _get_app_logger().info(
+                    "BRAPI sem resposta (payload vazio): ticker=%s query=%s",
+                    normalized,
+                    query or "(none)",
+                )
+                _BRAPI_DIAG["empty_payload_tickers"].add(normalized)
         return None
     try:
         results = payload.get("results") or []
         if not results:
+            if _should_log_market_sources():
+                normalized = (ticker or "").strip().upper() or "?"
+                if (
+                    normalized not in _BRAPI_DIAG["empty_results_tickers"]
+                    and len(_BRAPI_DIAG["empty_results_tickers"]) < 15
+                ):
+                    _get_app_logger().info(
+                        "BRAPI retornou results vazio: ticker=%s query=%s",
+                        normalized,
+                        query or "(none)",
+                    )
+                    _BRAPI_DIAG["empty_results_tickers"].add(normalized)
             return None
         return results[0] or None
     except Exception:
@@ -1171,7 +1219,7 @@ def _fetch_google_metrics(ticker: str):
 
 
 def _fetch_brapi_profile(ticker: str):
-    modules = ["summaryProfile", "defaultKeyStatistics", "summaryDetail"]
+    modules = ["summaryProfile"]
     result = _fetch_brapi_quote_result(ticker, modules=modules)
     if not result:
         return {}
@@ -1193,13 +1241,12 @@ def _fetch_brapi_profile(ticker: str):
 
 
 def _fetch_brapi_metrics(ticker: str):
-    modules = ["summaryProfile", "defaultKeyStatistics", "summaryDetail"]
-    result = _fetch_brapi_quote_result(ticker, modules=modules)
+    # Observacao: nem todas as chaves/plans do BRAPI retornam dados quando pedimos
+    # modulos avancados (ex: defaultKeyStatistics/summaryDetail). Para evitar cair
+    # sempre em providers de fallback, usamos o payload basico (top-level keys).
+    result = _fetch_brapi_quote_result(ticker)
     if not result:
         return None
-
-    summary_detail = result.get("summaryDetail") or {}
-    default_key_statistics = result.get("defaultKeyStatistics") or {}
 
     price = _to_number(result.get("regularMarketPrice"))
     previous_close = _to_number(result.get("regularMarketPreviousClose"))
@@ -1209,12 +1256,12 @@ def _fetch_brapi_metrics(ticker: str):
     else:
         variation_day = _to_number(result.get("regularMarketChangePercent"))
 
-    dy_raw = _to_number(summary_detail.get("dividendYield")) or _to_number(result.get("dividendYield"))
+    dy_raw = _to_number(result.get("dividendYield"))
     dy = None if dy_raw is None else (dy_raw * 100 if dy_raw <= 1.5 else dy_raw)
 
-    pvp = _to_number(default_key_statistics.get("priceToBook")) or _to_number(result.get("priceToBook"))
-    pl = _to_number(result.get("priceEarnings")) or _to_number(default_key_statistics.get("forwardPE"))
-    market_cap = _to_number(result.get("marketCap")) or _to_number(default_key_statistics.get("marketCap"))
+    pvp = _to_number(result.get("priceToBook"))
+    pl = _to_number(result.get("priceEarnings"))
+    market_cap = _to_number(result.get("marketCap"))
 
     history = _fetch_brapi_history(ticker, "30d")
     prices = history.get("prices") or []

@@ -1,4 +1,4 @@
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, send_file
 
 from .auth import (
     create_user_account,
@@ -9,7 +9,7 @@ from .auth import (
     require_admin_user,
     set_user_active_state,
 )
-from .db import create_database_backup, list_database_backups
+from .db import create_database_backup, list_database_backups, resolve_database_backup_path
 from .observability import build_health_payload, get_route_metrics
 from .services import (
     add_fixed_income,
@@ -313,6 +313,7 @@ def metrics():
 
 @api_bp.route("/backup/database", methods=["GET", "POST"])
 def backup_database_endpoint():
+    require_admin_user()
     if request.method == "GET":
         return _json_ok({"backups": list_database_backups()})
 
@@ -321,6 +322,20 @@ def backup_database_endpoint():
     except Exception as exc:
         return _json_error(f"Nao foi possivel gerar backup: {exc}", status=500)
     return _json_ok({"backup": backup}, status=201)
+
+
+@api_bp.route("/backup/database/<path:filename>", methods=["GET"])
+def backup_database_download(filename: str):
+    require_admin_user()
+    path = resolve_database_backup_path(filename)
+    if not path:
+        return _json_error("Backup nao encontrado.", status=404)
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name=path.name,
+        mimetype="application/x-sqlite3",
+    )
 
 
 @api_bp.route("/portfolios", methods=["GET", "POST", "DELETE"])

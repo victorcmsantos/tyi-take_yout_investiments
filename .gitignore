@@ -6,6 +6,11 @@ __pycache__/
 node_modules/
 frontend/dist/
 
+# Local env (secrets)
+.env
+.env.*
+!.env.example
+
 # C extensions
 *.so
 

@@ -80,6 +80,35 @@ def create_database_backup(reason: str = "manual"):
     }
 
 
+def resolve_database_backup_path(filename: str):
+    if not filename:
+        return None
+
+    name = str(filename).strip()
+    if not name:
+        return None
+    if "/" in name or "\\" in name:
+        return None
+    if not name.endswith(".sqlite3"):
+        return None
+    if not name.startswith(_backup_file_prefix()):
+        return None
+
+    backup_dir = _backup_dir_from_app()
+    candidate = (backup_dir / name)
+    try:
+        resolved_dir = backup_dir.resolve()
+        resolved_path = candidate.resolve()
+    except OSError:
+        return None
+
+    if not resolved_path.is_file():
+        return None
+    if not resolved_path.is_relative_to(resolved_dir):
+        return None
+    return resolved_path
+
+
 def backup_database_on_startup_if_needed():
     if not current_app.config.get("DATABASE_BACKUP_ON_STARTUP", True):
         return {"created": False, "reason": "disabled"}

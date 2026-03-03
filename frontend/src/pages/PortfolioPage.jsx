@@ -11,6 +11,18 @@ const CATEGORY_META = [
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const marketStatusLabel = (item) => (item?.market_data?.is_stale ? 'Desatualizado' : 'Atualizado')
+const shortText = (value, limit = 120) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (text.length <= limit) return text
+  return `${text.slice(0, limit - 3).trim()}...`
+}
+
+const BUCKET_META = [
+  { key: 'increase', label: 'Parecem para aumentar', tone: 'up' },
+  { key: 'hold', label: 'Parecem para segurar', tone: 'neutral' },
+  { key: 'reduce', label: 'Merecem reduzir', tone: 'down' },
+]
 
 function PortfolioPage({ selectedPortfolioIds }) {
   const [snapshot, setSnapshot] = useState(null)
@@ -67,6 +79,11 @@ function PortfolioPage({ selectedPortfolioIds }) {
   if (error) return <p className="error">{error}</p>
   if (!snapshot) return <p>Sem dados.</p>
 
+  const tacticalSummary = snapshot.tactical_summary || {}
+  const tacticalCounts = tacticalSummary.summary || {}
+  const concentrationAlerts = tacticalSummary.concentration_alerts || []
+  const thresholds = tacticalSummary.thresholds || {}
+
   return (
     <section>
       <h1>Renda Variavel</h1>
@@ -81,6 +98,93 @@ function PortfolioPage({ selectedPortfolioIds }) {
         <article className="card"><h3>Proventos 12 meses</h3><p>{brl(snapshot.incomes_12m)}</p></article>
         <article className="card"><h3>Proventos total</h3><p>{brl(snapshot.total_incomes)}</p></article>
       </div>
+
+      <article className="card detail-card portfolio-tactical-card">
+        <div className="analysis-head">
+          <div>
+            <h3>Resumo da carteira inteira</h3>
+            <p className="subtitle">Leitura consolidada das posições com base no OpenClaw, preço atual, preço médio e peso na carteira.</p>
+          </div>
+        </div>
+
+        <div className="analysis-metrics">
+          <div className="analysis-metric">
+            <span className="analysis-label">Aumentar</span>
+            <strong className="up">{Number(tacticalCounts.increase_count || 0)}</strong>
+          </div>
+          <div className="analysis-metric">
+            <span className="analysis-label">Segurar</span>
+            <strong>{Number(tacticalCounts.hold_count || 0)}</strong>
+          </div>
+          <div className="analysis-metric">
+            <span className="analysis-label">Reduzir</span>
+            <strong className="down">{Number(tacticalCounts.reduce_count || 0)}</strong>
+          </div>
+        </div>
+
+        <div className="portfolio-tactical-grid">
+          {BUCKET_META.map((bucket) => {
+            const items = tacticalSummary[bucket.key] || []
+            return (
+              <section key={bucket.key} className="portfolio-tactical-section">
+                <div className="portfolio-tactical-head">
+                  <span className={`analysis-pill ${bucket.tone}`}>{bucket.label}</span>
+                </div>
+                {items.length > 0 ? (
+                  <div className="portfolio-tactical-list">
+                    {items.slice(0, 5).map((item) => (
+                      <article key={`${bucket.key}-${item.ticker}`} className="portfolio-tactical-item">
+                        <div className="portfolio-tactical-item-head">
+                          <Link to={`/ativo/${item.ticker}`}>{item.ticker}</Link>
+                          <span className="meta-chip">{Number(item.weight || 0).toFixed(2)}%</span>
+                        </div>
+                        <p className="portfolio-tactical-item-title">{item.name}</p>
+                        <p className="portfolio-tactical-item-meta">
+                          Humor: <strong className={item.mood_key === 'positive' ? 'up' : (item.mood_key === 'negative' ? 'down' : '')}>{item.mood_label}</strong>
+                          {' · '}
+                          Sinal: <strong>{item.structured_action_label}</strong>
+                        </p>
+                        <p className="portfolio-tactical-item-meta">
+                          Gap vs medio: <strong className={Number(item.price_gap_pct || 0) >= 0 ? 'up' : 'down'}>{Number(item.price_gap_pct || 0).toFixed(2)}%</strong>
+                          {' · '}
+                          Aberto: <strong className={Number(item.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>{Number(item.open_pnl_pct || 0).toFixed(2)}%</strong>
+                        </p>
+                        <p className="subtitle portfolio-tactical-item-rationale">{shortText(item.rationale)}</p>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="subtitle">Nenhum ativo nesta faixa agora.</p>
+                )}
+              </section>
+            )
+          })}
+
+          <section className="portfolio-tactical-section">
+            <div className="portfolio-tactical-head">
+              <span className="analysis-pill down">Concentracao excessiva</span>
+            </div>
+            {concentrationAlerts.length > 0 ? (
+              <div className="portfolio-tactical-list">
+                {concentrationAlerts.map((alert, idx) => (
+                  <article key={`${alert.kind}-${alert.ticker || alert.category || idx}`} className="portfolio-tactical-item">
+                    <div className="portfolio-tactical-item-head">
+                      {alert.ticker ? <Link to={`/ativo/${alert.ticker}`}>{alert.ticker}</Link> : <strong>{alert.label}</strong>}
+                      <span className="meta-chip">{Number(alert.weight || 0).toFixed(2)}%</span>
+                    </div>
+                    {!alert.ticker && <p className="portfolio-tactical-item-title">{alert.label}</p>}
+                    <p className="subtitle portfolio-tactical-item-rationale">{alert.detail}</p>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="subtitle">
+                Sem alerta forte de concentracao usando os limites atuais de {Number(thresholds.single_position_weight_pct || 0).toFixed(0)}% por ativo e {Number(thresholds.category_weight_pct || 0).toFixed(0)}% por classe.
+              </p>
+            )}
+          </section>
+        </div>
+      </article>
 
       <div className="accordion-wrap">
         {CATEGORY_META.map((meta) => {

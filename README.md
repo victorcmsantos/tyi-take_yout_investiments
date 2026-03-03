@@ -49,6 +49,14 @@ Acesse em `http://127.0.0.1:5173`.
 
 O `docker-compose.yml` agora cria a rede `invest-net` automaticamente.
 
+### Arquitetura do enriquecimento por IA
+
+- O frontend nunca fala direto com nenhum provider de IA.
+- O frontend chama apenas o backend Flask.
+- O backend chama apenas o gateway do OpenClaw.
+- O provider, o modelo e a autenticacao da IA ficam configurados no OpenClaw.
+- Para trocar de IA, ajuste o OpenClaw. O app nao precisa ser alterado para cada provider.
+
 Para parar:
 
 ```bash
@@ -299,4 +307,3 @@ cp /srv/tyi-take_yout_investiments/app_vol/backups/investments_YYYYMMDD_HHMMSS.s
 - projeto mantido em modo API + SPA
 - `frontend/node_modules` e artefatos locais removidos do versionamento
 - dependencias do frontend fixadas para preservar esta versao
-

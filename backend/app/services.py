@@ -6,6 +6,7 @@ import os
 import random
 import re
 import time
+import unicodedata
 from datetime import datetime, timedelta
 from urllib.error import URLError
 from urllib.parse import urlencode
@@ -28,6 +29,7 @@ _COINGECKO_CACHE = {}
 _TWELVE_DATA_CACHE = {}
 _ALPHA_VANTAGE_CACHE = {}
 _YAHOO_MONTHLY_CACHE = {}
+_ASSET_PRICE_HISTORY_CACHE = {}
 _BENCHMARK_CACHE = {}
 _LOGGER = logging.getLogger(__name__)
 _BRAPI_DIAG = {
@@ -200,11 +202,368 @@ def get_asset_enrichment(ticker: str):
     }
 
 
-def upsert_asset_enrichment(ticker: str, payload: dict | None, raw_reply: str):
+def get_asset_enrichment_history(ticker: str, limit: int = 12):
+    if not ticker:
+        return []
+    try:
+        history_limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        history_limit = 12
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT id, ticker, payload_json, raw_reply, price_at_update, mood, suggested_action, created_at
+        FROM asset_enrichment_history
+        WHERE ticker = ?
+        ORDER BY datetime(created_at) DESC, id DESC
+        LIMIT ?
+        """,
+        (ticker.upper(), history_limit),
+    ).fetchall()
+    items = []
+    for row in rows:
+        payload_json = (row["payload_json"] or "").strip()
+        payload = None
+        if payload_json:
+            try:
+                payload = json.loads(payload_json)
+            except Exception:
+                payload = None
+        items.append(
+            {
+                "id": row["id"],
+                "ticker": row["ticker"],
+                "payload": payload,
+                "raw_reply": row["raw_reply"],
+                "price_at_update": float(row["price_at_update"] or 0.0),
+                "mood": str(row["mood"] or "").strip(),
+                "suggested_action": str(row["suggested_action"] or "").strip(),
+                "created_at": row["created_at"],
+            }
+        )
+    return items
+
+
+def get_asset_enrichments_map(tickers):
+    normalized = []
+    seen = set()
+    for item in tickers or []:
+        ticker = str(item or "").strip().upper()
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            normalized.append(ticker)
+    if not normalized:
+        return {}
+    db = get_db()
+    placeholders = ",".join(["?"] * len(normalized))
+    rows = db.execute(
+        """
+        SELECT ticker, payload_json, raw_reply, updated_at
+        FROM asset_enrichments
+        WHERE ticker IN ("""
+        + placeholders
+        + """)
+        """,
+        tuple(normalized),
+    ).fetchall()
+    payload = {}
+    for row in rows:
+        payload_json = (row["payload_json"] or "").strip()
+        parsed = None
+        if payload_json:
+            try:
+                parsed = json.loads(payload_json)
+            except Exception:
+                parsed = None
+        payload[row["ticker"]] = {
+            "ticker": row["ticker"],
+            "payload": parsed,
+            "raw_reply": row["raw_reply"],
+            "updated_at": row["updated_at"],
+        }
+    return payload
+
+
+def _normalize_search_text(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFD", text)
+    return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+
+
+def _normalize_structured_market_mood(value):
+    text = _normalize_search_text(value)
+    if not text:
+        return ""
+    if any(marker in text for marker in ("positivo", "favoravel", "otimista")):
+        return "positive"
+    if any(marker in text for marker in ("cauteloso", "negativo", "pessimista")):
+        return "negative"
+    if "neutro" in text:
+        return "neutral"
+    return ""
+
+
+def _infer_market_mood_from_text(value):
+    text = _normalize_search_text(value)
+    if not text:
+        return {"key": "neutral", "label": "Sem leitura clara", "score": 0}
+
+    positive_markers = (
+        "positivo",
+        "otimista",
+        "confianca",
+        "resiliente",
+        "solido",
+        "barato",
+        "atrativo",
+        "desconto",
+        "favoravel",
+        "crescimento",
+        "melhora",
+        "forte",
+    )
+    negative_markers = (
+        "negativo",
+        "cautela",
+        "pressionado",
+        "caro",
+        "esticado",
+        "risco",
+        "incerteza",
+        "fraco",
+        "desaceleracao",
+        "volatil",
+        "volatilidade",
+        "piora",
+        "desafiador",
+    )
+    score = 0
+    for marker in positive_markers:
+        if marker in text:
+            score += 1
+    for marker in negative_markers:
+        if marker in text:
+            score -= 1
+    if score >= 2:
+        return {"key": "positive", "label": "Mercado com vies positivo", "score": score}
+    if score <= -2:
+        return {"key": "negative", "label": "Mercado com vies cauteloso", "score": score}
+    return {"key": "neutral", "label": "Mercado sem direcao forte", "score": score}
+
+
+def _market_mood_presentation(structured_mood, market_view):
+    normalized = _normalize_structured_market_mood(structured_mood)
+    if normalized == "positive":
+        return {"key": "positive", "label": "Mercado com vies positivo", "score": 2}
+    if normalized == "negative":
+        return {"key": "negative", "label": "Mercado com vies cauteloso", "score": -2}
+    if normalized == "neutral":
+        return {"key": "neutral", "label": "Mercado sem direcao forte", "score": 0}
+    return _infer_market_mood_from_text(market_view)
+
+
+def _normalize_structured_action(value):
+    text = _normalize_search_text(value)
+    if not text:
+        return ""
+    if "comprar_mais" in text or "comprar mais" in text or text == "compra":
+        return "buy_more"
+    if "segurar" in text or "manter" in text:
+        return "hold"
+    if "reduzir" in text or "vender" in text:
+        return "reduce"
+    if "observar" in text or "aguardar" in text or "monitorar" in text:
+        return "watch"
+    return ""
+
+
+def _structured_action_label(value):
+    normalized = _normalize_structured_action(value)
+    if normalized == "buy_more":
+        return "Comprar mais"
+    if normalized == "hold":
+        return "Segurar"
+    if normalized == "reduce":
+        return "Reduzir"
+    if normalized == "watch":
+        return "Monitorar"
+    return ""
+
+
+def _portfolio_decision_for_position(item: dict, enrichment: dict | None):
+    payload = {}
+    if isinstance(enrichment, dict) and isinstance(enrichment.get("payload"), dict):
+        payload = enrichment.get("payload") or {}
+    current_price = float(item.get("price") or 0.0)
+    avg_price = float(item.get("avg_price") or 0.0)
+    open_pnl_pct = float(item.get("open_pnl_pct") or 0.0)
+    weight = float(item.get("weight") or 0.0)
+    market_view = str(payload.get("visao_do_mercado") or "").strip()
+    structured_mood = str(payload.get("humor_do_mercado") or "").strip()
+    structured_action = str(payload.get("acao_sugerida") or "").strip()
+    structured_action_key = _normalize_structured_action(structured_action)
+    mood = _market_mood_presentation(structured_mood, market_view)
+    price_gap_pct = ((current_price - avg_price) / avg_price) * 100 if avg_price > 0 else 0.0
+
+    recommendation_key = "hold"
+    rationale = "Sem sinal forte o bastante para mudar a posicao agora."
+
+    if structured_action_key == "buy_more":
+        recommendation_key = "increase"
+        rationale = "OpenClaw sugeriu aumentar e a leitura atual nao indica deterioracao relevante."
+    elif structured_action_key == "reduce":
+        recommendation_key = "reduce"
+        rationale = "OpenClaw sugeriu reduzir e a posicao pede mais cautela."
+    elif structured_action_key == "watch":
+        recommendation_key = "hold"
+        rationale = "OpenClaw preferiu monitorar antes de mexer na posicao."
+    elif mood["key"] == "positive" and price_gap_pct <= -7:
+        recommendation_key = "increase"
+        rationale = "Humor construtivo com preco abaixo do seu custo medio."
+    elif mood["key"] == "negative" and (price_gap_pct >= 8 or open_pnl_pct >= 10):
+        recommendation_key = "reduce"
+        rationale = "Leitura mais cautelosa com espaco para reduzir risco."
+    elif price_gap_pct <= -10:
+        recommendation_key = "hold"
+        rationale = "Preco caiu abaixo do medio, mas sem melhora clara no humor ainda."
+
+    if recommendation_key == "increase" and weight >= 18:
+        rationale = "Existe argumento para aumentar, mas o peso atual ja esta relevante na carteira."
+    elif recommendation_key == "reduce" and weight >= 18:
+        rationale = "A leitura pede mais prudencia e o peso atual amplifica o risco."
+
+    recommendation_label = {
+        "increase": "Aumentar",
+        "hold": "Segurar",
+        "reduce": "Reduzir",
+    }.get(recommendation_key, "Segurar")
+
+    conviction = 0.0
+    if recommendation_key == "increase":
+        conviction = max(0.0, -price_gap_pct) + max(0.0, mood["score"] * 3) + (2.0 if structured_action_key == "buy_more" else 0.0)
+    elif recommendation_key == "reduce":
+        conviction = max(0.0, price_gap_pct) + max(0.0, open_pnl_pct / 2.0) + (2.0 if structured_action_key == "reduce" else 0.0)
+    else:
+        conviction = abs(mood["score"]) + abs(price_gap_pct) / 4.0
+
+    return {
+        "ticker": item.get("ticker"),
+        "name": item.get("name"),
+        "category": item.get("category"),
+        "value": round(float(item.get("value") or 0.0), 2),
+        "weight": round(weight, 2),
+        "price": round(current_price, 2),
+        "avg_price": round(avg_price, 2),
+        "open_pnl_pct": round(open_pnl_pct, 2),
+        "price_gap_pct": round(price_gap_pct, 2),
+        "mood_key": mood["key"],
+        "mood_label": mood["label"],
+        "structured_action": structured_action_key,
+        "structured_action_label": _structured_action_label(structured_action) or "Sem sinal",
+        "recommendation_key": recommendation_key,
+        "recommendation_label": recommendation_label,
+        "rationale": rationale,
+        "conviction": round(conviction, 2),
+    }
+
+
+def _portfolio_bucket_sort_key(item):
+    return (
+        float(item.get("conviction") or 0.0),
+        float(item.get("weight") or 0.0),
+        float(item.get("value") or 0.0),
+    )
+
+
+def _build_portfolio_tactical_summary(positions, group_summaries, total_value):
+    enrichments = get_asset_enrichments_map([item.get("ticker") for item in positions])
+    increase = []
+    hold = []
+    reduce = []
+    concentration_alerts = []
+    single_position_limit = 18.0
+    category_limit = 55.0
+
+    for item in positions:
+        decision = _portfolio_decision_for_position(item, enrichments.get(item.get("ticker")))
+        if decision["recommendation_key"] == "increase":
+            increase.append(decision)
+        elif decision["recommendation_key"] == "reduce":
+            reduce.append(decision)
+        else:
+            hold.append(decision)
+
+        weight = float(item.get("weight") or 0.0)
+        if weight >= single_position_limit:
+            concentration_alerts.append(
+                {
+                    "kind": "position",
+                    "label": f"{item.get('ticker')} ocupa {weight:.2f}% da carteira",
+                    "detail": "Peso alto para uma posicao individual.",
+                    "ticker": item.get("ticker"),
+                    "weight": round(weight, 2),
+                }
+            )
+
+    category_labels = {
+        "br_stocks": "Acoes BR",
+        "us_stocks": "Acoes US",
+        "crypto": "Cripto",
+        "fiis": "FIIs",
+    }
+    for category_key, summary in (group_summaries or {}).items():
+        group_weight = ((float(summary.get("total_value") or 0.0) / float(total_value or 0.0)) * 100.0) if total_value else 0.0
+        if group_weight >= category_limit:
+            concentration_alerts.append(
+                {
+                    "kind": "category",
+                    "label": f"{category_labels.get(category_key, category_key)} ocupa {group_weight:.2f}% da carteira",
+                    "detail": "Concentracao alta por classe dentro da renda variavel.",
+                    "category": category_key,
+                    "weight": round(group_weight, 2),
+                }
+            )
+
+    increase = sorted(increase, key=_portfolio_bucket_sort_key, reverse=True)
+    hold = sorted(hold, key=_portfolio_bucket_sort_key, reverse=True)
+    reduce = sorted(reduce, key=_portfolio_bucket_sort_key, reverse=True)
+    concentration_alerts = sorted(
+        concentration_alerts, key=lambda item: float(item.get("weight") or 0.0), reverse=True
+    )
+
+    return {
+        "summary": {
+            "increase_count": len(increase),
+            "hold_count": len(hold),
+            "reduce_count": len(reduce),
+            "concentration_count": len(concentration_alerts),
+            "analyzed_positions": len(positions),
+        },
+        "thresholds": {
+            "single_position_weight_pct": single_position_limit,
+            "category_weight_pct": category_limit,
+        },
+        "increase": increase,
+        "hold": hold,
+        "reduce": reduce,
+        "concentration_alerts": concentration_alerts,
+    }
+
+
+def upsert_asset_enrichment(ticker: str, payload: dict | None, raw_reply: str, price_at_update: float = 0.0):
     if not ticker:
         return False
     db = get_db()
     payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    normalized_price = 0.0
+    try:
+        normalized_price = float(price_at_update or 0.0)
+    except (TypeError, ValueError):
+        normalized_price = 0.0
+    mood = str((payload or {}).get("humor_do_mercado") or "").strip()
+    suggested_action = str((payload or {}).get("acao_sugerida") or "").strip()
     db.execute(
         """
         INSERT INTO asset_enrichments (ticker, payload_json, raw_reply, updated_at)
@@ -216,6 +575,23 @@ def upsert_asset_enrichment(ticker: str, payload: dict | None, raw_reply: str):
         """,
         (ticker.upper(), payload_json, (raw_reply or "")),
     )
+    if _has_meaningful_enrichment_payload(payload or {}) or str(raw_reply or "").strip():
+        db.execute(
+            """
+            INSERT INTO asset_enrichment_history (
+                ticker, payload_json, raw_reply, price_at_update, mood, suggested_action, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                ticker.upper(),
+                payload_json,
+                (raw_reply or ""),
+                normalized_price,
+                mood,
+                suggested_action,
+            ),
+        )
     db.commit()
     return True
 
@@ -224,9 +600,6 @@ def _extract_json_from_text(text: str):
     if not text:
         return None
     raw = text.strip()
-    if raw.startswith("```"):
-        # Strip fenced code blocks if present.
-        raw = raw.strip("`")
     start = raw.find("{")
     end = raw.rfind("}")
     if start < 0 or end < 0 or end <= start:
@@ -235,7 +608,26 @@ def _extract_json_from_text(text: str):
     try:
         return json.loads(candidate)
     except Exception:
-        return None
+        repaired = []
+        in_string = False
+        escaping = False
+        for char in candidate:
+            if in_string and char in {"\n", "\r"}:
+                repaired.append(" ")
+                continue
+            repaired.append(char)
+            if escaping:
+                escaping = False
+                continue
+            if char == "\\":
+                escaping = True
+                continue
+            if char == '"':
+                in_string = not in_string
+        try:
+            return json.loads("".join(repaired))
+        except Exception:
+            return None
 
 
 def _normalize_enrichment_list(value):
@@ -258,6 +650,10 @@ def _normalize_asset_enrichment_payload(payload):
         "tese": _normalize_enrichment_list(payload.get("tese")),
         "riscos": _normalize_enrichment_list(payload.get("riscos")),
         "dividendos": str(payload.get("dividendos") or "").strip(),
+        "visao_do_mercado": str(payload.get("visao_do_mercado") or "").strip(),
+        "humor_do_mercado": str(payload.get("humor_do_mercado") or "").strip(),
+        "acao_sugerida": str(payload.get("acao_sugerida") or "").strip(),
+        "justificativa_da_acao": str(payload.get("justificativa_da_acao") or "").strip(),
         "observacoes": str(payload.get("observacoes") or "").strip(),
     }
 
@@ -294,6 +690,180 @@ def _extract_openclaw_reply(result):
     return ""
 
 
+def _asset_prompt_profile(ticker: str, name: str, sector: str):
+    ticker_up = (ticker or "").strip().upper()
+    name_up = (name or "").strip().upper()
+    sector_up = (sector or "").strip().upper()
+    category = _position_category(ticker_up, name_up, sector_up)
+    is_probable_etf = any(
+        marker in name_up or marker in sector_up
+        for marker in ("ETF", "INDEX", "TRUST", "FUND")
+    )
+    is_probable_reit = any(
+        marker in name_up or marker in sector_up
+        for marker in ("REIT", "REAL ESTATE", "REALTY", "PROPERTIES")
+    )
+
+    if category == "crypto":
+        return "crypto", (
+            "Foque em utilidade do token, ecossistema, adocao, narrativa e principais riscos de execucao/regulacao. "
+            "Nao trate como empresa operacional."
+        )
+
+    if category == "fiis":
+        return "fiis", (
+            "Foque em tipo de fundo, qualidade dos ativos/imoveis, perfil de contratos, vacancia, alavancagem e previsibilidade de rendimentos. "
+            "Se parecer ETF/fundo de indice, ajuste a resposta para estrategia e indice de referencia."
+        )
+
+    if (
+        "BANCO" in name_up
+        or "BANK" in name_up
+        or sector_up in {"FINANCEIRO", "FINANCIAL SERVICES", "BANCOS", "BANKS"}
+    ):
+        return "banks", (
+            "Foque em credito, margem financeira, inadimplencia, eficiencia, diversificacao de receitas, competicao com fintechs e regulacao."
+        )
+
+    if category == "us_stocks":
+        if is_probable_etf:
+            return "us_etf", (
+                "Trate como ETF/fundo de indice. Foque em indice de referencia, concentracao setorial, exposicao geografica, custo, liquidez e riscos de composicao/valuation do indice."
+            )
+
+        if is_probable_reit:
+            return "reit", (
+                "Trate como REIT. Foque em tipo de ativo, perfil dos contratos, ocupacao, custo de capital, sensibilidade a juros e sustentabilidade dos dividendos."
+            )
+
+        return "us_stocks", (
+            "Foque em modelo de negocio, vantagem competitiva, qualidade da receita, disciplina de capital e riscos de setor/valuation."
+        )
+
+    return "br_stocks", (
+        "Foque em modelo de negocio, execucao, ciclo setorial, qualidade da receita, alocacao de capital e riscos macro/regulatorios."
+    )
+
+
+def _build_asset_enrichment_prompt(asset: dict):
+    ticker = (asset.get("ticker") or "").strip().upper()
+    name = str(asset.get("name") or "").strip()
+    sector = str(asset.get("sector") or "").strip()
+    current_price = float(asset.get("price") or 0.0)
+    profile_key, guidance = _asset_prompt_profile(ticker, name, sector)
+    preferred_sources = (
+        "Para visao_do_mercado e humor_do_mercado, quando houver contexto recente disponivel, "
+        "priorize sinais vindos de NewsAPI, InfoMoney, Money Times, The Verge, Investidor10, FundosExplorer, FIIS.com e fontes equivalentes confiaveis do mesmo nicho. "
+        "Para FIIs, de peso maior a Investidor10, FundosExplorer e FIIS.com. "
+        "Para tech/acoes US, The Verge pode complementar o contexto setorial. "
+        "Se nao houver contexto recente confiavel dessas fontes, seja conservador e nao invente manchetes, fatos ou numeros."
+    )
+    return (
+        f"Ticker: {ticker}. "
+        f"Nome: {name}. "
+        f"Setor: {sector}. "
+        f"Preco atual aproximado: {current_price:.2f}. "
+        f"Contexto: {profile_key}. "
+        "Responda APENAS JSON valido com as chaves resumo, modelo_de_negocio, tese, riscos, dividendos, visao_do_mercado, humor_do_mercado, acao_sugerida, justificativa_da_acao, observacoes. "
+        "Use humor_do_mercado como positivo, neutro ou cauteloso. "
+        "Use acao_sugerida como comprar_mais, segurar, reduzir ou observar. "
+        "Se nao souber, use string vazia ou lista vazia. "
+        "Seja conciso, objetivo e nao invente numeros precisos. "
+        + preferred_sources
+        + " "
+        + guidance
+    )
+
+
+def _build_asset_enrichment_retry_prompt(asset: dict):
+    ticker = (asset.get("ticker") or "").strip().upper()
+    name = str(asset.get("name") or "").strip()
+    sector = str(asset.get("sector") or "").strip()
+    current_price = float(asset.get("price") or 0.0)
+    profile_key, guidance = _asset_prompt_profile(ticker, name, sector)
+    preferred_sources = (
+        "Se houver contexto recente disponivel, priorize referencias de NewsAPI, InfoMoney, Money Times, The Verge, Investidor10, FundosExplorer e FIIS.com para montar visao_do_mercado e humor_do_mercado. "
+        "Nao invente noticias, chamadas ou fatos se essas fontes nao estiverem acessiveis no contexto."
+    )
+    return (
+        f"Ativo {ticker} ({name}). "
+        f"Setor {sector}. "
+        f"Preco atual aproximado {current_price:.2f}. "
+        f"Contexto {profile_key}. "
+        "Retorne SOMENTE um JSON valido com resumo, modelo_de_negocio, tese, riscos, dividendos, visao_do_mercado, humor_do_mercado, acao_sugerida, justificativa_da_acao, observacoes. "
+        "humor_do_mercado deve ser positivo, neutro ou cauteloso. "
+        "acao_sugerida deve ser comprar_mais, segurar, reduzir ou observar. "
+        "Preencha todas as chaves. "
+        "Se faltar confianca, use texto curto, sem numeros precisos. "
+        + preferred_sources
+        + " "
+        + guidance
+    )
+
+
+def _has_meaningful_enrichment_payload(payload):
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("resumo") or "").strip():
+        return True
+    if str(payload.get("modelo_de_negocio") or "").strip():
+        return True
+    if str(payload.get("dividendos") or "").strip():
+        return True
+    if str(payload.get("visao_do_mercado") or "").strip():
+        return True
+    if str(payload.get("humor_do_mercado") or "").strip():
+        return True
+    if str(payload.get("acao_sugerida") or "").strip():
+        return True
+    if str(payload.get("justificativa_da_acao") or "").strip():
+        return True
+    if str(payload.get("observacoes") or "").strip():
+        return True
+    if _normalize_enrichment_list(payload.get("tese")):
+        return True
+    if _normalize_enrichment_list(payload.get("riscos")):
+        return True
+    return False
+
+
+def _is_transient_openclaw_reply(reply):
+    text = str(reply or "").strip().lower()
+    if not text:
+        return False
+
+    transient_markers = (
+        "aguarde",
+        "um momento",
+        "enquanto busco",
+        "estou buscando",
+        "buscando essas informacoes",
+        "busco essas informacoes",
+        "buscando essas informações",
+        "busco essas informações",
+        "ja volto",
+        "processando",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+def _invoke_openclaw_asset_prompt(prompt: str):
+    result = invoke_tool(
+        "sessions_send",
+        {
+            "sessionKey": "main",
+            "message": prompt,
+            "timeoutSeconds": 120,
+        },
+        timeout_seconds=150,
+    )
+    if not isinstance(result, dict):
+        return "", None
+    reply = _extract_openclaw_reply(result)
+    parsed = _normalize_asset_enrichment_payload(_extract_json_from_text(reply))
+    return reply, parsed
+
+
 def enrich_asset_with_openclaw(ticker: str):
     ticker_norm = (ticker or "").strip().upper()
     if not ticker_norm:
@@ -302,40 +872,133 @@ def enrich_asset_with_openclaw(ticker: str):
     asset = get_asset(ticker_norm)
     if not asset:
         return False, "Ativo nao encontrado.", None
-
-    prompt = (
-        f"Ticker: {ticker_norm}. "
-        f"Nome: {asset.get('name') or ''}. "
-        f"Setor: {asset.get('sector') or ''}. "
-        "Responda APENAS JSON valido com as chaves resumo, modelo_de_negocio, tese, riscos, dividendos, observacoes. "
-        "Se nao souber, use string vazia ou lista vazia. "
-        "Seja conciso e nao invente numeros precisos."
-    )
+    asset_price = float(asset.get("price") or 0.0)
 
     try:
-        result = invoke_tool(
-            "sessions_send",
-            {
-                "sessionKey": "main",
-                "message": prompt,
-                "timeoutSeconds": 120,
-            },
-            timeout_seconds=150,
-        )
+        reply, parsed = _invoke_openclaw_asset_prompt(_build_asset_enrichment_prompt(asset))
     except OpenClawError as exc:
         return False, str(exc), None
 
-    if not isinstance(result, dict):
-        return False, "Resposta inesperada do OpenClaw.", None
+    retried = False
+    if _is_transient_openclaw_reply(reply) or not _has_meaningful_enrichment_payload(parsed):
+        try:
+            retry_reply, retry_parsed = _invoke_openclaw_asset_prompt(
+                _build_asset_enrichment_retry_prompt(asset)
+            )
+        except OpenClawError as exc:
+            retry_reply = ""
+            retry_parsed = None
+            stored_reply = ""
+            if not _is_transient_openclaw_reply(reply):
+                stored_reply = reply or str(exc)
+            upsert_asset_enrichment(ticker_norm, parsed or {}, stored_reply, asset_price)
+            if _has_meaningful_enrichment_payload(parsed):
+                return True, "OK", get_asset_enrichment(ticker_norm)
+            return False, str(exc), None
 
-    reply = _extract_openclaw_reply(result)
-    parsed = _normalize_asset_enrichment_payload(_extract_json_from_text(reply))
+        if _has_meaningful_enrichment_payload(retry_parsed):
+            reply = retry_reply
+            parsed = retry_parsed
+        elif retry_reply and not _is_transient_openclaw_reply(retry_reply):
+            reply = retry_reply
+            parsed = retry_parsed
+        retried = True
+
+    if _is_transient_openclaw_reply(reply):
+        upsert_asset_enrichment(ticker_norm, parsed or {}, "", asset_price)
+        return False, "OpenClaw ainda nao retornou o conteudo final. Tente novamente em instantes.", None
+
     if not parsed:
-        upsert_asset_enrichment(ticker_norm, {}, reply)
+        upsert_asset_enrichment(ticker_norm, {}, reply, asset_price)
         return True, "OpenClaw respondeu, mas nao retornou JSON valido. Exibindo resposta bruta.", get_asset_enrichment(ticker_norm)
 
-    upsert_asset_enrichment(ticker_norm, parsed, reply)
-    return True, "OK", get_asset_enrichment(ticker_norm)
+    upsert_asset_enrichment(ticker_norm, parsed, reply, asset_price)
+    if _has_meaningful_enrichment_payload(parsed):
+        return True, ("OK (apos retry)" if retried else "OK"), get_asset_enrichment(ticker_norm)
+    return True, "OpenClaw respondeu, mas sem conteudo util. Exibindo resposta bruta.", get_asset_enrichment(ticker_norm)
+
+
+def enrich_assets_with_openclaw_batch(tickers=None, only_missing=True, limit=None):
+    db = get_db()
+    normalized_tickers = []
+    if tickers:
+        seen = set()
+        for item in tickers:
+            ticker = str(item or "").strip().upper()
+            if not ticker or ticker in seen:
+                continue
+            seen.add(ticker)
+            normalized_tickers.append(ticker)
+
+    if normalized_tickers:
+        placeholders = ",".join("?" for _ in normalized_tickers)
+        rows = db.execute(
+            f"""
+            SELECT ticker
+            FROM assets
+            WHERE ticker IN ({placeholders})
+            ORDER BY ticker ASC
+            """,
+            normalized_tickers,
+        ).fetchall()
+    else:
+        rows = db.execute(
+            """
+            SELECT ticker
+            FROM assets
+            ORDER BY market_cap_bi DESC, ticker ASC
+            """
+        ).fetchall()
+
+    queue = []
+    skipped = []
+    for row in rows:
+        ticker = str(row["ticker"] or "").strip().upper()
+        if not ticker:
+            continue
+        enrichment = get_asset_enrichment(ticker)
+        has_enrichment = bool(
+            enrichment
+            and (
+                enrichment.get("raw_reply")
+                or (isinstance(enrichment.get("payload"), dict) and enrichment.get("payload"))
+            )
+        )
+        if only_missing and has_enrichment:
+            skipped.append({"ticker": ticker, "reason": "ja_enriquecido"})
+            continue
+        queue.append(ticker)
+
+    if isinstance(limit, int) and limit > 0:
+        queue = queue[:limit]
+
+    results = []
+    started_at = _now_iso()
+    for ticker in queue:
+        ok, message, enrichment = enrich_asset_with_openclaw(ticker)
+        results.append(
+            {
+                "ticker": ticker,
+                "ok": bool(ok),
+                "message": str(message or ""),
+                "updated_at": (enrichment or {}).get("updated_at") if isinstance(enrichment, dict) else None,
+            }
+        )
+
+    success_count = sum(1 for item in results if item["ok"])
+    failure_count = len(results) - success_count
+    return {
+        "started_at": started_at,
+        "finished_at": _now_iso(),
+        "only_missing": bool(only_missing),
+        "requested_limit": limit if isinstance(limit, int) and limit > 0 else None,
+        "processed_count": len(results),
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "skipped_count": len(skipped),
+        "results": results,
+        "skipped": skipped,
+    }
 
 
 def get_portfolios():
@@ -1919,8 +2582,32 @@ def _get_yahoo_asset_price_history(ticker: str, range_key: str = "1y"):
     return result
 
 
+def _asset_price_history_cache_ttl_seconds(range_key: str):
+    mapping = {
+        "1d": 60,
+        "7d": 300,
+        "30d": 900,
+        "6m": 1800,
+        "1y": 3600,
+        "5y": 21600,
+    }
+    return mapping.get((range_key or "1y").strip().lower(), 900)
+
+
 def get_asset_price_history(ticker: str, range_key: str = "1y"):
+    normalized_range = _history_config(range_key)[0]
+    cache_key = ((ticker or "").strip().upper(), normalized_range)
+    cached = _memory_cache_get(_ASSET_PRICE_HISTORY_CACHE, cache_key)
+    if cached is not None:
+        return dict(cached)
+
     history, history_source = _fetch_market_history(ticker, range_key)
+    _memory_cache_set(
+        _ASSET_PRICE_HISTORY_CACHE,
+        cache_key,
+        dict(history),
+        _asset_price_history_cache_ttl_seconds(normalized_range),
+    )
     if _is_truthy_env("MARKET_DATA_LOG_SOURCES", "0"):
         logger = _LOGGER
         try:
@@ -1932,7 +2619,7 @@ def get_asset_price_history(ticker: str, range_key: str = "1y"):
             (ticker or "").strip().upper(),
             history_source or "none",
             _market_data_provider_label(ticker),
-            history.get("range_key") or (range_key or "1y").lower(),
+            history.get("range_key") or normalized_range,
             len(history.get("prices") or []),
         )
     return history
@@ -4165,6 +4852,8 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str =
             "total_incomes": round(group_incomes, 2),
         }
 
+    tactical_summary = _build_portfolio_tactical_summary(positions, group_summaries, total)
+
     return {
         "total_value": round(total, 2),
         "invested_value": round(invested_total, 2),
@@ -4179,6 +4868,7 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str =
         "grouped_positions": grouped_positions,
         "group_totals": group_totals,
         "group_summaries": group_summaries,
+        "tactical_summary": tactical_summary,
         "sort_by": safe_sort_by,
         "sort_dir": safe_sort_dir,
     }

@@ -20,6 +20,13 @@ const ENRICHMENT_STALE_AFTER_MS = enrichmentStaleDays * 24 * 60 * 60 * 1000
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const pct = (value) => `${Number(value || 0).toFixed(2)}%`
+const signedPct = (value) => `${Number(value || 0) >= 0 ? '+' : ''}${Number(value || 0).toFixed(2)}%`
+const shortText = (value, limit = 140) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (text.length <= limit) return text
+  return `${text.slice(0, limit - 3).trim()}...`
+}
 const marketDataSummary = (marketData) => {
   if (!marketData) return ''
   const source = marketData.source ? String(marketData.source).toUpperCase() : 'provider'
@@ -45,6 +52,12 @@ function dateBr(value) {
   return text
 }
 
+function dateTimeLabel(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  return text.replace('T', ' ')
+}
+
 function parseApiDate(value) {
   const text = String(value || '').trim()
   if (!text) return null
@@ -57,11 +70,296 @@ function parseApiDate(value) {
   return Number.isNaN(parsed) ? null : parsed
 }
 
+function isTransientOpenClawReply(value) {
+  const text = String(value || '').trim().toLowerCase()
+  if (!text) return false
+  return [
+    'aguarde',
+    'um momento',
+    'enquanto busco',
+    'estou buscando',
+    'buscando essas informacoes',
+    'busco essas informacoes',
+    'buscando essas informações',
+    'busco essas informações',
+    'ja volto',
+    'processando',
+  ].some((marker) => text.includes(marker))
+}
+
+function normalizeSearchText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+}
+
+function inferMarketMoodLabel(value) {
+  const text = normalizeSearchText(value)
+  if (!text) {
+    return { label: 'Sem leitura', tone: 'neutral', score: 0 }
+  }
+
+  let score = 0
+  const positiveMarkers = [
+    'positivo',
+    'otimista',
+    'confianca',
+    'resiliente',
+    'solido',
+    'barato',
+    'atrativo',
+    'desconto',
+    'bom momento',
+    'favoravel',
+    'crescimento',
+    'melhora',
+    'forte',
+  ]
+  const negativeMarkers = [
+    'negativo',
+    'cautela',
+    'pressionado',
+    'caro',
+    'esticado',
+    'risco',
+    'incerteza',
+    'fraco',
+    'desaceleracao',
+    'desaceleração',
+    'volatil',
+    'volatilidade',
+    'piora',
+    'desafiador',
+  ]
+
+  positiveMarkers.forEach((marker) => {
+    if (text.includes(marker)) score += 1
+  })
+  negativeMarkers.forEach((marker) => {
+    if (text.includes(marker)) score -= 1
+  })
+
+  if (score >= 2) {
+    return { label: 'Mercado com viés positivo', tone: 'positive', score }
+  }
+  if (score <= -2) {
+    return { label: 'Mercado com viés cauteloso', tone: 'negative', score }
+  }
+  return { label: 'Mercado sem direção forte', tone: 'neutral', score }
+}
+
+function normalizeStructuredMarketMood(value) {
+  const text = normalizeSearchText(value)
+  if (!text) return ''
+  if (text.includes('positivo') || text.includes('favoravel') || text.includes('otimista')) return 'positive'
+  if (text.includes('cauteloso') || text.includes('negativo') || text.includes('pessimista')) return 'negative'
+  if (text.includes('neutro')) return 'neutral'
+  return ''
+}
+
+function marketMoodPresentation(structuredMood, marketView) {
+  const normalized = normalizeStructuredMarketMood(structuredMood)
+  if (normalized === 'positive') {
+    return { label: 'Mercado com viés positivo', tone: 'positive', score: 2 }
+  }
+  if (normalized === 'negative') {
+    return { label: 'Mercado com viés cauteloso', tone: 'negative', score: -2 }
+  }
+  if (normalized === 'neutral') {
+    return { label: 'Mercado sem direção forte', tone: 'neutral', score: 0 }
+  }
+  return inferMarketMoodLabel(marketView)
+}
+
+function normalizeStructuredAction(value) {
+  const text = normalizeSearchText(value)
+  if (!text) return ''
+  if (text.includes('comprar_mais') || text.includes('comprar mais') || text === 'compra') return 'buy_more'
+  if (text.includes('segurar') || text.includes('manter')) return 'hold'
+  if (text.includes('reduzir') || text.includes('vender')) return 'reduce'
+  if (text.includes('observar') || text.includes('aguardar') || text.includes('monitorar')) return 'watch'
+  return ''
+}
+
+function structuredActionLabel(value) {
+  const normalized = normalizeStructuredAction(value)
+  if (normalized === 'buy_more') return 'Comprar mais'
+  if (normalized === 'hold') return 'Segurar'
+  if (normalized === 'reduce') return 'Vender ou reduzir'
+  if (normalized === 'watch') return 'Observar'
+  return ''
+}
+
+function buildPositionDecision({ asset, position, enrichmentPayload }) {
+  const currentPrice = Number(asset?.price || 0)
+  const avgPrice = Number(position?.avg_price || 0)
+  const shares = Number(position?.shares || 0)
+  const openPnlPct = Number(position?.open_pnl_pct || 0)
+  const marketView = String(enrichmentPayload?.visao_do_mercado || '').trim()
+  const structuredMood = String(enrichmentPayload?.humor_do_mercado || '').trim()
+  const openClawAction = String(enrichmentPayload?.acao_sugerida || '').trim()
+  const openClawActionWhy = String(enrichmentPayload?.justificativa_da_acao || '').trim()
+  const mood = marketMoodPresentation(structuredMood, marketView)
+  const priceGapPct = avgPrice > 0 ? ((currentPrice - avgPrice) / avgPrice) * 100 : null
+  const reasons = []
+
+  if (structuredMood) {
+    reasons.push(`OpenClaw classificou o humor como ${structuredMood}`)
+  } else if (marketView) {
+    reasons.push(mood.label)
+  } else {
+    reasons.push('OpenClaw ainda nao trouxe leitura de mercado')
+  }
+
+  if (openClawAction) {
+    reasons.push(`OpenClaw sugeriu ${structuredActionLabel(openClawAction) || openClawAction}`)
+  }
+
+  if (avgPrice > 0 && priceGapPct !== null) {
+    const direction = priceGapPct >= 0 ? 'acima' : 'abaixo'
+    reasons.push(`Preco atual ${Math.abs(priceGapPct).toFixed(2)}% ${direction} do seu preco medio`)
+  }
+
+  if (shares > 0) {
+    const pnlDirection = openPnlPct >= 0 ? 'acima' : 'abaixo'
+    reasons.push(`Posicao ${Math.abs(openPnlPct).toFixed(2)}% ${pnlDirection} do zero`)
+  }
+
+  if (shares <= 0 || avgPrice <= 0) {
+    if (mood.tone === 'positive') {
+      return {
+        mood,
+        action: 'Observar compra',
+        actionTone: 'up',
+        openClawActionLabel: structuredActionLabel(openClawAction),
+        openClawActionWhy,
+        reasons,
+        priceGapPct,
+        summary: 'O mercado parece construtivo, mas voce ainda nao tem preco medio relevante nessa posicao.',
+      }
+    }
+    if (mood.tone === 'negative') {
+      return {
+        mood,
+        action: 'Aguardar',
+        actionTone: 'down',
+        openClawActionLabel: structuredActionLabel(openClawAction),
+        openClawActionWhy,
+        reasons,
+        priceGapPct,
+        summary: 'A leitura atual nao sugere pressa para montar ou aumentar posicao.',
+      }
+    }
+    return {
+      mood,
+      action: 'Monitorar',
+      actionTone: '',
+      openClawActionLabel: structuredActionLabel(openClawAction),
+      openClawActionWhy,
+      reasons,
+      priceGapPct,
+      summary: 'Sem uma posicao formada, faz mais sentido monitorar antes de agir.',
+    }
+  }
+
+  if (mood.tone === 'positive') {
+    if (priceGapPct <= -7) {
+      return {
+        mood,
+        action: 'Comprar mais',
+        actionTone: 'up',
+        openClawActionLabel: structuredActionLabel(openClawAction),
+        openClawActionWhy,
+        reasons,
+        priceGapPct,
+        summary: 'O mercado segue favoravel e o preco esta abaixo do seu custo medio.',
+      }
+    }
+    return {
+      mood,
+      action: 'Segurar',
+      actionTone: '',
+      openClawActionLabel: structuredActionLabel(openClawAction),
+      openClawActionWhy,
+      reasons,
+      priceGapPct,
+      summary: 'A leitura segue boa, mas o preco ja nao oferece desconto claro contra o seu custo medio.',
+    }
+  }
+
+  if (mood.tone === 'negative') {
+    if (priceGapPct >= 8 || openPnlPct >= 10) {
+      return {
+        mood,
+        action: 'Vender ou reduzir',
+        actionTone: 'down',
+        openClawActionLabel: structuredActionLabel(openClawAction),
+        openClawActionWhy,
+        reasons,
+        priceGapPct,
+        summary: 'O humor do mercado piorou e a posicao ainda tem gordura para realizar ou reduzir risco.',
+      }
+    }
+    return {
+      mood,
+      action: 'Segurar',
+      actionTone: '',
+      openClawActionLabel: structuredActionLabel(openClawAction),
+      openClawActionWhy,
+      reasons,
+      priceGapPct,
+      summary: 'A leitura esta mais cautelosa, mas o preco nao abre uma saida tao confortavel agora.',
+    }
+  }
+
+  if (priceGapPct <= -10) {
+    return {
+      mood,
+      action: 'Segurar',
+      actionTone: '',
+      openClawActionLabel: structuredActionLabel(openClawAction),
+      openClawActionWhy,
+      reasons,
+      priceGapPct,
+      summary: 'O preco caiu abaixo do seu medio, mas sem melhora clara no humor do mercado ainda faz sentido evitar aumentar no escuro.',
+    }
+  }
+
+  if (priceGapPct >= 12 && openPnlPct > 0) {
+    return {
+      mood,
+      action: 'Segurar',
+      actionTone: '',
+      openClawActionLabel: structuredActionLabel(openClawAction),
+      openClawActionWhy,
+      reasons,
+      priceGapPct,
+      summary: 'A posicao esta andando bem, mas sem sinal forte do mercado a leitura segue de manutencao.',
+    }
+  }
+
+  return {
+    mood,
+    action: 'Segurar',
+    actionTone: '',
+    openClawActionLabel: structuredActionLabel(openClawAction),
+    openClawActionWhy,
+    reasons,
+    priceGapPct,
+    summary: 'Nao ha sinal forte o bastante para aumentar ou reduzir agora.',
+  }
+}
+
 function AssetPage({ selectedPortfolioIds }) {
   const { ticker } = useParams()
   const autoEnrichedTickersRef = useRef(new Set())
   const [rangeKey, setRangeKey] = useState('1y')
   const [payload, setPayload] = useState(null)
+  const [priceHistory, setPriceHistory] = useState({ labels: [], prices: [], change_pct: null })
+  const [priceHistoryLoading, setPriceHistoryLoading] = useState(true)
+  const [priceHistoryError, setPriceHistoryError] = useState('')
+  const [priceHistoryRefreshKey, setPriceHistoryRefreshKey] = useState(0)
   const [enrichment, setEnrichment] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -78,7 +376,6 @@ function AssetPage({ selectedPortfolioIds }) {
       try {
         const data = await apiGet(`/api/assets/${ticker}`, {
           portfolio_id: selectedPortfolioIds,
-          range: rangeKey,
         })
         if (!active) return
         setPayload(data)
@@ -94,7 +391,32 @@ function AssetPage({ selectedPortfolioIds }) {
     return () => {
       active = false
     }
-  }, [ticker, selectedPortfolioIds, rangeKey])
+  }, [ticker, selectedPortfolioIds])
+
+  useEffect(() => {
+    let active = true
+    setPriceHistoryLoading(true)
+    setPriceHistoryError('')
+    ;(async () => {
+      try {
+        const data = await apiGet(`/api/assets/${ticker}/price-history`, {
+          range: rangeKey,
+        })
+        if (!active) return
+        setPriceHistory(data || { labels: [], prices: [], change_pct: null })
+      } catch (err) {
+        if (!active) return
+        setPriceHistory({ labels: [], prices: [], change_pct: null })
+        setPriceHistoryError(err.message)
+      } finally {
+        if (active) setPriceHistoryLoading(false)
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [ticker, rangeKey, priceHistoryRefreshKey])
 
   const onSyncTicker = async () => {
     if (!ticker) return
@@ -105,9 +427,9 @@ function AssetPage({ selectedPortfolioIds }) {
       setSyncMessage('Dados atualizados com sucesso via provider configurado.')
       const data = await apiGet(`/api/assets/${ticker}`, {
         portfolio_id: selectedPortfolioIds,
-        range: rangeKey,
       })
       setPayload(data)
+      setPriceHistoryRefreshKey((current) => current + 1)
     } catch (err) {
       setSyncMessage(err.message)
     } finally {
@@ -119,22 +441,50 @@ function AssetPage({ selectedPortfolioIds }) {
   const position = payload?.position || {}
   const transactions = payload?.transactions || []
   const incomes = payload?.incomes || []
-  const priceHistory = payload?.price_history || {}
+  const enrichmentHistory = Array.isArray(payload?.enrichment_history) ? payload.enrichment_history : []
   const marketData = asset.market_data || {}
   const enrichmentPayload = enrichment?.payload && typeof enrichment.payload === 'object' ? enrichment.payload : null
+  const rawEnrichmentReply = String(enrichment?.raw_reply || '').trim()
+  const hasTransientRawReply = isTransientOpenClawReply(rawEnrichmentReply)
   const enrichmentUpdatedAtMs = parseApiDate(enrichment?.updated_at)
-  const hasAnyEnrichment = Boolean(enrichment?.raw_reply || enrichmentPayload)
-  const isEnrichmentStale = !enrichmentUpdatedAtMs || (Date.now() - enrichmentUpdatedAtMs) >= ENRICHMENT_STALE_AFTER_MS
+  const hasAnyEnrichment = Boolean((rawEnrichmentReply && !hasTransientRawReply) || enrichmentPayload)
+  const isEnrichmentStale = hasTransientRawReply || !enrichmentUpdatedAtMs || (Date.now() - enrichmentUpdatedAtMs) >= ENRICHMENT_STALE_AFTER_MS
   const hasStructuredEnrichment = Boolean(
     enrichmentPayload && (
       String(enrichmentPayload.resumo || '').trim() ||
       String(enrichmentPayload.modelo_de_negocio || '').trim() ||
       String(enrichmentPayload.dividendos || '').trim() ||
+      String(enrichmentPayload.visao_do_mercado || '').trim() ||
+      String(enrichmentPayload.humor_do_mercado || '').trim() ||
+      String(enrichmentPayload.acao_sugerida || '').trim() ||
+      String(enrichmentPayload.justificativa_da_acao || '').trim() ||
       String(enrichmentPayload.observacoes || '').trim() ||
       (Array.isArray(enrichmentPayload.tese) && enrichmentPayload.tese.length > 0) ||
       (Array.isArray(enrichmentPayload.riscos) && enrichmentPayload.riscos.length > 0)
     )
   )
+  const hasSavedEnrichment = hasAnyEnrichment
+  const positionDecision = useMemo(
+    () => buildPositionDecision({ asset, position, enrichmentPayload }),
+    [asset, position, enrichmentPayload]
+  )
+  const decisionMoodClass = positionDecision.mood.tone === 'positive' ? 'up' : (positionDecision.mood.tone === 'negative' ? 'down' : '')
+  const decisionActionClass = positionDecision.actionTone || 'neutral'
+  const decisionPriceGapClass = positionDecision.priceGapPct === null
+    ? ''
+    : (positionDecision.priceGapPct >= 0 ? 'up' : 'down')
+  const decisionPriceGapLabel = positionDecision.priceGapPct === null
+    ? 'Sem preco medio'
+    : `${signedPct(positionDecision.priceGapPct)} vs preco medio`
+  const openClawMoodLabel = String(enrichmentPayload?.humor_do_mercado || '').trim()
+  const openClawMoodClass = openClawMoodLabel
+    ? (normalizeStructuredMarketMood(openClawMoodLabel) === 'positive'
+      ? 'up'
+      : (normalizeStructuredMarketMood(openClawMoodLabel) === 'negative' ? 'down' : 'neutral'))
+    : 'neutral'
+  const openClawActionLabel = structuredActionLabel(enrichmentPayload?.acao_sugerida) || String(enrichmentPayload?.acao_sugerida || '').trim() || 'Sem sinal'
+  const openClawCacheLabel = isEnrichmentStale ? 'Cache vencido' : 'Cache em dia'
+  const openClawCacheClass = isEnrichmentStale ? 'down' : 'up'
 
   useEffect(() => {
     const tickerKey = String(ticker || '').trim().toUpperCase()
@@ -152,6 +502,7 @@ function AssetPage({ selectedPortfolioIds }) {
         const data = await apiPost(`/api/assets/${tickerKey}/enrich/openclaw`)
         setEnrichMessage(data?.message || 'OK')
         setEnrichment(data?.enrichment || null)
+        setPayload((current) => (current ? { ...current, enrichment_history: data?.enrichment_history || [] } : current))
       } catch (err) {
         setEnrichMessage(err.message)
       } finally {
@@ -169,6 +520,7 @@ function AssetPage({ selectedPortfolioIds }) {
       const data = await apiPost(`/api/assets/${ticker}/enrich/openclaw`)
       setEnrichMessage(data?.message || 'OK')
       setEnrichment(data?.enrichment || null)
+      setPayload((current) => (current ? { ...current, enrichment_history: data?.enrichment_history || [] } : current))
     } catch (err) {
       setEnrichMessage(err.message)
     } finally {
@@ -242,12 +594,16 @@ function AssetPage({ selectedPortfolioIds }) {
             </span>
           )}
         </p>
-        {(priceHistory.labels || []).length > 0 ? (
+        {priceHistoryLoading ? (
+          <p className="subtitle">Carregando historico...</p>
+        ) : (priceHistory.labels || []).length > 0 ? (
           <div className="chart-canvas-wrap">
             <Line data={chartData} options={{ responsive: true, maintainAspectRatio: false }} />
           </div>
         ) : (
-          <p className="notice-warn">Nao foi possivel carregar historico para este periodo.</p>
+          <p className="notice-warn">
+            {priceHistoryError || 'Nao foi possivel carregar historico para este periodo.'}
+          </p>
         )}
       </article>
 
@@ -280,11 +636,79 @@ function AssetPage({ selectedPortfolioIds }) {
         <p>Valor de mercado: R$ {Number(asset.market_cap_bi || 0).toFixed(2)} bi</p>
       </article>
 
-      <article className="card detail-card">
+      <article className="card detail-card tactical-card">
+        <div className="analysis-head">
+          <div>
+            <h3>Leitura tática</h3>
+            <p className="subtitle">Ponderação entre a leitura do OpenClaw, preço atual e seu custo médio.</p>
+          </div>
+          <span className={`analysis-pill ${positionDecision.actionTone || 'neutral'}`}>
+            {positionDecision.action}
+          </span>
+        </div>
+
+        <div className="analysis-strip">
+          <div className="analysis-strip-item">
+            <span className="analysis-label">Preço atual</span>
+            <strong>{brl(asset.price)}</strong>
+          </div>
+          <div className="analysis-strip-item">
+            <span className="analysis-label">Preço médio</span>
+            <strong>{Number(position.avg_price || 0) > 0 ? brl(position.avg_price) : 'Nao calculado'}</strong>
+          </div>
+          <div className="analysis-strip-item">
+            <span className="analysis-label">Resultado aberto</span>
+            <strong className={Number(position.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>
+              {pct(position.open_pnl_pct)}
+            </strong>
+          </div>
+        </div>
+
+        <div className="analysis-metrics">
+          <div className="analysis-metric">
+            <span className="analysis-label">Humor do mercado</span>
+            <strong className={decisionMoodClass}>{positionDecision.mood.label}</strong>
+          </div>
+          <div className="analysis-metric">
+            <span className="analysis-label">Sinal do OpenClaw</span>
+            <strong>{positionDecision.openClawActionLabel || 'Sem sinal estruturado'}</strong>
+          </div>
+          <div className="analysis-metric">
+            <span className="analysis-label">Gap vs preço médio</span>
+            <strong className={decisionPriceGapClass}>{decisionPriceGapLabel}</strong>
+          </div>
+        </div>
+
+        <div className="analysis-summary">
+          <p>{positionDecision.summary}</p>
+          {!!positionDecision.openClawActionWhy && (
+            <p className="subtitle">
+              {positionDecision.openClawActionWhy}
+            </p>
+          )}
+        </div>
+
+        {positionDecision.reasons.length > 0 && (
+          <ul className="analysis-list">
+            {positionDecision.reasons.map((reason, idx) => (
+              <li key={`decision-reason-${idx}`}>{reason}</li>
+            ))}
+          </ul>
+        )}
+
+        <p className="subtitle analysis-note">
+          Heurística de apoio, não decisão automática.
+        </p>
+      </article>
+
+      <article className="card detail-card openclaw-card">
         <div className="hero-line">
-          <h3>OpenClaw</h3>
+          <div>
+            <h3>OpenClaw</h3>
+            <p className="subtitle">Atualização automática a cada {enrichmentStaleDays} dia(s). O botão ignora o cache.</p>
+          </div>
           <button type="button" className="btn-primary" onClick={onEnrichOpenClaw} disabled={enriching}>
-            {enriching ? 'Enriquecendo...' : 'Enriquecer com OpenClaw'}
+            {enriching ? 'Atualizando...' : (hasSavedEnrichment ? 'Forcar atualizacao' : 'Gerar com OpenClaw')}
           </button>
         </div>
 
@@ -296,40 +720,152 @@ function AssetPage({ selectedPortfolioIds }) {
 
         {hasStructuredEnrichment ? (
           <>
-            {!!enrichment.updated_at && <p className="subtitle">Atualizado em: {enrichment.updated_at}</p>}
-            {!!enrichmentPayload.resumo && <p><strong>Resumo:</strong> {enrichmentPayload.resumo}</p>}
-            {!!enrichmentPayload.modelo_de_negocio && <p><strong>Modelo de negocio:</strong> {enrichmentPayload.modelo_de_negocio}</p>}
-            {Array.isArray(enrichmentPayload.tese) && enrichmentPayload.tese.length > 0 && (
-              <div>
-                <p><strong>Tese:</strong></p>
-                <ul>
-                  {enrichmentPayload.tese.map((item, idx) => (
-                    <li key={`tese-${idx}`}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {Array.isArray(enrichmentPayload.riscos) && enrichmentPayload.riscos.length > 0 && (
-              <div>
-                <p><strong>Riscos:</strong></p>
-                <ul>
-                  {enrichmentPayload.riscos.map((item, idx) => (
-                    <li key={`risco-${idx}`}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {!!enrichmentPayload.dividendos && <p><strong>Dividendos:</strong> {enrichmentPayload.dividendos}</p>}
-            {!!enrichmentPayload.observacoes && <p><strong>Observacoes:</strong> {enrichmentPayload.observacoes}</p>}
+            <div className="openclaw-meta">
+              <span className={`analysis-pill ${openClawCacheClass}`}>{openClawCacheLabel}</span>
+              {!!enrichment.updated_at && (
+                <span className="meta-chip">
+                  Atualizado em {enrichment.updated_at}
+                </span>
+              )}
+            </div>
+
+            <div className="openclaw-overview">
+              <section className="openclaw-overview-card">
+                <span className="section-kicker">Humor do mercado</span>
+                <strong className={openClawMoodClass}>
+                  {openClawMoodLabel || 'Sem leitura estruturada'}
+                </strong>
+              </section>
+
+              <section className="openclaw-overview-card">
+                <span className="section-kicker">Ação sugerida</span>
+                <strong className={decisionActionClass}>{openClawActionLabel}</strong>
+              </section>
+
+              <section className="openclaw-overview-card">
+                <span className="section-kicker">Leitura da posição</span>
+                <strong className={decisionActionClass}>{positionDecision.action}</strong>
+              </section>
+            </div>
+
+            <div className="openclaw-grid">
+              {!!enrichmentPayload.resumo && (
+                <section className="openclaw-section openclaw-section-wide openclaw-section-lead">
+                  <span className="section-kicker">Resumo</span>
+                  <p>{enrichmentPayload.resumo}</p>
+                </section>
+              )}
+
+              {!!enrichmentPayload.modelo_de_negocio && (
+                <section className="openclaw-section">
+                  <span className="section-kicker">Modelo de negócio</span>
+                  <p>{enrichmentPayload.modelo_de_negocio}</p>
+                </section>
+              )}
+
+              {!!enrichmentPayload.visao_do_mercado && (
+                <section className="openclaw-section">
+                  <span className="section-kicker">Como o mercado está vendo</span>
+                  <p>{enrichmentPayload.visao_do_mercado}</p>
+                </section>
+              )}
+
+              {!!enrichmentPayload.justificativa_da_acao && (
+                <section className="openclaw-section">
+                  <span className="section-kicker">Justificativa da ação</span>
+                  <p>{enrichmentPayload.justificativa_da_acao}</p>
+                </section>
+              )}
+
+              {!!enrichmentPayload.dividendos && (
+                <section className="openclaw-section">
+                  <span className="section-kicker">Dividendos</span>
+                  <p>{enrichmentPayload.dividendos}</p>
+                </section>
+              )}
+
+              {!!enrichmentPayload.observacoes && (
+                <section className="openclaw-section">
+                  <span className="section-kicker">Observações</span>
+                  <p>{enrichmentPayload.observacoes}</p>
+                </section>
+              )}
+
+              {Array.isArray(enrichmentPayload.tese) && enrichmentPayload.tese.length > 0 && (
+                <section className="openclaw-section openclaw-section-list">
+                  <span className="section-kicker">Tese</span>
+                  <ul className="analysis-list">
+                    {enrichmentPayload.tese.map((item, idx) => (
+                      <li key={`tese-${idx}`}>{item}</li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {Array.isArray(enrichmentPayload.riscos) && enrichmentPayload.riscos.length > 0 && (
+                <section className="openclaw-section openclaw-section-list">
+                  <span className="section-kicker">Riscos</span>
+                  <ul className="analysis-list">
+                    {enrichmentPayload.riscos.map((item, idx) => (
+                      <li key={`risco-${idx}`}>{item}</li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </div>
           </>
-        ) : !!enrichment?.raw_reply ? (
+        ) : !!rawEnrichmentReply && !hasTransientRawReply ? (
           <>
             {!!enrichment.updated_at && <p className="subtitle">Atualizado em: {enrichment.updated_at}</p>}
             <p><strong>Resposta bruta do OpenClaw:</strong></p>
-            <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{enrichment.raw_reply}</pre>
+            <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{rawEnrichmentReply}</pre>
           </>
         ) : (
           <p className="subtitle">Sem enriquecimento ainda.</p>
+        )}
+      </article>
+
+      <article className="card detail-card">
+        <div className="hero-line">
+          <div>
+            <h3>Historico de leitura</h3>
+            <p className="subtitle">Evolucao das leituras do OpenClaw para este ativo.</p>
+          </div>
+        </div>
+
+        {enrichmentHistory.length > 0 ? (
+          <div className="table-wrap">
+            <table className="asset-table history-table">
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Preco</th>
+                  <th>Humor</th>
+                  <th>Acao</th>
+                  <th>Resumo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {enrichmentHistory.map((entry) => {
+                  const entryPayload = entry?.payload && typeof entry.payload === 'object' ? entry.payload : {}
+                  const entryMood = String(entry.mood || entryPayload.humor_do_mercado || '').trim() || 'Sem leitura'
+                  const entryAction = structuredActionLabel(entry.suggested_action || entryPayload.acao_sugerida) || String(entry.suggested_action || entryPayload.acao_sugerida || '').trim() || 'Sem sinal'
+                  const entrySummary = shortText(entryPayload.resumo || entryPayload.visao_do_mercado || entry.raw_reply || 'Sem resumo salvo.')
+                  return (
+                    <tr key={entry.id || `${entry.created_at}-${entryMood}-${entryAction}`}>
+                      <td>{dateTimeLabel(entry.created_at)}</td>
+                      <td>{Number(entry.price_at_update || 0) > 0 ? brl(entry.price_at_update) : '-'}</td>
+                      <td>{entryMood}</td>
+                      <td>{entryAction}</td>
+                      <td className="history-summary-cell">{entrySummary}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="subtitle">Sem historico salvo ainda. Ele passa a ser criado nas proximas atualizacoes do OpenClaw.</p>
         )}
       </article>
 

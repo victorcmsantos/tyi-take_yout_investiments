@@ -17,6 +17,11 @@ function AdminPage({ currentUser }) {
   const [lastBackup, setLastBackup] = useState(null)
   const [backups, setBackups] = useState([])
   const [backupsLoading, setBackupsLoading] = useState(false)
+  const [batchLoading, setBatchLoading] = useState(false)
+  const [batchOnlyMissing, setBatchOnlyMissing] = useState(true)
+  const [batchLimit, setBatchLimit] = useState('10')
+  const [batchTickers, setBatchTickers] = useState('')
+  const [batchResult, setBatchResult] = useState(null)
 
   const loadUsers = async () => {
     setLoading(true)
@@ -116,6 +121,33 @@ function AdminPage({ currentUser }) {
     }
   }
 
+  const onRunOpenClawBatch = async () => {
+    setBatchLoading(true)
+    setError('')
+    setMessage('')
+    setBatchResult(null)
+    try {
+      const payload = await apiPost('/api/admin/openclaw/enrich-assets', {
+        only_missing: batchOnlyMissing,
+        limit: String(batchLimit || '').trim() ? Number(batchLimit) : null,
+        tickers: String(batchTickers || '')
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean),
+      })
+      setBatchResult(payload || null)
+      setMessage(
+        payload
+          ? `Lote finalizado: ${payload.success_count || 0} sucesso(s), ${payload.failure_count || 0} falha(s), ${payload.skipped_count || 0} ignorado(s).`
+          : 'Lote concluido.'
+      )
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBatchLoading(false)
+    }
+  }
+
   return (
     <section>
       <div className="hero-actions">
@@ -188,6 +220,77 @@ function AdminPage({ currentUser }) {
             </div>
           )}
         </div>
+      </Paper>
+
+      <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
+        <Typography variant="h6" sx={{ mb: 1 }}>Enriquecimento OpenClaw em lote</Typography>
+        <Typography variant="body2" sx={{ mb: 2, opacity: 0.8 }}>
+          Processa um ativo por vez, aguarda a resposta do OpenClaw e grava cada resultado no banco antes de seguir.
+        </Typography>
+        <div className="form-grid" style={{ marginBottom: 12 }}>
+          <label className="auth-field">
+            <span>Limite</span>
+            <input
+              value={batchLimit}
+              onChange={(event) => setBatchLimit(event.target.value)}
+              placeholder="10"
+              inputMode="numeric"
+            />
+          </label>
+          <label className="auth-field" style={{ gridColumn: 'span 3' }}>
+            <span>Tickers específicos (opcional)</span>
+            <input
+              value={batchTickers}
+              onChange={(event) => setBatchTickers(event.target.value)}
+              placeholder="ITUB4, BBDC4, MXRF11"
+            />
+          </label>
+        </div>
+        <FormControlLabel
+          control={<Checkbox checked={batchOnlyMissing} onChange={(event) => setBatchOnlyMissing(event.target.checked)} />}
+          label="Processar apenas ativos sem enriquecimento salvo"
+        />
+        <div style={{ marginTop: 12 }}>
+          <Button variant="contained" onClick={onRunOpenClawBatch} disabled={batchLoading}>
+            {batchLoading ? 'Rodando lote...' : 'Rodar lote OpenClaw'}
+          </Button>
+        </div>
+
+        {batchResult && (
+          <div style={{ marginTop: 16 }}>
+            <div className="admin-user-meta" style={{ marginBottom: 12 }}>
+              <span>Processados: {batchResult.processed_count || 0}</span>
+              <span>Sucesso: {batchResult.success_count || 0}</span>
+              <span>Falhas: {batchResult.failure_count || 0}</span>
+              <span>Ignorados: {batchResult.skipped_count || 0}</span>
+            </div>
+
+            {Array.isArray(batchResult.results) && batchResult.results.length > 0 && (
+              <div className="table-wrap">
+                <table className="asset-table">
+                  <thead>
+                    <tr>
+                      <th>Ticker</th>
+                      <th>Status</th>
+                      <th>Mensagem</th>
+                      <th>Atualizado em</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {batchResult.results.map((item) => (
+                      <tr key={`${item.ticker}-${item.updated_at || item.message}`}>
+                        <td>{item.ticker}</td>
+                        <td>{item.ok ? 'OK' : 'Falha'}</td>
+                        <td>{item.message}</td>
+                        <td>{item.updated_at || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
       </Paper>
 
       <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>

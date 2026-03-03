@@ -339,6 +339,28 @@ def ensure_schema_upgrades():
 
     db.execute(
         """
+        CREATE TABLE IF NOT EXISTS asset_enrichment_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            raw_reply TEXT NOT NULL DEFAULT '',
+            price_at_update REAL NOT NULL DEFAULT 0,
+            mood TEXT NOT NULL DEFAULT '',
+            suggested_action TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (ticker) REFERENCES assets (ticker)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_asset_enrichment_history_ticker_created_at
+        ON asset_enrichment_history (ticker, created_at DESC)
+        """
+    )
+
+    db.execute(
+        """
         CREATE TABLE IF NOT EXISTS fixed_incomes (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           portfolio_id INTEGER NOT NULL,

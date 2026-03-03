@@ -22,6 +22,7 @@ from .services import (
     delete_transactions,
     get_asset,
     get_asset_enrichment,
+    get_asset_enrichment_history,
     get_asset_incomes,
     get_asset_position_summary,
     get_asset_price_history,
@@ -45,6 +46,7 @@ from .services import (
     refresh_asset_market_data,
     resolve_portfolio_id,
     enrich_asset_with_openclaw,
+    enrich_assets_with_openclaw_batch,
 )
 
 
@@ -308,6 +310,33 @@ def admin_user_status(user_id: int):
     return _json_ok({"message": message, "user": user})
 
 
+@api_bp.route("/admin/openclaw/enrich-assets", methods=["POST"])
+def admin_openclaw_enrich_assets():
+    require_admin_user()
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    tickers = payload.get("tickers") or []
+    if isinstance(tickers, str):
+        tickers = [item.strip() for item in tickers.split(",")]
+    elif not isinstance(tickers, list):
+        tickers = []
+
+    raw_limit = payload.get("limit")
+    limit = None
+    try:
+        parsed_limit = int(raw_limit)
+        if parsed_limit > 0:
+            limit = parsed_limit
+    except (TypeError, ValueError):
+        limit = None
+
+    result = enrich_assets_with_openclaw_batch(
+        tickers=tickers,
+        only_missing=_as_bool(payload.get("only_missing", True)),
+        limit=limit,
+    )
+    return _json_ok(result)
+
+
 @api_bp.route("/metrics", methods=["GET"])
 def metrics():
     return _json_ok({"routes": get_route_metrics(current_app)})
@@ -367,19 +396,27 @@ def assets():
 @api_bp.route("/assets/<ticker>", methods=["GET"])
 def asset_detail(ticker):
     portfolio_ids = _selected_portfolio_ids_from_request()
-    chart_range = (request.args.get("range") or "1y").lower()
     asset = get_asset(ticker)
     if not asset:
         return _json_error("Ativo nao encontrado.", status=404)
     payload = {
         "asset": asset,
         "enrichment": get_asset_enrichment(ticker),
+        "enrichment_history": get_asset_enrichment_history(ticker),
         "position": get_asset_position_summary(ticker, portfolio_ids),
         "transactions": get_asset_transactions(ticker, portfolio_ids),
         "incomes": get_asset_incomes(ticker, portfolio_ids),
-        "price_history": get_asset_price_history(ticker, chart_range),
     }
     return _json_ok(payload)
+
+
+@api_bp.route("/assets/<ticker>/price-history", methods=["GET"])
+def asset_price_history(ticker: str):
+    chart_range = (request.args.get("range") or "1y").lower()
+    asset = get_asset(ticker)
+    if not asset:
+        return _json_error("Ativo nao encontrado.", status=404)
+    return _json_ok(get_asset_price_history(ticker, chart_range))
 
 
 @api_bp.route("/assets/<ticker>/enrich/openclaw", methods=["POST"])
@@ -391,7 +428,13 @@ def asset_enrich_openclaw(ticker: str):
     ok, message, enrichment = enrich_asset_with_openclaw(ticker)
     if not ok:
         return _json_error(message, status=502)
-    return _json_ok({"message": message, "enrichment": enrichment})
+    return _json_ok(
+        {
+            "message": message,
+            "enrichment": enrichment,
+            "enrichment_history": get_asset_enrichment_history(ticker),
+        }
+    )
 
 
 @api_bp.route("/portfolio/snapshot", methods=["GET"])

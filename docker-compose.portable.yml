@@ -1,0 +1,18 @@
+# Overrides para rodar este repo em qualquer lugar (sem depender de /srv).
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.portable.yml up -d --build
+
+services:
+  backend:
+    volumes:
+      - ${APP_VOL_DIR:-./app_vol}:/app_vol
+
+  openclaw-gateway:
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR:-./openclaw/config}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR:-./openclaw/workspace}:/home/node/.openclaw/workspace
+
+  openclaw-cli:
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR:-./openclaw/config}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR:-./openclaw/workspace}:/home/node/.openclaw/workspace

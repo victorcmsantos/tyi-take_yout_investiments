@@ -55,6 +55,91 @@ Para parar:
 docker compose down
 ```
 
+### Portabilidade (rodar em outro lugar)
+
+O `docker-compose.yml` principal usa bind-mounts em `/srv/...` (bom para servidor), então ao clonar em outra máquina você tem 2 opções:
+
+- **Opção A (recomendado para rodar em qualquer pasta):** use o arquivo `docker-compose.portable.yml` (paths relativos ao repo):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.portable.yml up -d --build
+```
+
+- **Opção B (modo servidor /srv):** crie os diretórios e rode o compose normal:
+
+```bash
+sudo mkdir -p /srv/tyi-take_yout_investiments/app_vol
+sudo mkdir -p /srv/tyi-take_yout_investiments/openclaw/config
+sudo mkdir -p /srv/tyi-take_yout_investiments/openclaw/workspace
+docker compose up -d --build
+```
+
+Além disso:
+
+- Copie `.env.example` para `.env` e preencha suas chaves (ex: `OPENROUTER_API_KEY`, `BRAPI_TOKEN`, etc.).
+- O OpenClaw usa TLS com uma CA local. Para o **Control UI no seu PC** não reclamar de certificado, importe o arquivo `openclaw-local-ca.pem` (gerado localmente). Se você mudar de host/IP, pode ser necessário regenerar o certificado TLS do gateway.
+
+#### OpenClaw: gerar/regenerar certificados TLS (CA local + SAN)
+
+Quando você troca de máquina, IP da LAN, ou hostname, o navegador pode reclamar porque o certificado do gateway não tem o SAN correspondente. A forma mais simples é regenerar a CA + certificado do gateway no diretório montado do OpenClaw.
+
+1) Escolha onde fica o config do OpenClaw no host:
+
+- **Modo portátil (usando `docker-compose.portable.yml`):** `./openclaw/config`
+- **Modo servidor (compose padrão):** `/srv/tyi-take_yout_investiments/openclaw/config`
+
+2) Rode os comandos abaixo no host (na pasta raiz do repo, ou ajuste o path do `OPENCLAW_CONFIG_DIR`). Exemplo gerando SAN para `localhost`, o nome de serviço `openclaw-gateway` (rede do compose) e um IP de LAN:
+
+```bash
+# ajuste para o IP/hostname que você usa no browser
+export OPENCLAW_TLS_IP="192.168.0.10"
+
+export OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-./openclaw/config}"
+export OPENCLAW_TLS_DIR="$OPENCLAW_CONFIG_DIR/gateway/tls"
+
+mkdir -p "$OPENCLAW_TLS_DIR"
+cd "$OPENCLAW_TLS_DIR"
+
+# 1) CA local (NÃO compartilhe o .key)
+openssl genrsa -out openclaw-local-ca.key 4096
+openssl req -x509 -new -nodes -key openclaw-local-ca.key -sha256 -days 3650 \
+  -out openclaw-local-ca.pem -subj "/CN=openclaw-local-ca"
+
+# 2) Cert do gateway (server)
+cat > san.ext <<EOF
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=@alt_names
+
+[alt_names]
+DNS.1=localhost
+DNS.2=openclaw-gateway
+IP.1=127.0.0.1
+IP.2=$OPENCLAW_TLS_IP
+EOF
+
+openssl genrsa -out openclaw-local.key 2048
+openssl req -new -key openclaw-local.key -out openclaw-local.csr -subj "/CN=openclaw-gateway"
+openssl x509 -req -in openclaw-local.csr -CA openclaw-local-ca.pem -CAkey openclaw-local-ca.key \
+  -CAcreateserial -out openclaw-local.crt -days 825 -sha256 -extfile san.ext
+
+# (opcional) limpeza de artefatos
+rm -f openclaw-local.csr openclaw-local-ca.srl san.ext
+```
+
+3) Reinicie o gateway para ele recarregar os arquivos:
+
+```bash
+docker compose restart openclaw-gateway
+```
+
+Notas:
+
+- A CA que você precisa importar no seu PC para remover o aviso do navegador é: `openclaw-local-ca.pem` (no mesmo diretório acima).
+- Se você já personalizou os paths/nome dos arquivos no `openclaw.json` (ex.: `gateway.tls.certPath/keyPath/caPath`), alinhe os nomes gerados aqui com o que está configurado.
+- Se você não acessa o Control UI pelo IP da LAN, pode remover o `OPENCLAW_TLS_IP` e a linha `IP.2=...` do arquivo SAN.
+
 ### Build das imagens
 
 ```bash
@@ -215,6 +300,3 @@ cp /srv/tyi-take_yout_investiments/app_vol/backups/investments_YYYYMMDD_HHMMSS.s
 - `frontend/node_modules` e artefatos locais removidos do versionamento
 - dependencias do frontend fixadas para preservar esta versao
 
-## backup do banco de daddos
-
-- curl http://192.168.0.40:8000/api/backup/database

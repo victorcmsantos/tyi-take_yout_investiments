@@ -6,6 +6,12 @@ __pycache__/
 node_modules/
 frontend/dist/
 
+# Local docker volumes/state (portable compose)
+app_vol/
+openclaw/config/
+openclaw/workspace/.openclaw/
+openclaw-local-ca.pem
+
 # Local env (secrets)
 .env
 .env.*

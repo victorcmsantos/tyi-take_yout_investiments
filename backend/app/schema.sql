@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS assets (
   market_cap_bi REAL NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS asset_enrichments (
+  ticker TEXT PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  raw_reply TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (ticker) REFERENCES assets (ticker)
+);
+
 CREATE TABLE IF NOT EXISTS transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   portfolio_id INTEGER NOT NULL,

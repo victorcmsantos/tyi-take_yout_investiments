@@ -23,15 +23,21 @@ services:
       MARKET_DATA_PROVIDERS_US: "${MARKET_DATA_PROVIDERS_US:-}"
       MARKET_DATA_PROVIDERS_CRYPTO: "${MARKET_DATA_PROVIDERS_CRYPTO:-}"
       MARKET_DATA_PROVIDERS_BR: "${MARKET_DATA_PROVIDERS_BR:-}"
+      OPENCLAW_GATEWAY_URL: "${OPENCLAW_GATEWAY_URL:-https://openclaw-gateway:18789}"
+      OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:-}"
+      OPENCLAW_TLS_CA_BUNDLE: "/openclaw-config/gateway/tls/openclaw-local-ca.pem"
     ports:
       - "8000:8000"
     volumes:
       - /srv/tyi-take_yout_investiments/app_vol:/app_vol
+      - ${OPENCLAW_CONFIG_DIR:-/srv/tyi-take_yout_investiments/openclaw/config}:/openclaw-config:ro
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_OPENCLAW_ENRICHMENT_STALE_DAYS: "${VITE_OPENCLAW_ENRICHMENT_STALE_DAYS:-3}"
     image: invest-portal-frontend
     container_name: frontend
     networks:

@@ -15,6 +15,7 @@ from flask import current_app, has_request_context
 
 from .auth import get_current_user
 from .db import get_db
+from .openclaw_client import OpenClawError, invoke_tool
 
 try:
     import yfinance as yf
@@ -173,6 +174,168 @@ def get_asset(ticker: str):
         (ticker.upper(),),
     ).fetchone()
     return _serialize_asset(row)
+
+def get_asset_enrichment(ticker: str):
+    if not ticker:
+        return None
+    db = get_db()
+    row = db.execute(
+        "SELECT ticker, payload_json, raw_reply, updated_at FROM asset_enrichments WHERE ticker = ?",
+        (ticker.upper(),),
+    ).fetchone()
+    if not row:
+        return None
+    payload_json = (row["payload_json"] or "").strip()
+    payload = None
+    if payload_json:
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            payload = None
+    return {
+        "ticker": row["ticker"],
+        "payload": payload,
+        "raw_reply": row["raw_reply"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def upsert_asset_enrichment(ticker: str, payload: dict | None, raw_reply: str):
+    if not ticker:
+        return False
+    db = get_db()
+    payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    db.execute(
+        """
+        INSERT INTO asset_enrichments (ticker, payload_json, raw_reply, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(ticker) DO UPDATE SET
+            payload_json = excluded.payload_json,
+            raw_reply = excluded.raw_reply,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (ticker.upper(), payload_json, (raw_reply or "")),
+    )
+    db.commit()
+    return True
+
+
+def _extract_json_from_text(text: str):
+    if not text:
+        return None
+    raw = text.strip()
+    if raw.startswith("```"):
+        # Strip fenced code blocks if present.
+        raw = raw.strip("`")
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end < 0 or end <= start:
+        return None
+    candidate = raw[start : end + 1]
+    try:
+        return json.loads(candidate)
+    except Exception:
+        return None
+
+
+def _normalize_enrichment_list(value):
+    if not isinstance(value, list):
+        return []
+    items = []
+    for item in value:
+        text = str(item or "").strip()
+        if text:
+            items.append(text)
+    return items
+
+
+def _normalize_asset_enrichment_payload(payload):
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "resumo": str(payload.get("resumo") or "").strip(),
+        "modelo_de_negocio": str(payload.get("modelo_de_negocio") or "").strip(),
+        "tese": _normalize_enrichment_list(payload.get("tese")),
+        "riscos": _normalize_enrichment_list(payload.get("riscos")),
+        "dividendos": str(payload.get("dividendos") or "").strip(),
+        "observacoes": str(payload.get("observacoes") or "").strip(),
+    }
+
+
+def _extract_openclaw_reply(result):
+    if not isinstance(result, dict):
+        return ""
+
+    direct_reply = str(result.get("reply") or "").strip()
+    if direct_reply:
+        return direct_reply
+
+    details = result.get("details")
+    if isinstance(details, dict):
+        details_reply = str(details.get("reply") or "").strip()
+        if details_reply:
+            return details_reply
+
+    content = result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            parsed = _extract_json_from_text(text)
+            if isinstance(parsed, dict):
+                nested_reply = str(parsed.get("reply") or "").strip()
+                if nested_reply:
+                    return nested_reply
+            return text
+
+    return ""
+
+
+def enrich_asset_with_openclaw(ticker: str):
+    ticker_norm = (ticker or "").strip().upper()
+    if not ticker_norm:
+        return False, "Ticker e obrigatorio.", None
+
+    asset = get_asset(ticker_norm)
+    if not asset:
+        return False, "Ativo nao encontrado.", None
+
+    prompt = (
+        f"Ticker: {ticker_norm}. "
+        f"Nome: {asset.get('name') or ''}. "
+        f"Setor: {asset.get('sector') or ''}. "
+        "Responda APENAS JSON valido com as chaves resumo, modelo_de_negocio, tese, riscos, dividendos, observacoes. "
+        "Se nao souber, use string vazia ou lista vazia. "
+        "Seja conciso e nao invente numeros precisos."
+    )
+
+    try:
+        result = invoke_tool(
+            "sessions_send",
+            {
+                "sessionKey": "main",
+                "message": prompt,
+                "timeoutSeconds": 120,
+            },
+            timeout_seconds=150,
+        )
+    except OpenClawError as exc:
+        return False, str(exc), None
+
+    if not isinstance(result, dict):
+        return False, "Resposta inesperada do OpenClaw.", None
+
+    reply = _extract_openclaw_reply(result)
+    parsed = _normalize_asset_enrichment_payload(_extract_json_from_text(reply))
+    if not parsed:
+        upsert_asset_enrichment(ticker_norm, {}, reply)
+        return True, "OpenClaw respondeu, mas nao retornou JSON valido. Exibindo resposta bruta.", get_asset_enrichment(ticker_norm)
+
+    upsert_asset_enrichment(ticker_norm, parsed, reply)
+    return True, "OK", get_asset_enrichment(ticker_norm)
 
 
 def get_portfolios():

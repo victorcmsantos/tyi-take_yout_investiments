@@ -21,6 +21,7 @@ from .services import (
     delete_incomes,
     delete_transactions,
     get_asset,
+    get_asset_enrichment,
     get_asset_incomes,
     get_asset_position_summary,
     get_asset_price_history,
@@ -43,6 +44,7 @@ from .services import (
     refresh_all_assets_market_data,
     refresh_asset_market_data,
     resolve_portfolio_id,
+    enrich_asset_with_openclaw,
 )
 
 
@@ -371,12 +373,25 @@ def asset_detail(ticker):
         return _json_error("Ativo nao encontrado.", status=404)
     payload = {
         "asset": asset,
+        "enrichment": get_asset_enrichment(ticker),
         "position": get_asset_position_summary(ticker, portfolio_ids),
         "transactions": get_asset_transactions(ticker, portfolio_ids),
         "incomes": get_asset_incomes(ticker, portfolio_ids),
         "price_history": get_asset_price_history(ticker, chart_range),
     }
     return _json_ok(payload)
+
+
+@api_bp.route("/assets/<ticker>/enrich/openclaw", methods=["POST"])
+def asset_enrich_openclaw(ticker: str):
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+
+    ok, message, enrichment = enrich_asset_with_openclaw(ticker)
+    if not ok:
+        return _json_error(message, status=502)
+    return _json_ok({"message": message, "enrichment": enrichment})
 
 
 @api_bp.route("/portfolio/snapshot", methods=["GET"])

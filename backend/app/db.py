@@ -327,6 +327,18 @@ def ensure_schema_upgrades():
 
     db.execute(
         """
+        CREATE TABLE IF NOT EXISTS asset_enrichments (
+            ticker TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            raw_reply TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (ticker) REFERENCES assets (ticker)
+        )
+        """
+    )
+
+    db.execute(
+        """
         CREATE TABLE IF NOT EXISTS fixed_incomes (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           portfolio_id INTEGER NOT NULL,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import 'chart.js/auto'
 import { Line } from 'react-chartjs-2'
@@ -12,6 +12,11 @@ const CHART_RANGES = [
   { key: '1y', label: '1 ANO' },
   { key: '5y', label: '5 ANOS' },
 ]
+const rawEnrichmentStaleDays = Number(import.meta.env.VITE_OPENCLAW_ENRICHMENT_STALE_DAYS)
+const enrichmentStaleDays = Number.isFinite(rawEnrichmentStaleDays) && rawEnrichmentStaleDays > 0
+  ? rawEnrichmentStaleDays
+  : 3
+const ENRICHMENT_STALE_AFTER_MS = enrichmentStaleDays * 24 * 60 * 60 * 1000
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const pct = (value) => `${Number(value || 0).toFixed(2)}%`
@@ -40,14 +45,30 @@ function dateBr(value) {
   return text
 }
 
+function parseApiDate(value) {
+  const text = String(value || '').trim()
+  if (!text) return null
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(text)) {
+    const parsed = Date.parse(text)
+    return Number.isNaN(parsed) ? null : parsed
+  }
+  const normalized = text.includes(' ') ? text.replace(' ', 'T') : text
+  const parsed = Date.parse(`${normalized}Z`)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
 function AssetPage({ selectedPortfolioIds }) {
   const { ticker } = useParams()
+  const autoEnrichedTickersRef = useRef(new Set())
   const [rangeKey, setRangeKey] = useState('1y')
   const [payload, setPayload] = useState(null)
+  const [enrichment, setEnrichment] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [syncMessage, setSyncMessage] = useState('')
   const [syncing, setSyncing] = useState(false)
+  const [enriching, setEnriching] = useState(false)
+  const [enrichMessage, setEnrichMessage] = useState('')
 
   useEffect(() => {
     let active = true
@@ -61,6 +82,7 @@ function AssetPage({ selectedPortfolioIds }) {
         })
         if (!active) return
         setPayload(data)
+        setEnrichment(data?.enrichment || null)
       } catch (err) {
         if (!active) return
         setError(err.message)
@@ -99,6 +121,60 @@ function AssetPage({ selectedPortfolioIds }) {
   const incomes = payload?.incomes || []
   const priceHistory = payload?.price_history || {}
   const marketData = asset.market_data || {}
+  const enrichmentPayload = enrichment?.payload && typeof enrichment.payload === 'object' ? enrichment.payload : null
+  const enrichmentUpdatedAtMs = parseApiDate(enrichment?.updated_at)
+  const hasAnyEnrichment = Boolean(enrichment?.raw_reply || enrichmentPayload)
+  const isEnrichmentStale = !enrichmentUpdatedAtMs || (Date.now() - enrichmentUpdatedAtMs) >= ENRICHMENT_STALE_AFTER_MS
+  const hasStructuredEnrichment = Boolean(
+    enrichmentPayload && (
+      String(enrichmentPayload.resumo || '').trim() ||
+      String(enrichmentPayload.modelo_de_negocio || '').trim() ||
+      String(enrichmentPayload.dividendos || '').trim() ||
+      String(enrichmentPayload.observacoes || '').trim() ||
+      (Array.isArray(enrichmentPayload.tese) && enrichmentPayload.tese.length > 0) ||
+      (Array.isArray(enrichmentPayload.riscos) && enrichmentPayload.riscos.length > 0)
+    )
+  )
+
+  useEffect(() => {
+    const tickerKey = String(ticker || '').trim().toUpperCase()
+    if (!tickerKey || loading || error || !payload) return
+    if (hasAnyEnrichment && !isEnrichmentStale) return
+    if (enriching) return
+    if (autoEnrichedTickersRef.current.has(tickerKey)) return
+
+    autoEnrichedTickersRef.current.add(tickerKey)
+    setEnriching(true)
+    setEnrichMessage(hasAnyEnrichment ? 'Atualizando resumo automatico via OpenClaw...' : 'Gerando resumo automatico via OpenClaw...')
+
+    ;(async () => {
+      try {
+        const data = await apiPost(`/api/assets/${tickerKey}/enrich/openclaw`)
+        setEnrichMessage(data?.message || 'OK')
+        setEnrichment(data?.enrichment || null)
+      } catch (err) {
+        setEnrichMessage(err.message)
+      } finally {
+        setEnriching(false)
+      }
+    })()
+  }, [ticker, loading, error, payload, hasAnyEnrichment, isEnrichmentStale, enriching])
+
+  const onEnrichOpenClaw = async () => {
+    if (!ticker) return
+    autoEnrichedTickersRef.current.add(String(ticker || '').trim().toUpperCase())
+    setEnriching(true)
+    setEnrichMessage('')
+    try {
+      const data = await apiPost(`/api/assets/${ticker}/enrich/openclaw`)
+      setEnrichMessage(data?.message || 'OK')
+      setEnrichment(data?.enrichment || null)
+    } catch (err) {
+      setEnrichMessage(err.message)
+    } finally {
+      setEnriching(false)
+    }
+  }
 
   const chartData = useMemo(() => ({
     labels: priceHistory.labels || [],
@@ -202,6 +278,59 @@ function AssetPage({ selectedPortfolioIds }) {
         <h3>Resumo</h3>
         <p>Variacao no dia: <strong className={Number(asset.variation_day || 0) >= 0 ? 'up' : 'down'}>{pct(asset.variation_day)}</strong></p>
         <p>Valor de mercado: R$ {Number(asset.market_cap_bi || 0).toFixed(2)} bi</p>
+      </article>
+
+      <article className="card detail-card">
+        <div className="hero-line">
+          <h3>OpenClaw</h3>
+          <button type="button" className="btn-primary" onClick={onEnrichOpenClaw} disabled={enriching}>
+            {enriching ? 'Enriquecendo...' : 'Enriquecer com OpenClaw'}
+          </button>
+        </div>
+
+        {!!enrichMessage && (
+          <p className={enrichMessage === 'OK' || enrichMessage.includes('OK') ? 'notice-ok' : 'notice-warn'}>
+            {enrichMessage}
+          </p>
+        )}
+
+        {hasStructuredEnrichment ? (
+          <>
+            {!!enrichment.updated_at && <p className="subtitle">Atualizado em: {enrichment.updated_at}</p>}
+            {!!enrichmentPayload.resumo && <p><strong>Resumo:</strong> {enrichmentPayload.resumo}</p>}
+            {!!enrichmentPayload.modelo_de_negocio && <p><strong>Modelo de negocio:</strong> {enrichmentPayload.modelo_de_negocio}</p>}
+            {Array.isArray(enrichmentPayload.tese) && enrichmentPayload.tese.length > 0 && (
+              <div>
+                <p><strong>Tese:</strong></p>
+                <ul>
+                  {enrichmentPayload.tese.map((item, idx) => (
+                    <li key={`tese-${idx}`}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {Array.isArray(enrichmentPayload.riscos) && enrichmentPayload.riscos.length > 0 && (
+              <div>
+                <p><strong>Riscos:</strong></p>
+                <ul>
+                  {enrichmentPayload.riscos.map((item, idx) => (
+                    <li key={`risco-${idx}`}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {!!enrichmentPayload.dividendos && <p><strong>Dividendos:</strong> {enrichmentPayload.dividendos}</p>}
+            {!!enrichmentPayload.observacoes && <p><strong>Observacoes:</strong> {enrichmentPayload.observacoes}</p>}
+          </>
+        ) : !!enrichment?.raw_reply ? (
+          <>
+            {!!enrichment.updated_at && <p className="subtitle">Atualizado em: {enrichment.updated_at}</p>}
+            <p><strong>Resposta bruta do OpenClaw:</strong></p>
+            <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{enrichment.raw_reply}</pre>
+          </>
+        ) : (
+          <p className="subtitle">Sem enriquecimento ainda.</p>
+        )}
       </article>
 
       <div className="table-wrap">

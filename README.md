@@ -119,13 +119,13 @@ IP.1=127.0.0.1
 IP.2=$OPENCLAW_TLS_IP
 EOF
 
-openssl genrsa -out openclaw-local.key 2048
-openssl req -new -key openclaw-local.key -out openclaw-local.csr -subj "/CN=openclaw-gateway"
-openssl x509 -req -in openclaw-local.csr -CA openclaw-local-ca.pem -CAkey openclaw-local-ca.key \
-  -CAcreateserial -out openclaw-local.crt -days 825 -sha256 -extfile san.ext
+openssl genrsa -out gateway-server.key 2048
+openssl req -new -key gateway-server.key -out gateway-server.csr -subj "/CN=openclaw-gateway"
+openssl x509 -req -in gateway-server.csr -CA openclaw-local-ca.pem -CAkey openclaw-local-ca.key \
+  -CAcreateserial -out gateway-server.pem -days 825 -sha256 -extfile san.ext
 
 # (opcional) limpeza de artefatos
-rm -f openclaw-local.csr openclaw-local-ca.srl san.ext
+rm -f gateway-server.csr openclaw-local-ca.srl san.ext
 ```
 
 3) Reinicie o gateway para ele recarregar os arquivos:

@@ -1,10 +1,7 @@
 import ast
-import csv
-import io
 import json
 import logging
 import os
-import random
 import re
 import time
 import unicodedata
@@ -15,9 +12,8 @@ from urllib.request import Request, urlopen
 
 from flask import current_app, has_request_context
 
-from .auth import get_current_user
-from .db import get_db
-from .openclaw_client import OpenClawError, invoke_tool
+from ..auth import get_current_user
+from ..db import get_db
 
 try:
     import yfinance as yf
@@ -335,122 +331,21 @@ def _apply_metric_formulas_to_values(values: dict, formula_map: dict):
 
 
 def get_metric_formulas_catalog():
-    db = get_db()
-    formula_map = _get_metric_formula_map(db)
-    rows = db.execute("SELECT metric_key, updated_at FROM metric_formulas").fetchall()
-    updated_map = {str(row["metric_key"]): row["updated_at"] for row in rows}
-    items = []
-    for item in _metric_formula_catalog_items():
-        key = item["key"]
-        items.append(
-            {
-                "key": key,
-                "title": item["title"],
-                "description": item["description"],
-                "formula": formula_map.get(key, item["default_formula"]),
-                "updated_at": updated_map.get(key),
-                "example": f"{key} = {item['default_formula']}",
-            }
-        )
-    return {
-        "metrics": items,
-        "allowed_variables": ["value"] + list(_METRIC_FORMULA_FIELDS),
-        "allowed_functions": sorted(_METRIC_FORMULA_ALLOWED_FUNCS.keys()),
-    }
+    from . import scanner as scanner_services
+
+    return scanner_services.get_metric_formulas_catalog()
 
 
 def recalculate_metric_formulas_for_all_assets():
-    db = get_db()
-    _seed_missing_metric_baselines(db)
-    formula_map = _get_metric_formula_map(db)
-    rows = db.execute(
-        """
-        SELECT ticker, price, dy, pl, pvp, variation_day, variation_7d, variation_30d, market_cap_bi
-        FROM asset_metric_baselines
-        ORDER BY ticker ASC
-        """
-    ).fetchall()
-    updated = 0
-    for row in rows:
-        ticker = str(row["ticker"] or "").strip().upper()
-        if not ticker:
-            continue
-        applied = _apply_metric_formulas_to_values(
-            {
-                "price": row["price"],
-                "dy": row["dy"],
-                "pl": row["pl"],
-                "pvp": row["pvp"],
-                "variation_day": row["variation_day"],
-                "variation_7d": row["variation_7d"],
-                "variation_30d": row["variation_30d"],
-                "market_cap_bi": row["market_cap_bi"],
-            },
-            formula_map,
-        )
-        cursor = db.execute(
-            """
-            UPDATE assets
-            SET
-                price = ?,
-                dy = ?,
-                pl = ?,
-                pvp = ?,
-                variation_day = ?,
-                variation_7d = ?,
-                variation_30d = ?,
-                market_cap_bi = ?
-            WHERE ticker = ?
-            """,
-            (
-                applied["price"],
-                applied["dy"],
-                applied["pl"],
-                applied["pvp"],
-                applied["variation_day"],
-                applied["variation_7d"],
-                applied["variation_30d"],
-                applied["market_cap_bi"],
-                ticker,
-            ),
-        )
-        if int(cursor.rowcount or 0) > 0:
-            updated += 1
-    db.commit()
-    return {"updated_count": updated, "applied_at": _now_iso()}
+    from . import scanner as scanner_services
+
+    return scanner_services.recalculate_metric_formulas_for_all_assets()
 
 
 def update_metric_formula(metric_key: str, formula: str):
-    key = str(metric_key or "").strip().lower()
-    if key not in _METRIC_FORMULA_FIELDS:
-        return False, "Metrica invalida.", None
+    from . import scanner as scanner_services
 
-    normalized_formula = _normalize_metric_formula(formula)
-    try:
-        probe_context = _metric_formula_context({field: 1.0 for field in _METRIC_FORMULA_FIELDS})
-        probe_context["value"] = 1.0
-        probe_value = _evaluate_metric_formula(normalized_formula, probe_context)
-        if _to_number(probe_value) is None:
-            return False, "Formula precisa retornar um valor numerico.", None
-    except Exception as exc:
-        return False, f"Formula invalida: {exc}", None
-
-    db = get_db()
-    _ensure_metric_formula_rows(db)
-    db.execute(
-        """
-        UPDATE metric_formulas
-        SET formula = ?, updated_at = ?
-        WHERE metric_key = ?
-        """,
-        (normalized_formula, _now_iso(), key),
-    )
-    result = recalculate_metric_formulas_for_all_assets()
-    return True, "Formula salva e aplicada em todos os tickers.", {
-        "metric_key": key,
-        "formula": normalized_formula,
-        "recalculate": result,
-    }
+    return scanner_services.update_metric_formula(metric_key, formula)
 
 
 def _market_data_stale_after_seconds():
@@ -517,34 +412,10 @@ def _market_data_meta_from_asset(asset):
     }
 
 
-def _serialize_asset(asset):
-    if not asset:
-        return None
-    item = dict(asset)
-    item["market_data"] = _market_data_meta_from_asset(item)
-    return item
-
-
-def _mark_asset_market_data_failed(ticker: str, error_message: str):
-    db = get_db()
-    db.execute(
-        """
-        UPDATE assets
-        SET
-            market_data_status = 'stale',
-            market_data_last_attempt_at = ?,
-            market_data_last_error = ?
-        WHERE ticker = ?
-        """,
-        (_now_iso(), (error_message or "").strip(), (ticker or "").strip().upper()),
-    )
-    db.commit()
-
-
 def get_top_assets():
-    db = get_db()
-    rows = db.execute("SELECT * FROM assets ORDER BY market_cap_bi DESC").fetchall()
-    return [_serialize_asset(row) for row in rows]
+    from . import market_data as market_data_services
+
+    return market_data_services.get_top_assets()
 
 
 def _current_user_id():
@@ -555,78 +426,20 @@ def _current_user_id():
 
 
 def get_asset(ticker: str):
-    db = get_db()
-    row = db.execute(
-        "SELECT * FROM assets WHERE ticker = ?",
-        (ticker.upper(),),
-    ).fetchone()
-    return _serialize_asset(row)
+    from . import market_data as market_data_services
+
+    return market_data_services.get_asset(ticker)
 
 def get_asset_enrichment(ticker: str):
-    if not ticker:
-        return None
-    db = get_db()
-    row = db.execute(
-        "SELECT ticker, payload_json, raw_reply, updated_at FROM asset_enrichments WHERE ticker = ?",
-        (ticker.upper(),),
-    ).fetchone()
-    if not row:
-        return None
-    payload_json = (row["payload_json"] or "").strip()
-    payload = None
-    if payload_json:
-        try:
-            payload = json.loads(payload_json)
-        except Exception:
-            payload = None
-    return {
-        "ticker": row["ticker"],
-        "payload": payload,
-        "raw_reply": row["raw_reply"],
-        "updated_at": row["updated_at"],
-    }
+    from . import openclaw as openclaw_services
+
+    return openclaw_services.get_asset_enrichment(ticker)
 
 
 def get_asset_enrichment_history(ticker: str, limit: int = 12):
-    if not ticker:
-        return []
-    try:
-        history_limit = max(1, min(int(limit), 50))
-    except (TypeError, ValueError):
-        history_limit = 12
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT id, ticker, payload_json, raw_reply, price_at_update, mood, suggested_action, created_at
-        FROM asset_enrichment_history
-        WHERE ticker = ?
-        ORDER BY datetime(created_at) DESC, id DESC
-        LIMIT ?
-        """,
-        (ticker.upper(), history_limit),
-    ).fetchall()
-    items = []
-    for row in rows:
-        payload_json = (row["payload_json"] or "").strip()
-        payload = None
-        if payload_json:
-            try:
-                payload = json.loads(payload_json)
-            except Exception:
-                payload = None
-        items.append(
-            {
-                "id": row["id"],
-                "ticker": row["ticker"],
-                "payload": payload,
-                "raw_reply": row["raw_reply"],
-                "price_at_update": float(row["price_at_update"] or 0.0),
-                "mood": str(row["mood"] or "").strip(),
-                "suggested_action": str(row["suggested_action"] or "").strip(),
-                "created_at": row["created_at"],
-            }
-        )
-    return items
+    from . import openclaw as openclaw_services
+
+    return openclaw_services.get_asset_enrichment_history(ticker, limit=limit)
 
 
 def get_asset_enrichments_map(tickers):
@@ -938,467 +751,36 @@ def _build_portfolio_tactical_summary(positions, group_summaries, total_value):
 
 
 def upsert_asset_enrichment(ticker: str, payload: dict | None, raw_reply: str, price_at_update: float = 0.0):
-    if not ticker:
-        return False
-    db = get_db()
-    payload_json = json.dumps(payload or {}, ensure_ascii=False)
-    normalized_price = 0.0
-    try:
-        normalized_price = float(price_at_update or 0.0)
-    except (TypeError, ValueError):
-        normalized_price = 0.0
-    mood = str((payload or {}).get("humor_do_mercado") or "").strip()
-    suggested_action = str((payload or {}).get("acao_sugerida") or "").strip()
-    db.execute(
-        """
-        INSERT INTO asset_enrichments (ticker, payload_json, raw_reply, updated_at)
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(ticker) DO UPDATE SET
-            payload_json = excluded.payload_json,
-            raw_reply = excluded.raw_reply,
-            updated_at = CURRENT_TIMESTAMP
-        """,
-        (ticker.upper(), payload_json, (raw_reply or "")),
+    from . import openclaw as openclaw_services
+
+    return openclaw_services.upsert_asset_enrichment(
+        ticker,
+        payload,
+        raw_reply,
+        price_at_update=price_at_update,
     )
-    if _has_meaningful_enrichment_payload(payload or {}) or str(raw_reply or "").strip():
-        db.execute(
-            """
-            INSERT INTO asset_enrichment_history (
-                ticker, payload_json, raw_reply, price_at_update, mood, suggested_action, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """,
-            (
-                ticker.upper(),
-                payload_json,
-                (raw_reply or ""),
-                normalized_price,
-                mood,
-                suggested_action,
-            ),
-        )
-    db.commit()
-    return True
-
-
-def _extract_json_from_text(text: str):
-    if not text:
-        return None
-    raw = text.strip()
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start < 0 or end < 0 or end <= start:
-        return None
-    candidate = raw[start : end + 1]
-    try:
-        return json.loads(candidate)
-    except Exception:
-        repaired = []
-        in_string = False
-        escaping = False
-        for char in candidate:
-            if in_string and char in {"\n", "\r"}:
-                repaired.append(" ")
-                continue
-            repaired.append(char)
-            if escaping:
-                escaping = False
-                continue
-            if char == "\\":
-                escaping = True
-                continue
-            if char == '"':
-                in_string = not in_string
-        try:
-            return json.loads("".join(repaired))
-        except Exception:
-            return None
-
-
-def _normalize_enrichment_list(value):
-    if not isinstance(value, list):
-        return []
-    items = []
-    for item in value:
-        text = str(item or "").strip()
-        if text:
-            items.append(text)
-    return items
-
-
-def _normalize_asset_enrichment_payload(payload):
-    if not isinstance(payload, dict):
-        return None
-    return {
-        "resumo": str(payload.get("resumo") or "").strip(),
-        "modelo_de_negocio": str(payload.get("modelo_de_negocio") or "").strip(),
-        "tese": _normalize_enrichment_list(payload.get("tese")),
-        "riscos": _normalize_enrichment_list(payload.get("riscos")),
-        "dividendos": str(payload.get("dividendos") or "").strip(),
-        "visao_do_mercado": str(payload.get("visao_do_mercado") or "").strip(),
-        "humor_do_mercado": str(payload.get("humor_do_mercado") or "").strip(),
-        "acao_sugerida": str(payload.get("acao_sugerida") or "").strip(),
-        "justificativa_da_acao": str(payload.get("justificativa_da_acao") or "").strip(),
-        "observacoes": str(payload.get("observacoes") or "").strip(),
-    }
-
-
-def _extract_openclaw_reply(result):
-    if not isinstance(result, dict):
-        return ""
-
-    direct_reply = str(result.get("reply") or "").strip()
-    if direct_reply:
-        return direct_reply
-
-    details = result.get("details")
-    if isinstance(details, dict):
-        details_reply = str(details.get("reply") or "").strip()
-        if details_reply:
-            return details_reply
-
-    content = result.get("content")
-    if isinstance(content, list):
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            text = str(item.get("text") or "").strip()
-            if not text:
-                continue
-            parsed = _extract_json_from_text(text)
-            if isinstance(parsed, dict):
-                nested_reply = str(parsed.get("reply") or "").strip()
-                if nested_reply:
-                    return nested_reply
-            return text
-
-    return ""
-
-
-def _asset_prompt_profile(ticker: str, name: str, sector: str):
-    ticker_up = (ticker or "").strip().upper()
-    name_up = (name or "").strip().upper()
-    sector_up = (sector or "").strip().upper()
-    category = _position_category(ticker_up, name_up, sector_up)
-    is_probable_etf = any(
-        marker in name_up or marker in sector_up
-        for marker in ("ETF", "INDEX", "TRUST", "FUND")
-    )
-    is_probable_reit = any(
-        marker in name_up or marker in sector_up
-        for marker in ("REIT", "REAL ESTATE", "REALTY", "PROPERTIES")
-    )
-
-    if category == "crypto":
-        return "crypto", (
-            "Foque em utilidade do token, ecossistema, adocao, narrativa e principais riscos de execucao/regulacao. "
-            "Nao trate como empresa operacional."
-        )
-
-    if category == "fiis":
-        return "fiis", (
-            "Foque em tipo de fundo, qualidade dos ativos/imoveis, perfil de contratos, vacancia, alavancagem e previsibilidade de rendimentos. "
-            "Se parecer ETF/fundo de indice, ajuste a resposta para estrategia e indice de referencia."
-        )
-
-    if (
-        "BANCO" in name_up
-        or "BANK" in name_up
-        or sector_up in {"FINANCEIRO", "FINANCIAL SERVICES", "BANCOS", "BANKS"}
-    ):
-        return "banks", (
-            "Foque em credito, margem financeira, inadimplencia, eficiencia, diversificacao de receitas, competicao com fintechs e regulacao."
-        )
-
-    if category == "us_stocks":
-        if is_probable_etf:
-            return "us_etf", (
-                "Trate como ETF/fundo de indice. Foque em indice de referencia, concentracao setorial, exposicao geografica, custo, liquidez e riscos de composicao/valuation do indice."
-            )
-
-        if is_probable_reit:
-            return "reit", (
-                "Trate como REIT. Foque em tipo de ativo, perfil dos contratos, ocupacao, custo de capital, sensibilidade a juros e sustentabilidade dos dividendos."
-            )
-
-        return "us_stocks", (
-            "Foque em modelo de negocio, vantagem competitiva, qualidade da receita, disciplina de capital e riscos de setor/valuation."
-        )
-
-    return "br_stocks", (
-        "Foque em modelo de negocio, execucao, ciclo setorial, qualidade da receita, alocacao de capital e riscos macro/regulatorios."
-    )
-
-
-def _build_asset_enrichment_prompt(asset: dict):
-    ticker = (asset.get("ticker") or "").strip().upper()
-    name = str(asset.get("name") or "").strip()
-    sector = str(asset.get("sector") or "").strip()
-    current_price = float(asset.get("price") or 0.0)
-    profile_key, guidance = _asset_prompt_profile(ticker, name, sector)
-    preferred_sources = (
-        "Para visao_do_mercado e humor_do_mercado, quando houver contexto recente disponivel, "
-        "priorize sinais vindos de NewsAPI, InfoMoney, Money Times, The Verge, Investidor10, FundosExplorer, FIIS.com e fontes equivalentes confiaveis do mesmo nicho. "
-        "Para FIIs, de peso maior a Investidor10, FundosExplorer e FIIS.com. "
-        "Para tech/acoes US, The Verge pode complementar o contexto setorial. "
-        "Se nao houver contexto recente confiavel dessas fontes, seja conservador e nao invente manchetes, fatos ou numeros."
-    )
-    return (
-        f"Ticker: {ticker}. "
-        f"Nome: {name}. "
-        f"Setor: {sector}. "
-        f"Preco atual aproximado: {current_price:.2f}. "
-        f"Contexto: {profile_key}. "
-        "Responda APENAS JSON valido com as chaves resumo, modelo_de_negocio, tese, riscos, dividendos, visao_do_mercado, humor_do_mercado, acao_sugerida, justificativa_da_acao, observacoes. "
-        "Use humor_do_mercado como positivo, neutro ou cauteloso. "
-        "Use acao_sugerida como comprar_mais, segurar, reduzir ou observar. "
-        "Se nao souber, use string vazia ou lista vazia. "
-        "Seja conciso, objetivo e nao invente numeros precisos. "
-        + preferred_sources
-        + " "
-        + guidance
-    )
-
-
-def _build_asset_enrichment_retry_prompt(asset: dict):
-    ticker = (asset.get("ticker") or "").strip().upper()
-    name = str(asset.get("name") or "").strip()
-    sector = str(asset.get("sector") or "").strip()
-    current_price = float(asset.get("price") or 0.0)
-    profile_key, guidance = _asset_prompt_profile(ticker, name, sector)
-    preferred_sources = (
-        "Se houver contexto recente disponivel, priorize referencias de NewsAPI, InfoMoney, Money Times, The Verge, Investidor10, FundosExplorer e FIIS.com para montar visao_do_mercado e humor_do_mercado. "
-        "Nao invente noticias, chamadas ou fatos se essas fontes nao estiverem acessiveis no contexto."
-    )
-    return (
-        f"Ativo {ticker} ({name}). "
-        f"Setor {sector}. "
-        f"Preco atual aproximado {current_price:.2f}. "
-        f"Contexto {profile_key}. "
-        "Retorne SOMENTE um JSON valido com resumo, modelo_de_negocio, tese, riscos, dividendos, visao_do_mercado, humor_do_mercado, acao_sugerida, justificativa_da_acao, observacoes. "
-        "humor_do_mercado deve ser positivo, neutro ou cauteloso. "
-        "acao_sugerida deve ser comprar_mais, segurar, reduzir ou observar. "
-        "Preencha todas as chaves. "
-        "Se faltar confianca, use texto curto, sem numeros precisos. "
-        + preferred_sources
-        + " "
-        + guidance
-    )
-
-
-def _has_meaningful_enrichment_payload(payload):
-    if not isinstance(payload, dict):
-        return False
-    if str(payload.get("resumo") or "").strip():
-        return True
-    if str(payload.get("modelo_de_negocio") or "").strip():
-        return True
-    if str(payload.get("dividendos") or "").strip():
-        return True
-    if str(payload.get("visao_do_mercado") or "").strip():
-        return True
-    if str(payload.get("humor_do_mercado") or "").strip():
-        return True
-    if str(payload.get("acao_sugerida") or "").strip():
-        return True
-    if str(payload.get("justificativa_da_acao") or "").strip():
-        return True
-    if str(payload.get("observacoes") or "").strip():
-        return True
-    if _normalize_enrichment_list(payload.get("tese")):
-        return True
-    if _normalize_enrichment_list(payload.get("riscos")):
-        return True
-    return False
-
-
-def _is_transient_openclaw_reply(reply):
-    text = str(reply or "").strip().lower()
-    if not text:
-        return False
-
-    transient_markers = (
-        "aguarde",
-        "um momento",
-        "enquanto busco",
-        "estou buscando",
-        "buscando essas informacoes",
-        "busco essas informacoes",
-        "buscando essas informações",
-        "busco essas informações",
-        "ja volto",
-        "processando",
-    )
-    return any(marker in text for marker in transient_markers)
-
-
-def _invoke_openclaw_asset_prompt(prompt: str):
-    result = invoke_tool(
-        "sessions_send",
-        {
-            "sessionKey": "main",
-            "message": prompt,
-            "timeoutSeconds": 120,
-        },
-        timeout_seconds=150,
-    )
-    if not isinstance(result, dict):
-        return "", None
-    reply = _extract_openclaw_reply(result)
-    parsed = _normalize_asset_enrichment_payload(_extract_json_from_text(reply))
-    return reply, parsed
 
 
 def enrich_asset_with_openclaw(ticker: str):
-    ticker_norm = (ticker or "").strip().upper()
-    if not ticker_norm:
-        return False, "Ticker e obrigatorio.", None
+    from . import openclaw as openclaw_services
 
-    asset = get_asset(ticker_norm)
-    if not asset:
-        return False, "Ativo nao encontrado.", None
-    asset_price = float(asset.get("price") or 0.0)
-
-    try:
-        reply, parsed = _invoke_openclaw_asset_prompt(_build_asset_enrichment_prompt(asset))
-    except OpenClawError as exc:
-        return False, str(exc), None
-
-    retried = False
-    if _is_transient_openclaw_reply(reply) or not _has_meaningful_enrichment_payload(parsed):
-        try:
-            retry_reply, retry_parsed = _invoke_openclaw_asset_prompt(
-                _build_asset_enrichment_retry_prompt(asset)
-            )
-        except OpenClawError as exc:
-            retry_reply = ""
-            retry_parsed = None
-            stored_reply = ""
-            if not _is_transient_openclaw_reply(reply):
-                stored_reply = reply or str(exc)
-            upsert_asset_enrichment(ticker_norm, parsed or {}, stored_reply, asset_price)
-            if _has_meaningful_enrichment_payload(parsed):
-                return True, "OK", get_asset_enrichment(ticker_norm)
-            return False, str(exc), None
-
-        if _has_meaningful_enrichment_payload(retry_parsed):
-            reply = retry_reply
-            parsed = retry_parsed
-        elif retry_reply and not _is_transient_openclaw_reply(retry_reply):
-            reply = retry_reply
-            parsed = retry_parsed
-        retried = True
-
-    if _is_transient_openclaw_reply(reply):
-        upsert_asset_enrichment(ticker_norm, parsed or {}, "", asset_price)
-        return False, "OpenClaw ainda nao retornou o conteudo final. Tente novamente em instantes.", None
-
-    if not parsed:
-        upsert_asset_enrichment(ticker_norm, {}, reply, asset_price)
-        return True, "OpenClaw respondeu, mas nao retornou JSON valido. Exibindo resposta bruta.", get_asset_enrichment(ticker_norm)
-
-    upsert_asset_enrichment(ticker_norm, parsed, reply, asset_price)
-    if _has_meaningful_enrichment_payload(parsed):
-        return True, ("OK (apos retry)" if retried else "OK"), get_asset_enrichment(ticker_norm)
-    return True, "OpenClaw respondeu, mas sem conteudo util. Exibindo resposta bruta.", get_asset_enrichment(ticker_norm)
+    return openclaw_services.enrich_asset_with_openclaw(ticker)
 
 
 def enrich_assets_with_openclaw_batch(tickers=None, only_missing=True, limit=None):
-    db = get_db()
-    normalized_tickers = []
-    if tickers:
-        seen = set()
-        for item in tickers:
-            ticker = str(item or "").strip().upper()
-            if not ticker or ticker in seen:
-                continue
-            seen.add(ticker)
-            normalized_tickers.append(ticker)
+    from . import openclaw as openclaw_services
 
-    if normalized_tickers:
-        placeholders = ",".join("?" for _ in normalized_tickers)
-        rows = db.execute(
-            f"""
-            SELECT ticker
-            FROM assets
-            WHERE ticker IN ({placeholders})
-            ORDER BY ticker ASC
-            """,
-            normalized_tickers,
-        ).fetchall()
-    else:
-        rows = db.execute(
-            """
-            SELECT ticker
-            FROM assets
-            ORDER BY market_cap_bi DESC, ticker ASC
-            """
-        ).fetchall()
-
-    queue = []
-    skipped = []
-    for row in rows:
-        ticker = str(row["ticker"] or "").strip().upper()
-        if not ticker:
-            continue
-        enrichment = get_asset_enrichment(ticker)
-        has_enrichment = bool(
-            enrichment
-            and (
-                enrichment.get("raw_reply")
-                or (isinstance(enrichment.get("payload"), dict) and enrichment.get("payload"))
-            )
-        )
-        if only_missing and has_enrichment:
-            skipped.append({"ticker": ticker, "reason": "ja_enriquecido"})
-            continue
-        queue.append(ticker)
-
-    if isinstance(limit, int) and limit > 0:
-        queue = queue[:limit]
-
-    results = []
-    started_at = _now_iso()
-    for ticker in queue:
-        ok, message, enrichment = enrich_asset_with_openclaw(ticker)
-        results.append(
-            {
-                "ticker": ticker,
-                "ok": bool(ok),
-                "message": str(message or ""),
-                "updated_at": (enrichment or {}).get("updated_at") if isinstance(enrichment, dict) else None,
-            }
-        )
-
-    success_count = sum(1 for item in results if item["ok"])
-    failure_count = len(results) - success_count
-    return {
-        "started_at": started_at,
-        "finished_at": _now_iso(),
-        "only_missing": bool(only_missing),
-        "requested_limit": limit if isinstance(limit, int) and limit > 0 else None,
-        "processed_count": len(results),
-        "success_count": success_count,
-        "failure_count": failure_count,
-        "skipped_count": len(skipped),
-        "results": results,
-        "skipped": skipped,
-    }
+    return openclaw_services.enrich_assets_with_openclaw_batch(
+        tickers=tickers,
+        only_missing=only_missing,
+        limit=limit,
+    )
 
 
 def get_portfolios():
-    db = get_db()
-    current_user_id = _current_user_id()
-    if current_user_id is None and not has_request_context():
-        rows = db.execute("SELECT id, name FROM portfolios ORDER BY id ASC").fetchall()
-    elif current_user_id is None:
-        return []
-    else:
-        rows = db.execute(
-            "SELECT id, name FROM portfolios WHERE user_id = ? ORDER BY id ASC",
-            (current_user_id,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    from . import portfolio as portfolio_services
+
+    return portfolio_services.get_portfolios()
 
 
 def get_portfolio(portfolio_id: int):
@@ -1423,31 +805,9 @@ def _all_portfolio_ids():
 
 
 def normalize_portfolio_ids(raw_ids):
-    if isinstance(raw_ids, int):
-        raw_values = [raw_ids]
-    elif isinstance(raw_ids, (list, tuple, set)):
-        raw_values = list(raw_ids)
-    else:
-        raw_values = [raw_ids]
+    from . import portfolio as portfolio_services
 
-    portfolios = get_portfolios()
-    valid_ids = {int(item["id"]) for item in portfolios}
-    result = []
-
-    for value in raw_values:
-        if value in (None, ""):
-            continue
-        try:
-            pid = int(value)
-        except (TypeError, ValueError):
-            continue
-        if pid in valid_ids and pid not in result:
-            result.append(pid)
-
-    if not result:
-        default_portfolio_id = get_default_portfolio_id()
-        result = [default_portfolio_id] if default_portfolio_id is not None else []
-    return result
+    return portfolio_services.normalize_portfolio_ids(raw_ids)
 
 
 def get_default_portfolio_id():
@@ -1466,88 +826,21 @@ def get_default_portfolio_id():
 
 
 def resolve_portfolio_id(raw_portfolio_id):
-    default_portfolio_id = get_default_portfolio_id()
-    if raw_portfolio_id in (None, ""):
-        return default_portfolio_id
-    try:
-        pid = int(raw_portfolio_id)
-    except (TypeError, ValueError):
-        return default_portfolio_id
-    return pid if get_portfolio(pid) else default_portfolio_id
+    from . import portfolio as portfolio_services
+
+    return portfolio_services.resolve_portfolio_id(raw_portfolio_id)
 
 
 def create_portfolio(name: str):
-    clean_name = (name or "").strip()
-    if not clean_name:
-        return False, "Nome da carteira e obrigatorio."
-    current_user_id = _current_user_id()
-    if current_user_id is None:
-        return False, "Usuario sem contexto de carteira."
-    db = get_db()
-    existing = db.execute(
-        "SELECT id FROM portfolios WHERE user_id = ? AND LOWER(name) = LOWER(?)",
-        (current_user_id, clean_name),
-    ).fetchone()
-    if existing:
-        return False, "Ja existe uma carteira com esse nome."
-    db.execute("INSERT INTO portfolios (user_id, name) VALUES (?, ?)", (current_user_id, clean_name))
-    db.commit()
-    row = db.execute(
-        "SELECT id FROM portfolios WHERE user_id = ? AND name = ?",
-        (current_user_id, clean_name),
-    ).fetchone()
-    return True, int(row["id"])
+    from . import portfolio as portfolio_services
+
+    return portfolio_services.create_portfolio(name)
 
 
 def delete_portfolio(portfolio_id):
-    try:
-        pid = int(portfolio_id)
-    except (TypeError, ValueError):
-        return False, "Carteira invalida."
+    from . import portfolio as portfolio_services
 
-    db = get_db()
-    current_user_id = _current_user_id()
-    if current_user_id is None:
-        return False, "Usuario sem contexto de carteira."
-    portfolio = db.execute(
-        "SELECT id, name FROM portfolios WHERE id = ? AND user_id = ?",
-        (pid, current_user_id),
-    ).fetchone()
-    if not portfolio:
-        return False, "Carteira nao encontrada."
-
-    total_row = db.execute(
-        "SELECT COUNT(*) AS total FROM portfolios WHERE user_id = ?",
-        (current_user_id,),
-    ).fetchone()
-    total_portfolios = int(total_row["total"]) if total_row else 0
-    if total_portfolios <= 1:
-        return False, "Nao e possivel remover a unica carteira. Crie outra primeiro."
-
-    tx_row = db.execute(
-        "SELECT COUNT(*) AS total FROM transactions WHERE portfolio_id = ?",
-        (pid,),
-    ).fetchone()
-    in_row = db.execute(
-        "SELECT COUNT(*) AS total FROM incomes WHERE portfolio_id = ?",
-        (pid,),
-    ).fetchone()
-    tx_total = int(tx_row["total"]) if tx_row else 0
-    in_total = int(in_row["total"]) if in_row else 0
-    if tx_total > 0 or in_total > 0:
-        return (
-            False,
-            "Carteira com lancamentos nao pode ser removida. Remova transacoes/proventos primeiro.",
-        )
-
-    db.execute("DELETE FROM chart_snapshot_monthly_class WHERE portfolio_id = ?", (pid,))
-    db.execute("DELETE FROM chart_snapshot_monthly_ticker WHERE portfolio_id = ?", (pid,))
-    db.execute("DELETE FROM fixed_income_snapshot_items WHERE portfolio_id = ?", (pid,))
-    db.execute("DELETE FROM fixed_income_snapshot_summary WHERE portfolio_id = ?", (pid,))
-    db.execute("DELETE FROM portfolios WHERE id = ?", (pid,))
-    db.commit()
-    _clear_benchmark_cache()
-    return True, portfolio["name"]
+    return portfolio_services.delete_portfolio(portfolio_id)
 
 
 def _parse_float(value: str):
@@ -3154,47 +2447,10 @@ def _get_yahoo_asset_price_history(ticker: str, range_key: str = "1y"):
     return result
 
 
-def _asset_price_history_cache_ttl_seconds(range_key: str):
-    mapping = {
-        "1d": 60,
-        "7d": 300,
-        "30d": 900,
-        "6m": 1800,
-        "1y": 3600,
-        "5y": 21600,
-    }
-    return mapping.get((range_key or "1y").strip().lower(), 900)
-
-
 def get_asset_price_history(ticker: str, range_key: str = "1y"):
-    normalized_range = _history_config(range_key)[0]
-    cache_key = ((ticker or "").strip().upper(), normalized_range)
-    cached = _memory_cache_get(_ASSET_PRICE_HISTORY_CACHE, cache_key)
-    if cached is not None:
-        return dict(cached)
+    from . import market_data as market_data_services
 
-    history, history_source = _fetch_market_history(ticker, range_key)
-    _memory_cache_set(
-        _ASSET_PRICE_HISTORY_CACHE,
-        cache_key,
-        dict(history),
-        _asset_price_history_cache_ttl_seconds(normalized_range),
-    )
-    if _is_truthy_env("MARKET_DATA_LOG_SOURCES", "0"):
-        logger = _LOGGER
-        try:
-            logger = current_app.logger
-        except Exception:
-            pass
-        logger.info(
-            "market_history_source ticker=%s history_source=%s providers=%s range_key=%s points=%s",
-            (ticker or "").strip().upper(),
-            history_source or "none",
-            _market_data_provider_label(ticker),
-            history.get("range_key") or normalized_range,
-            len(history.get("prices") or []),
-        )
-    return history
+    return market_data_services.get_asset_price_history(ticker, range_key=range_key)
 
 
 def _fetch_yahoo_info(ticker: str):
@@ -3517,170 +2773,21 @@ def _fetch_market_history(ticker: str, range_key: str):
 
 
 def refresh_asset_market_data(ticker: str):
-    asset = get_asset(ticker)
-    if not asset:
-        return False
+    from . import market_data as market_data_services
 
-    profile, profile_source = _fetch_market_profile(ticker)
-    metrics, metrics_source = _fetch_market_metrics(ticker)
-    if not metrics and not profile:
-        _mark_asset_market_data_failed(ticker, "Nenhum provider retornou dados de mercado.")
-        return False
-    has_market_metrics = _has_market_metrics(metrics)
-    attempted_at = _now_iso()
-    market_data_status = "fresh" if has_market_metrics else "stale"
-    market_data_updated_at = attempted_at if has_market_metrics else asset.get("market_data_updated_at")
-    market_data_source = metrics_source or asset.get("market_data_source", "")
-    market_data_last_error = "" if has_market_metrics else "Atualizacao sem metricas novas."
-
-    db = get_db()
-    name = asset["name"]
-    sector = asset["sector"]
-    logo_url = asset.get("logo_url", "")
-    if profile:
-        # Sempre prioriza perfil retornado pelo provider quando houver valor.
-        # Isso evita ativo ficar preso com nome/setor antigo apos importacoes.
-        name = profile.get("name") or name
-        sector = profile.get("sector") or sector
-        logo_url = profile.get("logo_url") or logo_url
-
-    baseline_metrics = {
-        "price": metrics.get("price") if metrics.get("price") is not None else asset["price"],
-        "dy": metrics.get("dy") if metrics.get("dy") is not None else asset["dy"],
-        "pl": metrics.get("pl") if metrics.get("pl") is not None else asset["pl"],
-        "pvp": metrics.get("pvp") if metrics.get("pvp") is not None else asset["pvp"],
-        "variation_day": (
-            metrics.get("variation_day")
-            if metrics.get("variation_day") is not None
-            else asset["variation_day"]
-        ),
-        "variation_7d": (
-            metrics.get("variation_7d")
-            if metrics.get("variation_7d") is not None
-            else asset.get("variation_7d", 0.0)
-        ),
-        "variation_30d": (
-            metrics.get("variation_30d")
-            if metrics.get("variation_30d") is not None
-            else asset.get("variation_30d", 0.0)
-        ),
-        "market_cap_bi": (
-            metrics.get("market_cap_bi")
-            if metrics.get("market_cap_bi") is not None
-            else asset["market_cap_bi"]
-        ),
-    }
-    _upsert_asset_metric_baseline(db, ticker.upper(), baseline_metrics, updated_at=attempted_at)
-    metric_formula_map = _get_metric_formula_map(db)
-    applied_metrics = _apply_metric_formulas_to_values(baseline_metrics, metric_formula_map)
-
-    db.execute(
-        """
-        UPDATE assets
-        SET
-            name = ?,
-            sector = ?,
-            price = ?,
-            dy = ?,
-            pl = ?,
-            pvp = ?,
-            variation_day = ?,
-            variation_7d = ?,
-            variation_30d = ?,
-            market_cap_bi = ?,
-            logo_url = ?,
-            market_data_status = ?,
-            market_data_source = ?,
-            market_data_updated_at = ?,
-            market_data_last_attempt_at = ?,
-            market_data_last_error = ?
-        WHERE ticker = ?
-        """,
-        (
-            name,
-            sector,
-            applied_metrics["price"],
-            applied_metrics["dy"],
-            applied_metrics["pl"],
-            applied_metrics["pvp"],
-            applied_metrics["variation_day"],
-            applied_metrics["variation_7d"],
-            applied_metrics["variation_30d"],
-            applied_metrics["market_cap_bi"],
-            logo_url,
-            market_data_status,
-            market_data_source,
-            market_data_updated_at,
-            attempted_at,
-            market_data_last_error,
-            ticker.upper(),
-        ),
-    )
-    db.commit()
-    if _is_truthy_env("MARKET_DATA_LOG_SOURCES", "0"):
-        logger = _LOGGER
-        try:
-            logger = current_app.logger
-        except Exception:
-            pass
-        logger.info(
-            "market_data_source ticker=%s providers=%s metrics_source=%s profile_source=%s price=%s dy=%s pl=%s pvp=%s variation_day=%s variation_7d=%s variation_30d=%s market_cap_bi=%s",
-            ticker.upper(),
-            _market_data_provider_label(ticker),
-            metrics_source or "none",
-            profile_source or "none",
-            applied_metrics.get("price"),
-            applied_metrics.get("dy"),
-            applied_metrics.get("pl"),
-            applied_metrics.get("pvp"),
-            applied_metrics.get("variation_day"),
-            applied_metrics.get("variation_7d"),
-            applied_metrics.get("variation_30d"),
-            applied_metrics.get("market_cap_bi"),
-        )
-    # Sucesso de "atualizacao Yahoo" significa ter recebido cotacao/indicadores.
-    # Atualizacao apenas de nome/setor nao conta como sync completo de mercado.
-    return has_market_metrics
+    return market_data_services.refresh_asset_market_data(ticker)
 
 
 def refresh_all_assets_market_data(attempts: int = 3):
-    db = get_db()
-    rows = db.execute("SELECT ticker FROM assets").fetchall()
-    tickers = [row["ticker"] for row in rows]
-    if not tickers:
-        return []
-    return refresh_market_data_for_tickers(tickers, attempts=attempts)
+    from . import market_data as market_data_services
+
+    return market_data_services.refresh_all_assets_market_data(attempts=attempts)
 
 
 def refresh_market_data_for_tickers(tickers, attempts: int = 2):
-    unique_tickers = []
-    for ticker in tickers:
-        clean = (ticker or "").strip().upper()
-        if clean and clean not in unique_tickers:
-            unique_tickers.append(clean)
+    from . import market_data as market_data_services
 
-    failed = set(unique_tickers)
-    for attempt in range(attempts):
-        if not failed:
-            break
-        next_failed = set()
-        current_batch = sorted(failed)
-        _prefetch_brapi_market_data_for_tickers(current_batch)
-        for ticker in current_batch:
-            try:
-                ok = refresh_asset_market_data(ticker)
-            except Exception as exc:
-                _mark_asset_market_data_failed(ticker, str(exc))
-                ok = False
-            if not ok:
-                next_failed.add(ticker)
-            # Pequeno jitter reduz chance de bloqueio/rate-limit em lote.
-            time.sleep(0.12 + random.random() * 0.12)
-        failed = next_failed
-        if failed and attempt < attempts - 1:
-            # Backoff progressivo entre rodadas.
-            time.sleep(0.5 * (attempt + 1))
-    return sorted(failed)
+    return market_data_services.refresh_market_data_for_tickers(tickers, attempts=attempts)
 
 
 def _parse_date(value: str):
@@ -3780,663 +2887,34 @@ def _position_category(ticker: str, name: str, sector: str):
     return "br_stocks"
 
 
-def _current_shares(ticker: str, portfolio_id: int):
-    db = get_db()
-    row = db.execute(
-        """
-        SELECT COALESCE(SUM(CASE WHEN tx_type = 'buy' THEN shares ELSE -shares END), 0) AS shares
-        FROM transactions
-        WHERE ticker = ? AND portfolio_id = ?
-        """,
-        (ticker, portfolio_id),
-    ).fetchone()
-    return float(row["shares"] or 0.0)
-
-
-def _transaction_exists(portfolio_id: int, ticker: str, tx_type: str, shares: float, price: float, date: str):
-    db = get_db()
-    row = db.execute(
-        """
-        SELECT id
-        FROM transactions
-        WHERE portfolio_id = ?
-          AND ticker = ?
-          AND tx_type = ?
-          AND ABS(shares - ?) < 0.000000001
-          AND ABS(price - ?) < 0.000001
-          AND date = ?
-        LIMIT 1
-        """,
-        (portfolio_id, ticker, tx_type, shares, price, date),
-    ).fetchone()
-    return row is not None
-
-
-def _income_exists(portfolio_id: int, ticker: str, income_type: str, amount: float, date: str):
-    db = get_db()
-    row = db.execute(
-        """
-        SELECT id
-        FROM incomes
-        WHERE portfolio_id = ?
-          AND ticker = ?
-          AND income_type = ?
-          AND ABS(amount - ?) < 0.000001
-          AND date = ?
-        LIMIT 1
-        """,
-        (portfolio_id, ticker, income_type, amount, date),
-    ).fetchone()
-    return row is not None
-
-
 def add_transaction(form_data: dict):
-    portfolio_id = resolve_portfolio_id(
-        form_data.get("target_portfolio_id") or form_data.get("portfolio_id")
-    )
-    ticker = (form_data.get("ticker") or "").strip().upper()
-    tx_type = (form_data.get("tx_type") or "").strip().lower()
+    from . import portfolio as portfolio_services
 
-    if not ticker:
-        return False, "Ticker e obrigatorio."
-    if tx_type not in {"buy", "sell"}:
-        return False, "Tipo de transacao invalido."
-
-    shares = _parse_float(form_data.get("shares"))
-    if shares is None:
-        return False, "Quantidade precisa ser numerica."
-    if shares <= 0:
-        return False, "Quantidade precisa ser maior que zero."
-
-    price = _parse_float(form_data.get("price"))
-    if price is None or price <= 0:
-        return False, "Preco precisa ser numerico e maior que zero."
-    ok_conversion, converted_price, conversion_error = _convert_usd_to_brl_if_needed(ticker, price)
-    if not ok_conversion:
-        return False, conversion_error
-    price = converted_price
-
-    transaction_date = _parse_date(form_data.get("date"))
-    if transaction_date is None:
-        return False, "Data invalida. Use o formato YYYY-MM-DD."
-
-    if _transaction_exists(portfolio_id, ticker, tx_type, shares, price, transaction_date):
-        return False, "Transacao duplicada: ja existe um registro com esses mesmos dados."
-
-    db = get_db()
-    if tx_type == "sell":
-        if shares - _current_shares(ticker, portfolio_id) > 0.000000001:
-            return False, "Venda maior que a quantidade em carteira."
-
-    asset = get_asset(ticker)
-    if not asset:
-        if tx_type == "sell":
-            return False, "Nao existe posicao para esse ticker."
-        profile, _ = _fetch_market_profile(ticker)
-        name = (
-            profile.get("name")
-            or (form_data.get("name") or "").strip()
-            or ticker
-        )
-        sector = (
-            profile.get("sector")
-            or (form_data.get("sector") or "").strip()
-            or "Nao informado"
-        )
-        db.execute(
-            """
-            INSERT INTO assets (
-                ticker, name, sector, price, dy, pl, pvp, variation_day, market_cap_bi
-            ) VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0)
-            """,
-            (ticker, name, sector, price),
-        )
-    else:
-        should_update_profile = asset["name"] == ticker or asset["sector"] == "Nao informado"
-        if should_update_profile:
-            profile, _ = _fetch_market_profile(ticker)
-            name = profile.get("name") or asset["name"]
-            sector = profile.get("sector") or asset["sector"]
-            db.execute(
-                "UPDATE assets SET name = ?, sector = ? WHERE ticker = ?",
-                (name, sector, ticker),
-            )
-
-    db.execute(
-        """
-        INSERT INTO transactions (portfolio_id, ticker, tx_type, shares, price, date)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (portfolio_id, ticker, tx_type, shares, price, transaction_date),
-    )
-    db.commit()
-    invalidate_chart_snapshots([portfolio_id])
-
-    return True, "Transacao registrada com sucesso."
+    return portfolio_services.add_transaction(form_data)
 
 
 def import_transactions_csv(file_bytes, target_portfolio_id: int):
-    if not file_bytes:
-        return False, "Arquivo CSV vazio.", 0, []
+    from . import portfolio as portfolio_services
 
-    try:
-        text = file_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return False, "Nao foi possivel ler o CSV (use UTF-8).", 0, []
-
-    sample = text[:2048]
-    delimiter = ","
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
-        delimiter = dialect.delimiter
-    except Exception:
-        if "\t" in sample:
-            delimiter = "\t"
-        else:
-            delimiter = ";" if ";" in sample and "," not in sample else ","
-
-    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
-    if not reader.fieldnames:
-        return False, "CSV sem cabecalho.", 0, []
-
-    header_map = {
-        "ticker": "ticker",
-        "ativo": "ticker",
-        "tx_type": "tx_type",
-        "tipo/tx_type": "tx_type",
-        "tipo": "tx_type",
-        "shares": "shares",
-        "quantidade/shares": "shares",
-        "quantidade": "shares",
-        "qtd": "shares",
-        "price": "price",
-        "preco/price": "price",
-        "preço/price": "price",
-        "preco": "price",
-        "preço": "price",
-        "date": "date",
-        "data/date": "date",
-        "data": "date",
-        "name": "name",
-        "nome": "name",
-        "sector": "sector",
-        "setor": "sector",
-        "amount": "amount",
-        "valor": "amount",
-        "valor/amount": "amount",
-        "provento": "amount",
-    }
-
-    normalized_fields = {}
-    for field in reader.fieldnames:
-        key = (field or "").strip().lower()
-        mapped = header_map.get(key)
-        if mapped:
-            normalized_fields[field] = mapped
-
-    required = {"ticker", "tx_type", "date"}
-    if not required.issubset(set(normalized_fields.values())):
-        return (
-            False,
-            "CSV precisa ter colunas: ticker, tipo/tx_type e data/date.",
-            0,
-            [],
-        )
-
-    imported = 0
-    errors = []
-    csv_tickers = set()
-    line_number = 1
-
-    for row in reader:
-        line_number += 1
-        payload = {"target_portfolio_id": str(target_portfolio_id)}
-        for original, mapped in normalized_fields.items():
-            payload[mapped] = (row.get(original) or "").strip()
-        ticker = (payload.get("ticker") or "").strip().upper()
-        if ticker:
-            csv_tickers.add(ticker)
-
-        tx_type = payload.get("tx_type", "").lower()
-        if tx_type == "compra":
-            payload["tx_type"] = "buy"
-        elif tx_type == "venda":
-            payload["tx_type"] = "sell"
-
-        tx_type = payload.get("tx_type", "").lower()
-        if tx_type in {"dividendo", "jcp", "aluguel"}:
-            income_payload = {
-                "target_portfolio_id": str(target_portfolio_id),
-                "ticker": payload.get("ticker"),
-                "income_type": tx_type,
-                "amount": payload.get("amount") or payload.get("price"),
-                "date": payload.get("date"),
-            }
-            ok, message = add_income(income_payload)
-        else:
-            ok, message = add_transaction(payload)
-
-        if ok:
-            imported += 1
-        else:
-            errors.append(f"Linha {line_number}: {message}")
-
-    failed_refresh = refresh_market_data_for_tickers(sorted(csv_tickers), attempts=2)
-    for ticker in failed_refresh:
-        errors.append(f"Aviso: nao foi possivel atualizar Yahoo para {ticker}.")
-
-    return True, "Importacao concluida.", imported, errors
+    return portfolio_services.import_transactions_csv(file_bytes, target_portfolio_id)
 
 
 def add_income(form_data: dict):
-    portfolio_id = resolve_portfolio_id(
-        form_data.get("target_portfolio_id") or form_data.get("portfolio_id")
-    )
-    ticker = (form_data.get("ticker") or "").strip().upper()
-    income_type = (form_data.get("income_type") or "").strip().lower()
+    from . import portfolio as portfolio_services
 
-    if not ticker:
-        return False, "Ticker e obrigatorio."
-    if income_type not in {"dividendo", "jcp", "aluguel"}:
-        return False, "Tipo de provento invalido."
-
-    amount = _parse_float(form_data.get("amount"))
-    if amount is None or amount <= 0:
-        return False, "Valor do provento precisa ser numerico e maior que zero."
-    ok_conversion, converted_amount, conversion_error = _convert_usd_to_brl_if_needed(ticker, amount)
-    if not ok_conversion:
-        return False, conversion_error
-    amount = converted_amount
-
-    income_date = _parse_date(form_data.get("date"))
-    if income_date is None:
-        return False, "Data invalida. Use o formato YYYY-MM-DD."
-
-    if _income_exists(portfolio_id, ticker, income_type, amount, income_date):
-        return False, "Provento duplicado: ja existe um registro com esses mesmos dados."
-
-    if not get_asset(ticker):
-        return False, "Ticker nao cadastrado. Lance uma transacao primeiro."
-
-    db = get_db()
-    db.execute(
-        """
-        INSERT INTO incomes (portfolio_id, ticker, income_type, amount, date)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (portfolio_id, ticker, income_type, amount, income_date),
-    )
-    db.commit()
-    invalidate_chart_snapshots([portfolio_id])
-    return True, "Provento registrado com sucesso."
+    return portfolio_services.add_income(form_data)
 
 
 def add_fixed_income(form_data: dict):
-    portfolio_id = resolve_portfolio_id(
-        form_data.get("target_portfolio_id") or form_data.get("portfolio_id")
-    )
-    distributor = (form_data.get("distributor") or "").strip()
-    issuer = (form_data.get("issuer") or "").strip()
-    investment_type = (form_data.get("investment_type") or "").strip().upper()
-    rate_type = (form_data.get("rate_type") or "").strip().upper()
-    annual_rate_legacy = _parse_float(form_data.get("annual_rate"))
-    rate_fixed = _parse_float(form_data.get("juros_fixo"))
-    rate_ipca = _parse_float(form_data.get("ipca"))
-    rate_cdi = _parse_float(form_data.get("cdi"))
-    rate_fixed = 0.0 if rate_fixed is None else rate_fixed
-    rate_ipca = 0.0 if rate_ipca is None else rate_ipca
-    rate_cdi = 0.0 if rate_cdi is None else rate_cdi
-    date_aporte = _parse_date(form_data.get("date_aporte"))
-    maturity_date = _parse_date(form_data.get("maturity_date"))
-    aporte = _parse_float(form_data.get("aporte"))
-    reinvested = _parse_float(form_data.get("reinvested"))
+    from . import portfolio as portfolio_services
 
-    if not distributor:
-        return False, "Distribuidor e obrigatorio."
-    if not issuer:
-        return False, "Emissor e obrigatorio."
-    if not investment_type:
-        return False, "Investimento e obrigatorio."
-    if rate_type not in {"FIXO", "FIXO+IPCA", "IPCA", "CDI", "FIXO+CDI"}:
-        return False, "Tipo de taxa invalido."
-    expected_sets = {
-        "FIXO": {"FIXO"},
-        "IPCA": {"IPCA"},
-        "CDI": {"CDI"},
-        "FIXO+IPCA": {"FIXO", "IPCA"},
-        "FIXO+CDI": {"FIXO", "CDI"},
-    }
-    positive_set = set()
-    if rate_fixed > 0:
-        positive_set.add("FIXO")
-    if rate_ipca > 0:
-        positive_set.add("IPCA")
-    if rate_cdi > 0:
-        positive_set.add("CDI")
-
-    expected = expected_sets[rate_type]
-    annual_rate = None
-    if positive_set:
-        if positive_set != expected:
-            return (
-                False,
-                (
-                    f"Para o tipo {rate_type}, preencha somente: "
-                    f"{', '.join(sorted(expected))}."
-                ),
-            )
-        component_rates = {"FIXO": rate_fixed, "IPCA": rate_ipca, "CDI": rate_cdi}
-        annual_rate = sum(component_rates[key] for key in expected)
-    else:
-        # Compatibilidade para layout antigo (sem componentes) apenas para tipos simples.
-        if rate_type in {"FIXO+IPCA", "FIXO+CDI"}:
-            return False, f"Para o tipo {rate_type}, informe os percentuais de cada componente."
-        if annual_rate_legacy is None or annual_rate_legacy < 0:
-            return False, "Taxa anual invalida."
-        annual_rate = annual_rate_legacy
-
-    if annual_rate is None or annual_rate < 0:
-        return False, "Taxa anual invalida."
-    if aporte is None or aporte <= 0:
-        return False, "Aporte invalido."
-    if reinvested is None:
-        reinvested = 0.0
-    if reinvested < 0:
-        return False, "Reinvestido nao pode ser negativo."
-    if not date_aporte:
-        return False, "Data de aporte invalida."
-    if not maturity_date:
-        return False, "Data final invalida."
-    if maturity_date < date_aporte:
-        return False, "Data final nao pode ser menor que data de aporte."
-    if _fixed_income_exists(
-        portfolio_id,
-        distributor,
-        issuer,
-        investment_type,
-        rate_type,
-        annual_rate,
-        rate_fixed,
-        rate_ipca,
-        rate_cdi,
-        date_aporte,
-        aporte,
-        reinvested,
-        maturity_date,
-    ):
-        return False, "Registro duplicado: ja existe uma renda fixa com os mesmos dados."
-
-    db = get_db()
-    db.execute(
-        """
-        INSERT INTO fixed_incomes (
-            portfolio_id, distributor, issuer, investment_type, rate_type, annual_rate,
-            rate_fixed, rate_ipca, rate_cdi,
-            date_aporte, aporte, reinvested, maturity_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            portfolio_id,
-            distributor,
-            issuer,
-            investment_type,
-            rate_type,
-            annual_rate,
-            rate_fixed,
-            rate_ipca,
-            rate_cdi,
-            date_aporte,
-            aporte,
-            reinvested,
-            maturity_date,
-        ),
-    )
-    db.commit()
-    invalidate_fixed_income_snapshot([portfolio_id])
-    invalidate_chart_snapshots([portfolio_id])
-    return True, "Renda fixa cadastrada com sucesso."
-
-
-def _fixed_income_exists(
-    portfolio_id: int,
-    distributor: str,
-    issuer: str,
-    investment_type: str,
-    rate_type: str,
-    annual_rate: float,
-    rate_fixed: float,
-    rate_ipca: float,
-    rate_cdi: float,
-    date_aporte: str,
-    aporte: float,
-    reinvested: float,
-    maturity_date: str,
-):
-    db = get_db()
-    row = db.execute(
-        """
-        SELECT id
-        FROM fixed_incomes
-        WHERE portfolio_id = ?
-          AND distributor = ?
-          AND issuer = ?
-          AND investment_type = ?
-          AND rate_type = ?
-          AND ABS(annual_rate - ?) < 0.000001
-          AND ABS(rate_fixed - ?) < 0.000001
-          AND ABS(rate_ipca - ?) < 0.000001
-          AND ABS(rate_cdi - ?) < 0.000001
-          AND date_aporte = ?
-          AND ABS(aporte - ?) < 0.000001
-          AND ABS(reinvested - ?) < 0.000001
-          AND maturity_date = ?
-        LIMIT 1
-        """,
-        (
-            portfolio_id,
-            distributor,
-            issuer,
-            investment_type,
-            rate_type,
-            annual_rate,
-            rate_fixed,
-            rate_ipca,
-            rate_cdi,
-            date_aporte,
-            aporte,
-            reinvested,
-            maturity_date,
-        ),
-    ).fetchone()
-    return row is not None
+    return portfolio_services.add_fixed_income(form_data)
 
 
 def import_fixed_incomes_csv(file_bytes, target_portfolio_id: int):
-    if not file_bytes:
-        return False, "Arquivo CSV vazio.", 0, []
+    from . import portfolio as portfolio_services
 
-    try:
-        text = file_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return False, "Nao foi possivel ler o CSV (use UTF-8).", 0, []
-
-    sample = text[:2048]
-    delimiter = ","
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
-        delimiter = dialect.delimiter
-    except Exception:
-        if "\t" in sample:
-            delimiter = "\t"
-        else:
-            delimiter = ";" if ";" in sample and "," not in sample else ","
-
-    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
-    if not reader.fieldnames:
-        return False, "CSV sem cabecalho.", 0, []
-
-    header_map = {
-        "distributor": "distributor",
-        "distribuidor": "distributor",
-        "issuer": "issuer",
-        "emissor": "issuer",
-        "investment_type": "investment_type",
-        "investimento": "investment_type",
-        "rate_type": "rate_type",
-        "tipo_taxa": "rate_type",
-        "tipo taxa": "rate_type",
-        "tax_type": "rate_type",
-        "tipo": "rate_type",
-        "annual_rate": "annual_rate",
-        "taxa_anual": "annual_rate",
-        "taxa anual": "annual_rate",
-        "juros_fixo": "annual_rate",
-        "juros fixo": "annual_rate",
-        "jurosfixo": "annual_rate",
-        "juros_fixo_%": "annual_rate",
-        "juros fixo %": "annual_rate",
-        "juros_fixo_csv": "juros_fixo",
-        "juros fixo csv": "juros_fixo",
-        "juros_fixo_col": "juros_fixo",
-        "juros fixo col": "juros_fixo",
-        "juros_fixo_valor": "juros_fixo",
-        "juros fixo valor": "juros_fixo",
-        "jurosfixocsv": "juros_fixo",
-        "jurosfixocol": "juros_fixo",
-        "jurosfixovalor": "juros_fixo",
-        "juros_fixo": "juros_fixo",
-        "juros fixo": "juros_fixo",
-        "ipca": "ipca",
-        "cdi": "cdi",
-        "date_aporte": "date_aporte",
-        "data_aporte": "date_aporte",
-        "data aporte": "date_aporte",
-        "aporte_date": "date_aporte",
-        "maturity_date": "maturity_date",
-        "data_final": "maturity_date",
-        "data final": "maturity_date",
-        "vencimento": "maturity_date",
-        "aporte": "aporte",
-        "applied": "aporte",
-        "reinvested": "reinvested",
-        "reinvestido": "reinvested",
-    }
-
-    normalized_fields = {}
-    for field in reader.fieldnames:
-        key = (field or "").strip().lower()
-        mapped = header_map.get(key)
-        if mapped:
-            normalized_fields[field] = mapped
-
-    required = {
-        "distributor",
-        "issuer",
-        "investment_type",
-        "rate_type",
-        "date_aporte",
-        "maturity_date",
-        "aporte",
-        "reinvested",
-    }
-    if not required.issubset(set(normalized_fields.values())):
-        return (
-            False,
-            (
-                "CSV de renda fixa precisa ter colunas: Distribuidor, Emissor, Investimento, "
-                "tipo, data aporte, aporte, Reinvestido, data final, Juros Fixo, IPCA e CDI."
-            ),
-            0,
-            [],
-        )
-
-    has_rate_cols = {"juros_fixo", "ipca", "cdi"}.issubset(set(normalized_fields.values()))
-    has_legacy_rate = {"rate_type", "annual_rate"}.issubset(set(normalized_fields.values()))
-    if not has_rate_cols and not has_legacy_rate:
-        return (
-            False,
-            "CSV precisa informar as colunas de taxa (Juros Fixo, IPCA, CDI) ou (tipo taxa, taxa anual).",
-            0,
-            [],
-        )
-
-    imported = 0
-    errors = []
-    line_number = 1
-    for row in reader:
-        line_number += 1
-        payload = {"target_portfolio_id": str(target_portfolio_id)}
-        for original, mapped in normalized_fields.items():
-            payload[mapped] = (row.get(original) or "").strip()
-
-        # Novo padrao: escolhe automaticamente o tipo de taxa pela coluna preenchida.
-        rate_type_raw = (payload.get("rate_type") or "").strip().upper()
-        rate_type_map = {
-            "FIXO": "FIXO",
-            "FIXO+IPCA": "FIXO+IPCA",
-            "FIXO + IPCA": "FIXO+IPCA",
-            "CDI": "CDI",
-            "IPCA": "IPCA",
-            "FIXO+CDI": "FIXO+CDI",
-            "FIXO + CDI": "FIXO+CDI",
-        }
-        payload["rate_type"] = rate_type_map.get(rate_type_raw, rate_type_raw)
-        if payload["rate_type"] not in {"FIXO", "FIXO+IPCA", "IPCA", "CDI", "FIXO+CDI"}:
-            errors.append(
-                f"Linha {line_number}: tipo invalido. Use FIXO, FIXO+IPCA, IPCA, CDI ou FIXO+CDI."
-            )
-            continue
-
-        juros_fixo = _parse_float(payload.get("juros_fixo"))
-        ipca = _parse_float(payload.get("ipca"))
-        cdi = _parse_float(payload.get("cdi"))
-        rate_candidates = [
-            ("FIXO", juros_fixo if juros_fixo is not None else 0.0),
-            ("IPCA", ipca if ipca is not None else 0.0),
-            ("CDI", cdi if cdi is not None else 0.0),
-        ]
-        positive_rates = {rtype for rtype, rate in rate_candidates if rate > 0}
-        if positive_rates:
-            expected_sets = {
-                "FIXO": {"FIXO"},
-                "IPCA": {"IPCA"},
-                "CDI": {"CDI"},
-                "FIXO+IPCA": {"FIXO", "IPCA"},
-                "FIXO+CDI": {"FIXO", "CDI"},
-            }
-            expected = expected_sets[payload["rate_type"]]
-            if positive_rates != expected:
-                errors.append(
-                    (
-                        f"Linha {line_number}: tipo '{payload['rate_type']}' nao bate com as colunas de taxa preenchidas "
-                        f"(esperado {', '.join(sorted(expected))})."
-                    )
-                )
-                continue
-
-            rate_values = {
-                "FIXO": juros_fixo if juros_fixo is not None else 0.0,
-                "IPCA": ipca if ipca is not None else 0.0,
-                "CDI": cdi if cdi is not None else 0.0,
-            }
-            payload["annual_rate"] = sum(rate_values[key] for key in expected)
-        elif "annual_rate" in payload and "rate_type" in payload:
-            # Compatibilidade com layout antigo.
-            pass
-        else:
-            errors.append(
-                f"Linha {line_number}: informe a taxa correspondente ao tipo em Juros Fixo, IPCA ou CDI."
-            )
-            continue
-
-        ok, message = add_fixed_income(payload)
-        if not ok:
-            errors.append(f"Linha {line_number}: {message}")
-            continue
-
-        imported += 1
-
-    return True, "Importacao concluida.", imported, errors
+    return portfolio_services.import_fixed_incomes_csv(file_bytes, target_portfolio_id)
 
 
 def _fixed_income_projection(item):
@@ -4552,144 +3030,24 @@ def _fixed_income_projection(item):
 
 
 def get_fixed_incomes(portfolio_ids, sort_by: str = "date_aporte", sort_dir: str = "desc"):
-    pids = normalize_portfolio_ids(portfolio_ids)
-    placeholders = ",".join(["?"] * len(pids))
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT
-            fi.id,
-            fi.portfolio_id,
-            fi.distributor,
-            fi.issuer,
-            fi.investment_type,
-            fi.rate_type,
-            fi.annual_rate,
-            fi.rate_fixed,
-            fi.rate_ipca,
-            fi.rate_cdi,
-            fi.date_aporte,
-            fi.aporte,
-            fi.reinvested,
-            fi.maturity_date,
-            p.name AS portfolio_name
-        FROM fixed_incomes fi
-        JOIN portfolios p ON p.id = fi.portfolio_id
-        WHERE fi.portfolio_id IN ("""
-        + placeholders
-        + """)
-        ORDER BY fi.date_aporte DESC, fi.id DESC
-        """,
-        tuple(pids),
-    ).fetchall()
-    items = [_fixed_income_projection(dict(row)) for row in rows]
-    return _sort_fixed_income_items(items, sort_by=sort_by, sort_dir=sort_dir)
+    from . import portfolio as portfolio_services
 
-
-def _sort_fixed_income_items(items, sort_by: str = "date_aporte", sort_dir: str = "desc"):
-    valid_dirs = {"asc", "desc"}
-    direction = sort_dir if sort_dir in valid_dirs else "desc"
-    key_name = (sort_by or "date_aporte").strip()
-    if key_name not in {
-        "portfolio_name",
-        "distributor",
-        "issuer",
-        "investment_type",
-        "rate_type",
-        "annual_rate",
-        "date_aporte",
-        "maturity_date",
-        "active_applied_value",
-        "elapsed_days",
-        "total_days",
-        "current_gross_value",
-        "total_received",
-        "rendimento",
-        "final_gross_value",
-    }:
-        key_name = "date_aporte"
-
-    def _sort_key(item):
-        value = item.get(key_name)
-        if value is None:
-            return (1, "")
-        if isinstance(value, (int, float)):
-            return (0, float(value))
-        return (0, str(value).lower())
-
-    sorted_items = list(items or [])
-    sorted_items.sort(key=_sort_key, reverse=(direction == "desc"))
-    return sorted_items
-
+    return portfolio_services.get_fixed_incomes(portfolio_ids, sort_by=sort_by, sort_dir=sort_dir)
 
 def delete_fixed_incomes(fixed_income_ids, portfolio_ids):
-    ids = []
-    for raw_id in fixed_income_ids:
-        try:
-            parsed = int(raw_id)
-        except (TypeError, ValueError):
-            continue
-        if parsed > 0 and parsed not in ids:
-            ids.append(parsed)
+    from . import portfolio as portfolio_services
 
-    if not ids:
-        return 0
-
-    pids = normalize_portfolio_ids(portfolio_ids)
-    ids_placeholders = ",".join(["?"] * len(ids))
-    pids_placeholders = ",".join(["?"] * len(pids))
-
-    db = get_db()
-    cursor = db.execute(
-        """
-        DELETE FROM fixed_incomes
-        WHERE id IN ("""
-        + ids_placeholders
-        + """)
-          AND portfolio_id IN ("""
-        + pids_placeholders
-        + """)
-        """,
-        tuple(ids + pids),
-    )
-    db.commit()
-    invalidate_fixed_income_snapshot(pids)
-    invalidate_chart_snapshots(pids)
-    return cursor.rowcount or 0
-
+    return portfolio_services.delete_fixed_incomes(fixed_income_ids, portfolio_ids)
 
 def get_fixed_income_summary(portfolio_ids):
-    payload = get_fixed_income_payload_cached(portfolio_ids)
-    return payload.get("summary", get_fixed_income_summary_from_items(payload.get("items") or []))
+    from . import portfolio as portfolio_services
 
+    return portfolio_services.get_fixed_income_summary(portfolio_ids)
 
 def get_fixed_income_summary_from_items(items):
-    items = items or []
-    return {
-        "applied_total": round(sum(item["active_applied_value"] for item in items), 2),
-        "current_total": round(sum(item["current_gross_value"] for item in items), 2),
-        "income_total": round(sum(item["current_income"] for item in items), 2),
-        "final_total": round(
-            sum(item["final_gross_value"] for item in items if not item["is_matured"]),
-            2,
-        ),
-        "total_received": round(sum(item["total_received"] for item in items), 2),
-        "rendimento_recebido_total": round(sum(item["rendimento"] for item in items), 2),
-        "count": len(items),
-    }
+    from . import portfolio as portfolio_services
 
-
-def _snapshot_now():
-    return datetime.now().isoformat(timespec="seconds")
-
-
-def _snapshot_age_seconds(iso_text: str):
-    try:
-        created = datetime.fromisoformat((iso_text or "").strip())
-    except (TypeError, ValueError):
-        return None
-    return max((datetime.now() - created).total_seconds(), 0.0)
-
+    return portfolio_services.get_fixed_income_summary_from_items(items)
 
 def _memory_cache_get(cache_store, cache_key):
     entry = cache_store.get(cache_key)
@@ -4732,251 +3090,38 @@ def invalidate_fixed_income_snapshot(portfolio_ids):
 
 
 def rebuild_fixed_income_snapshots(portfolio_ids=None):
-    if portfolio_ids is None:
-        pids = _all_portfolio_ids()
-    else:
-        pids = normalize_portfolio_ids(portfolio_ids)
-    if not pids:
-        return {"portfolios": 0, "items": 0}
+    from . import portfolio as portfolio_services
 
-    db = get_db()
-    total_items = 0
-    stamp = _snapshot_now()
-    for pid in pids:
-        items = get_fixed_incomes([pid], sort_by="date_aporte", sort_dir="desc")
-        summary = get_fixed_income_summary_from_items(items)
-        total_items += len(items)
-        try:
-            db.execute(
-                "DELETE FROM fixed_income_snapshot_items WHERE portfolio_id = ?",
-                (pid,),
-            )
-            db.execute(
-                """
-                INSERT INTO fixed_income_snapshot_summary (portfolio_id, payload_json, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(portfolio_id) DO UPDATE SET
-                  payload_json = excluded.payload_json,
-                  updated_at = excluded.updated_at
-                """,
-                (pid, json.dumps(summary, ensure_ascii=False), stamp),
-            )
-            for item in items:
-                db.execute(
-                    """
-                    INSERT INTO fixed_income_snapshot_items (portfolio_id, fixed_income_id, payload_json, updated_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(portfolio_id, fixed_income_id) DO UPDATE SET
-                      payload_json = excluded.payload_json,
-                      updated_at = excluded.updated_at
-                    """,
-                    (pid, int(item["id"]), json.dumps(item, ensure_ascii=False), stamp),
-                )
-        except Exception:
-            db.rollback()
-            raise
-    db.commit()
-    return {"portfolios": len(pids), "items": total_items}
-
+    return portfolio_services.rebuild_fixed_income_snapshots(portfolio_ids=portfolio_ids)
 
 def get_fixed_income_payload_cached(portfolio_ids, sort_by: str = "date_aporte", sort_dir: str = "desc"):
-    pids = normalize_portfolio_ids(portfolio_ids)
-    max_age_seconds = int(current_app.config.get("FIXED_INCOME_SNAPSHOT_MAX_AGE_SECONDS", 900))
-    placeholders = ",".join(["?"] * len(pids))
-    db = get_db()
+    from . import portfolio as portfolio_services
 
-    try:
-        summary_rows = db.execute(
-            """
-            SELECT portfolio_id, payload_json, updated_at
-            FROM fixed_income_snapshot_summary
-            WHERE portfolio_id IN ("""
-            + placeholders
-            + """)
-            """,
-            tuple(pids),
-        ).fetchall()
-        if len(summary_rows) != len(pids):
-            raise RuntimeError("snapshot_miss")
-
-        summary_map = {}
-        for row in summary_rows:
-            age = _snapshot_age_seconds(row["updated_at"])
-            if age is None or age > max_age_seconds:
-                raise RuntimeError("snapshot_stale")
-            summary_map[int(row["portfolio_id"])] = json.loads(row["payload_json"] or "{}")
-
-        item_rows = db.execute(
-            """
-            SELECT portfolio_id, payload_json, updated_at
-            FROM fixed_income_snapshot_items
-            WHERE portfolio_id IN ("""
-            + placeholders
-            + """)
-            """,
-            tuple(pids),
-        ).fetchall()
-
-        items = []
-        for row in item_rows:
-            age = _snapshot_age_seconds(row["updated_at"])
-            if age is None or age > max_age_seconds:
-                raise RuntimeError("snapshot_stale")
-            items.append(json.loads(row["payload_json"] or "{}"))
-
-        summary = {
-            "applied_total": 0.0,
-            "current_total": 0.0,
-            "income_total": 0.0,
-            "final_total": 0.0,
-            "total_received": 0.0,
-            "rendimento_recebido_total": 0.0,
-            "count": 0,
-        }
-        for pid in pids:
-            part = summary_map.get(int(pid), {})
-            summary["applied_total"] += float(part.get("applied_total", 0.0))
-            summary["current_total"] += float(part.get("current_total", 0.0))
-            summary["income_total"] += float(part.get("income_total", 0.0))
-            summary["final_total"] += float(part.get("final_total", 0.0))
-            summary["total_received"] += float(part.get("total_received", 0.0))
-            summary["rendimento_recebido_total"] += float(part.get("rendimento_recebido_total", 0.0))
-            summary["count"] += int(part.get("count", 0))
-        for key in ("applied_total", "current_total", "income_total", "final_total", "total_received", "rendimento_recebido_total"):
-            summary[key] = round(summary[key], 2)
-
-        return {
-            "items": _sort_fixed_income_items(items, sort_by=sort_by, sort_dir=sort_dir),
-            "summary": summary,
-            "snapshot": True,
-        }
-    except Exception:
-        items = get_fixed_incomes(pids, sort_by=sort_by, sort_dir=sort_dir)
-        summary = get_fixed_income_summary_from_items(items)
-        return {"items": items, "summary": summary, "snapshot": False}
-
+    return portfolio_services.get_fixed_income_payload_cached(
+        portfolio_ids,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
 
 def get_transactions(portfolio_ids):
-    pids = normalize_portfolio_ids(portfolio_ids)
-    placeholders = ",".join(["?"] * len(pids))
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT
-            t.id,
-            t.ticker,
-            t.tx_type,
-            t.shares,
-            t.price,
-            t.date,
-            (t.shares * t.price) AS total_value,
-            p.name AS portfolio_name
-        FROM transactions t
-        JOIN portfolios p ON p.id = t.portfolio_id
-        WHERE t.portfolio_id IN ("""
-        + placeholders
-        + """)
-        ORDER BY t.date DESC, t.id DESC
-        """,
-        tuple(pids),
-    ).fetchall()
-    return [dict(row) for row in rows]
+    from . import portfolio as portfolio_services
 
+    return portfolio_services.get_transactions(portfolio_ids)
 
 def delete_transactions(transaction_ids, portfolio_ids):
-    ids = []
-    for raw_id in transaction_ids:
-        try:
-            parsed = int(raw_id)
-        except (TypeError, ValueError):
-            continue
-        if parsed > 0 and parsed not in ids:
-            ids.append(parsed)
+    from . import portfolio as portfolio_services
 
-    if not ids:
-        return 0
-
-    pids = normalize_portfolio_ids(portfolio_ids)
-    ids_placeholders = ",".join(["?"] * len(ids))
-    pids_placeholders = ",".join(["?"] * len(pids))
-
-    db = get_db()
-    cursor = db.execute(
-        """
-        DELETE FROM transactions
-        WHERE id IN ("""
-        + ids_placeholders
-        + """)
-          AND portfolio_id IN ("""
-        + pids_placeholders
-        + """)
-        """,
-        tuple(ids + pids),
-    )
-    db.commit()
-    invalidate_chart_snapshots(pids)
-    return cursor.rowcount
-
+    return portfolio_services.delete_transactions(transaction_ids, portfolio_ids)
 
 def get_incomes(portfolio_ids):
-    pids = normalize_portfolio_ids(portfolio_ids)
-    placeholders = ",".join(["?"] * len(pids))
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT
-            i.id,
-            i.ticker,
-            i.income_type,
-            i.amount,
-            i.date,
-            p.name AS portfolio_name
-        FROM incomes i
-        JOIN portfolios p ON p.id = i.portfolio_id
-        WHERE portfolio_id IN ("""
-        + placeholders
-        + """)
-        ORDER BY i.date DESC, i.id DESC
-        """,
-        tuple(pids),
-    ).fetchall()
-    return [dict(row) for row in rows]
+    from . import portfolio as portfolio_services
 
+    return portfolio_services.get_incomes(portfolio_ids)
 
 def delete_incomes(income_ids, portfolio_ids):
-    ids = []
-    for raw_id in income_ids:
-        try:
-            parsed = int(raw_id)
-        except (TypeError, ValueError):
-            continue
-        if parsed > 0 and parsed not in ids:
-            ids.append(parsed)
+    from . import portfolio as portfolio_services
 
-    if not ids:
-        return 0
-
-    pids = normalize_portfolio_ids(portfolio_ids)
-    ids_placeholders = ",".join(["?"] * len(ids))
-    pids_placeholders = ",".join(["?"] * len(pids))
-
-    db = get_db()
-    cursor = db.execute(
-        """
-        DELETE FROM incomes
-        WHERE id IN ("""
-        + ids_placeholders
-        + """)
-          AND portfolio_id IN ("""
-        + pids_placeholders
-        + """)
-        """,
-        tuple(ids + pids),
-    )
-    db.commit()
-    invalidate_chart_snapshots(pids)
-    return cursor.rowcount or 0
-
+    return portfolio_services.delete_incomes(income_ids, portfolio_ids)
 
 def get_income_totals_by_ticker(portfolio_ids):
     pids = normalize_portfolio_ids(portfolio_ids)
@@ -5000,183 +3145,24 @@ def get_income_totals_by_ticker(portfolio_ids):
 
 
 def get_asset_transactions(ticker: str, portfolio_ids):
-    pids = normalize_portfolio_ids(portfolio_ids)
-    placeholders = ",".join(["?"] * len(pids))
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT
-            t.ticker,
-            t.tx_type,
-            t.shares,
-            t.price,
-            t.date,
-            (t.shares * t.price) AS total_value,
-            p.name AS portfolio_name
-        FROM transactions t
-        JOIN portfolios p ON p.id = t.portfolio_id
-        WHERE t.ticker = ? AND t.portfolio_id IN ("""
-        + placeholders
-        + """)
-        ORDER BY t.date DESC, t.id DESC
-        """,
-        tuple([ticker.upper()] + pids),
-    ).fetchall()
-    return [dict(row) for row in rows]
+    from . import portfolio as portfolio_services
 
+    return portfolio_services.get_asset_transactions(ticker, portfolio_ids)
 
 def get_asset_incomes(ticker: str, portfolio_ids):
-    pids = normalize_portfolio_ids(portfolio_ids)
-    placeholders = ",".join(["?"] * len(pids))
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT
-            i.ticker,
-            i.income_type,
-            i.amount,
-            i.date,
-            p.name AS portfolio_name
-        FROM incomes i
-        JOIN portfolios p ON p.id = i.portfolio_id
-        WHERE i.ticker = ? AND i.portfolio_id IN ("""
-        + placeholders
-        + """)
-        ORDER BY i.date DESC, i.id DESC
-        """,
-        tuple([ticker.upper()] + pids),
-    ).fetchall()
-    return [dict(row) for row in rows]
+    from . import portfolio as portfolio_services
 
+    return portfolio_services.get_asset_incomes(ticker, portfolio_ids)
 
 def get_asset_position_summary(ticker: str, portfolio_ids):
-    pids = normalize_portfolio_ids(portfolio_ids)
-    placeholders = ",".join(["?"] * len(pids))
-    db = get_db()
-    asset = get_asset(ticker)
-    if not asset:
-        return {
-            "shares": 0,
-            "avg_price": 0.0,
-            "total_value": 0.0,
-            "market_value": 0.0,
-            "open_pnl_value": 0.0,
-            "open_pnl_pct": 0.0,
-            "total_incomes": 0.0,
-            "incomes_current_month": 0.0,
-            "incomes_3m": 0.0,
-            "incomes_12m": 0.0,
-        }
+    from . import portfolio as portfolio_services
 
-    rows = db.execute(
-        """
-        SELECT tx_type, shares, price
-        FROM transactions
-        WHERE ticker = ? AND portfolio_id IN ("""
-        + placeholders
-        + """)
-        ORDER BY date ASC, id ASC
-        """,
-        tuple([ticker.upper()] + pids),
-    ).fetchall()
-
-    shares = 0
-    total_cost = 0.0
-
-    for row in rows:
-        tx_type = row["tx_type"]
-        tx_shares = row["shares"]
-        tx_price = row["price"]
-
-        if tx_type == "buy":
-            total_cost += tx_shares * tx_price
-            shares += tx_shares
-            continue
-
-        if shares <= 0:
-            continue
-
-        avg_price = total_cost / shares
-        sell_shares = min(tx_shares, shares)
-        total_cost -= avg_price * sell_shares
-        shares -= sell_shares
-
-    avg_price = (total_cost / shares) if shares > 0 else 0.0
-    total_value = total_cost
-    market_value = shares * asset["price"]
-    open_pnl_value = market_value - total_value
-    open_pnl_pct = (open_pnl_value / total_value) * 100 if total_value > 0 else 0.0
-    today = datetime.now().date()
-    current_month_start = today.replace(day=1)
-
-    def _subtract_months(date_value, months_back):
-        year = date_value.year
-        month = date_value.month - months_back
-        while month <= 0:
-            month += 12
-            year -= 1
-        return date_value.replace(year=year, month=month, day=1)
-
-    start_3m = _subtract_months(current_month_start, 2)
-    start_12m = _subtract_months(current_month_start, 11)
-
-    income_row = db.execute(
-        """
-        SELECT
-            COALESCE(SUM(amount), 0) AS total_incomes,
-            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_current_month,
-            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_3m,
-            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_12m
-        FROM incomes
-        WHERE ticker = ? AND portfolio_id IN ("""
-        + placeholders
-        + """)
-        """,
-        tuple(
-            [
-                current_month_start.strftime("%Y-%m-%d"),
-                start_3m.strftime("%Y-%m-%d"),
-                start_12m.strftime("%Y-%m-%d"),
-                ticker.upper(),
-            ]
-            + pids
-        ),
-    ).fetchone()
-    total_incomes = float(income_row["total_incomes"]) if income_row else 0.0
-    incomes_current_month = float(income_row["incomes_current_month"]) if income_row else 0.0
-    incomes_3m = float(income_row["incomes_3m"]) if income_row else 0.0
-    incomes_12m = float(income_row["incomes_12m"]) if income_row else 0.0
-
-    return {
-        "shares": shares,
-        "avg_price": round(avg_price, 2),
-        "total_value": round(total_value, 2),
-        "market_value": round(market_value, 2),
-        "open_pnl_value": round(open_pnl_value, 2),
-        "open_pnl_pct": round(open_pnl_pct, 2),
-        "total_incomes": round(total_incomes, 2),
-        "incomes_current_month": round(incomes_current_month, 2),
-        "incomes_3m": round(incomes_3m, 2),
-        "incomes_12m": round(incomes_12m, 2),
-    }
-
+    return portfolio_services.get_asset_position_summary(ticker, portfolio_ids)
 
 def get_sectors_summary():
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT
-            sector,
-            COUNT(*) AS assets_count,
-            ROUND(AVG(dy), 2) AS avg_dy,
-            ROUND(SUM(market_cap_bi), 2) AS market_cap_bi
-        FROM assets
-        GROUP BY sector
-        ORDER BY market_cap_bi DESC
-        """
-    ).fetchall()
-    return [dict(row) for row in rows]
+    from . import portfolio as portfolio_services
 
+    return portfolio_services.get_sectors_summary()
 
 def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str = "asc"):
     pids = normalize_portfolio_ids(portfolio_ids)

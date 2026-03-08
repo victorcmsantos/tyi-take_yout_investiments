@@ -45,9 +45,11 @@ export SQLITE_TIMEOUT_SECONDS=30
 docker compose up -d --build
 ```
 
-Acesse em `http://127.0.0.1:5173`.
+Acesse em `http://127.0.0.1:8000`.
 
 O `docker-compose.yml` agora cria a rede `invest-net` automaticamente.
+Por padrão, o OpenClaw usa `ghcr.io/openclaw/openclaw:latest`. Se você tiver uma build local (ex.: `openclaw:local`), sobrescreva com `OPENCLAW_IMAGE=openclaw:local`.
+O serviço `openclaw-cli` é opcional e fica no profile `cli` (não sobe no `up` padrão). Para usar o CLI manualmente: `docker compose run --rm openclaw-cli health`.
 
 ### Arquitetura do enriquecimento por IA
 
@@ -163,8 +165,8 @@ docker build -t invest-portal-frontend ./frontend
 ```bash
 docker network create invest-net
 
-# backend (sem expor porta externa, usado via proxy do frontend)
-docker run -d --name backend --network invest-net -p 8000:8000 \
+# backend (opcionalmente exposto na 8001; frontend usa a rede interna)
+docker run -d --name backend --network invest-net -p 8001:8000 \
   -v /srv/tyi-take_yout_investiments/app_vol:/app_vol \
   -e DATABASE=/app_vol/investments.db \
   -e DATABASE_BACKUP_DIR=/app_vol/backups \
@@ -175,10 +177,10 @@ docker run -d --name backend --network invest-net -p 8000:8000 \
   -e MARKET_DATA_LOG_SOURCES=1 invest-portal-backend
 
 # frontend
-docker run -d --name frontend --network invest-net -p 5173:80 invest-portal-frontend
+docker run -d --name frontend --network invest-net -p 8000:80 invest-portal-frontend
 ```
 
-Acesse em `http://127.0.0.1:5173`.
+Acesse em `http://127.0.0.1:8000`.
 
 ### Usuarios e admin bootstrap
 

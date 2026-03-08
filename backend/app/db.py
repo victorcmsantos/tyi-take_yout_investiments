@@ -327,6 +327,34 @@ def ensure_schema_upgrades():
 
     db.execute(
         """
+        CREATE TABLE IF NOT EXISTS metric_formulas (
+          metric_key TEXT PRIMARY KEY,
+          formula TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS asset_metric_baselines (
+          ticker TEXT PRIMARY KEY,
+          price REAL NOT NULL DEFAULT 0,
+          dy REAL NOT NULL DEFAULT 0,
+          pl REAL NOT NULL DEFAULT 0,
+          pvp REAL NOT NULL DEFAULT 0,
+          variation_day REAL NOT NULL DEFAULT 0,
+          variation_7d REAL NOT NULL DEFAULT 0,
+          variation_30d REAL NOT NULL DEFAULT 0,
+          market_cap_bi REAL NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (ticker) REFERENCES assets (ticker)
+        )
+        """
+    )
+
+    db.execute(
+        """
         CREATE TABLE IF NOT EXISTS asset_enrichments (
             ticker TEXT PRIMARY KEY,
             payload_json TEXT NOT NULL,
@@ -532,6 +560,12 @@ def ensure_schema_upgrades():
         """
         DELETE FROM chart_snapshot_monthly_ticker
         WHERE portfolio_id NOT IN (SELECT id FROM portfolios)
+        """
+    )
+    db.execute(
+        """
+        DELETE FROM asset_metric_baselines
+        WHERE ticker NOT IN (SELECT ticker FROM assets)
         """
     )
 

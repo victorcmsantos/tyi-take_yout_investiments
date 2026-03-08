@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import 'chart.js/auto'
 import { Line } from 'react-chartjs-2'
 import { apiGet, apiPost } from '../api'
+import { formatDateTimeLocal, parseApiDate } from '../datetime'
 
 const CHART_RANGES = [
   { key: '1d', label: '1 DIA' },
@@ -30,14 +31,15 @@ const shortText = (value, limit = 140) => {
 const marketDataSummary = (marketData) => {
   if (!marketData) return ''
   const source = marketData.source ? String(marketData.source).toUpperCase() : 'provider'
+  const updatedAtLabel = formatDateTimeLocal(marketData.updated_at)
   if (marketData.is_stale) {
-    if (marketData.updated_at) {
-      return `Cotacao possivelmente antiga. Ultimo sucesso via ${source} em ${marketData.updated_at}.`
+    if (updatedAtLabel) {
+      return `Cotacao possivelmente antiga. Ultimo sucesso via ${source} em ${updatedAtLabel}.`
     }
     return 'Cotacao sem sincronizacao recente confirmada.'
   }
-  if (marketData.updated_at) {
-    return `Ultima atualizacao confirmada via ${source} em ${marketData.updated_at}.`
+  if (updatedAtLabel) {
+    return `Ultima atualizacao confirmada via ${source} em ${updatedAtLabel}.`
   }
   return ''
 }
@@ -53,21 +55,7 @@ function dateBr(value) {
 }
 
 function dateTimeLabel(value) {
-  const text = String(value || '').trim()
-  if (!text) return ''
-  return text.replace('T', ' ')
-}
-
-function parseApiDate(value) {
-  const text = String(value || '').trim()
-  if (!text) return null
-  if (/Z$|[+-]\d{2}:\d{2}$/.test(text)) {
-    const parsed = Date.parse(text)
-    return Number.isNaN(parsed) ? null : parsed
-  }
-  const normalized = text.includes(' ') ? text.replace(' ', 'T') : text
-  const parsed = Date.parse(`${normalized}Z`)
-  return Number.isNaN(parsed) ? null : parsed
+  return formatDateTimeLocal(value)
 }
 
 function isTransientOpenClawReply(value) {
@@ -476,6 +464,7 @@ function AssetPage({ selectedPortfolioIds }) {
   const decisionPriceGapLabel = positionDecision.priceGapPct === null
     ? 'Sem preco medio'
     : `${signedPct(positionDecision.priceGapPct)} vs preco medio`
+  const selectedRangeLabel = (CHART_RANGES.find((opt) => opt.key === rangeKey)?.label || String(rangeKey || '').toUpperCase())
   const openClawMoodLabel = String(enrichmentPayload?.humor_do_mercado || '').trim()
   const openClawMoodClass = openClawMoodLabel
     ? (normalizeStructuredMarketMood(openClawMoodLabel) === 'positive'
@@ -590,7 +579,7 @@ function AssetPage({ selectedPortfolioIds }) {
           <strong>{brl(asset.price)}</strong>{' '}
           {priceHistory.change_pct !== null && priceHistory.change_pct !== undefined && (
             <span className={Number(priceHistory.change_pct || 0) >= 0 ? 'up' : 'down'}>
-              {pct(priceHistory.change_pct)} ({String(priceHistory.range_label || '').toUpperCase()})
+              {pct(priceHistory.change_pct)} (PERIODO {selectedRangeLabel})
             </span>
           )}
         </p>
@@ -632,7 +621,7 @@ function AssetPage({ selectedPortfolioIds }) {
 
       <article className="card detail-card">
         <h3>Resumo</h3>
-        <p>Variacao no dia: <strong className={Number(asset.variation_day || 0) >= 0 ? 'up' : 'down'}>{pct(asset.variation_day)}</strong></p>
+        <p>Variacao no dia (provider): <strong className={Number(asset.variation_day || 0) >= 0 ? 'up' : 'down'}>{pct(asset.variation_day)}</strong></p>
         <p>Valor de mercado: R$ {Number(asset.market_cap_bi || 0).toFixed(2)} bi</p>
       </article>
 
@@ -724,7 +713,7 @@ function AssetPage({ selectedPortfolioIds }) {
               <span className={`analysis-pill ${openClawCacheClass}`}>{openClawCacheLabel}</span>
               {!!enrichment.updated_at && (
                 <span className="meta-chip">
-                  Atualizado em {enrichment.updated_at}
+                  Atualizado em {dateTimeLabel(enrichment.updated_at)}
                 </span>
               )}
             </div>
@@ -816,7 +805,7 @@ function AssetPage({ selectedPortfolioIds }) {
           </>
         ) : !!rawEnrichmentReply && !hasTransientRawReply ? (
           <>
-            {!!enrichment.updated_at && <p className="subtitle">Atualizado em: {enrichment.updated_at}</p>}
+            {!!enrichment.updated_at && <p className="subtitle">Atualizado em: {dateTimeLabel(enrichment.updated_at)}</p>}
             <p><strong>Resposta bruta do OpenClaw:</strong></p>
             <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{rawEnrichmentReply}</pre>
           </>

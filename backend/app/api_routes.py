@@ -34,6 +34,7 @@ from .services import (
     get_incomes,
     get_monthly_class_summary,
     get_monthly_ticker_summary,
+    get_metric_formulas_catalog,
     get_portfolio_snapshot,
     get_portfolios,
     get_sectors_summary,
@@ -47,6 +48,7 @@ from .services import (
     resolve_portfolio_id,
     enrich_asset_with_openclaw,
     enrich_assets_with_openclaw_batch,
+    update_metric_formula,
 )
 
 
@@ -335,6 +337,22 @@ def admin_openclaw_enrich_assets():
         limit=limit,
     )
     return _json_ok(result)
+
+
+@api_bp.route("/admin/metric-formulas", methods=["GET"])
+def admin_metric_formulas():
+    require_admin_user()
+    return _json_ok(get_metric_formulas_catalog())
+
+
+@api_bp.route("/admin/metric-formulas/<metric_key>", methods=["POST"])
+def admin_metric_formula_save(metric_key: str):
+    require_admin_user()
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    ok, message, result = update_metric_formula(metric_key, payload.get("formula"))
+    if not ok:
+        return _json_error(message, status=400)
+    return _json_ok({"message": message, "result": result, "catalog": get_metric_formulas_catalog()})
 
 
 @api_bp.route("/metrics", methods=["GET"])

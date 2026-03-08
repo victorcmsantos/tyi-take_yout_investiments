@@ -27,7 +27,7 @@ services:
       OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:-}"
       OPENCLAW_TLS_CA_BUNDLE: "/openclaw-config/gateway/tls/openclaw-local-ca.pem"
     ports:
-      - "8000:8000"
+      - "8001:8000"
     volumes:
       - /srv/tyi-take_yout_investiments/app_vol:/app_vol
       - ${OPENCLAW_CONFIG_DIR:-/srv/tyi-take_yout_investiments/openclaw/config}:/openclaw-config:ro
@@ -43,12 +43,12 @@ services:
     networks:
       - invest-net
     ports:
-      - "5173:80"
+      - "8000:80"
     depends_on:
       - backend
 
   openclaw-gateway:
-    image: ${OPENCLAW_IMAGE:-openclaw:local}
+    image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
     networks:
       - invest-net
     environment:
@@ -105,7 +105,8 @@ services:
       start_period: 20s
 
   openclaw-cli:
-    image: ${OPENCLAW_IMAGE:-openclaw:local}
+    image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    profiles: ["cli"]
     network_mode: "service:openclaw-gateway"
     cap_drop:
       - NET_RAW

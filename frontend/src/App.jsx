@@ -23,6 +23,7 @@ import PortfoliosPage from './pages/PortfoliosPage'
 import LoginPage from './pages/LoginPage'
 import AdminPage from './pages/AdminPage'
 import AllocationPage from './pages/AllocationPage'
+import MetricFormulasPage from './pages/MetricFormulasPage'
 
 function App({ themeMode, onToggleTheme }) {
   const navigate = useNavigate()
@@ -202,6 +203,7 @@ function App({ themeMode, onToggleTheme }) {
     '/carteiras': 'Carteiras',
     '/alocador': 'Alocador',
     '/admin': 'Admin',
+    '/admin/metricas': 'Metricas',
   }
 
   const breadcrumbs = useMemo(() => {
@@ -229,6 +231,7 @@ function App({ themeMode, onToggleTheme }) {
           title: 'Administracao',
           items: [
             { to: '/admin', label: 'Usuarios' },
+            { to: '/admin/metricas', label: 'Metricas' },
           ],
         },
       ]
@@ -464,6 +467,10 @@ function App({ themeMode, onToggleTheme }) {
             <Route
               path="/admin"
               element={currentUser.is_admin ? <AdminPage currentUser={currentUser} /> : <Navigate to="/" replace />}
+            />
+            <Route
+              path="/admin/metricas"
+              element={currentUser.is_admin ? <MetricFormulasPage /> : <Navigate to="/" replace />}
             />
             <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="/transacoes/nova" element={<Navigate to="/nova" replace />} />

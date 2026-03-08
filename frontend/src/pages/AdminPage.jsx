@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button, Checkbox, FormControlLabel, Paper, Stack, Typography } from '@mui/material'
 import { apiGet, apiPost } from '../api'
+import { currentBrowserTimeZone, formatDateTimeLocal } from '../datetime'
 
 function AdminPage({ currentUser }) {
   const navigate = useNavigate()
@@ -22,6 +23,7 @@ function AdminPage({ currentUser }) {
   const [batchLimit, setBatchLimit] = useState('10')
   const [batchTickers, setBatchTickers] = useState('')
   const [batchResult, setBatchResult] = useState(null)
+  const browserTimeZone = currentBrowserTimeZone()
 
   const loadUsers = async () => {
     setLoading(true)
@@ -170,13 +172,16 @@ function AdminPage({ currentUser }) {
         <Typography variant="body2" sx={{ mb: 2, opacity: 0.8 }}>
           Gere um snapshot manual do banco SQLite atual.
         </Typography>
+        <Typography variant="caption" sx={{ mb: 1.5, display: 'block', opacity: 0.7 }}>
+          Horários exibidos no seu fuso: {browserTimeZone}
+        </Typography>
         <Button variant="contained" onClick={onCreateBackup} disabled={backupLoading}>
           {backupLoading ? 'Gerando backup...' : 'Criar backup agora'}
         </Button>
         {lastBackup && (
           <div className="admin-user-meta" style={{ marginTop: 12 }}>
             <span>Arquivo: {lastBackup.filename}</span>
-            <span>Criado em: {lastBackup.created_at}</span>
+            <span>Criado em: {formatDateTimeLocal(lastBackup.created_at)}</span>
           </div>
         )}
 
@@ -201,7 +206,7 @@ function AdminPage({ currentUser }) {
                   {backups.map((backup) => (
                     <tr key={backup.filename}>
                       <td>{backup.filename}</td>
-                      <td>{backup.modified_at}</td>
+                      <td>{formatDateTimeLocal(backup.modified_at)}</td>
                       <td>{formatBytes(backup.size_bytes)}</td>
                       <td style={{ textAlign: 'right' }}>
                         <Button
@@ -282,7 +287,7 @@ function AdminPage({ currentUser }) {
                         <td>{item.ticker}</td>
                         <td>{item.ok ? 'OK' : 'Falha'}</td>
                         <td>{item.message}</td>
-                        <td>{item.updated_at || '-'}</td>
+                        <td>{item.updated_at ? formatDateTimeLocal(item.updated_at) : '-'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -327,7 +332,7 @@ function AdminPage({ currentUser }) {
                   <div className="admin-user-meta">
                     <span>{user.is_admin ? 'Admin' : 'Usuario'}</span>
                     <span>{user.is_active ? 'Ativo' : 'Inativo'}</span>
-                    <span>Ultimo login: {user.last_login_at || 'nunca'}</span>
+                    <span>Ultimo login: {user.last_login_at ? formatDateTimeLocal(user.last_login_at) : 'nunca'}</span>
                   </div>
                 </div>
                 <Button

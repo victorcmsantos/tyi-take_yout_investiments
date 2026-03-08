@@ -1,3 +1,4 @@
+import ast
 import csv
 import io
 import json
@@ -37,6 +38,9 @@ _BRAPI_DIAG = {
     "empty_payload_tickers": set(),
     "empty_results_tickers": set(),
 }
+_BRAPI_BATCH_LIMIT = 10
+_BRAPI_QUOTE_CACHE_TTL_SECONDS = 20.0
+_BRAPI_QUOTE_RESULT_CACHE = {}
 _MARKET_DATA_PROVIDER_CAPABILITIES = {
     "alpha_vantage": {"metrics", "profile", "history"},
     "brapi": {"metrics", "profile", "history"},
@@ -44,6 +48,64 @@ _MARKET_DATA_PROVIDER_CAPABILITIES = {
     "twelve_data": {"metrics", "history"},
     "google": {"metrics"},
     "yahoo": {"metrics", "profile", "history"},
+}
+_METRIC_FORMULA_FIELDS = (
+    "price",
+    "dy",
+    "pl",
+    "pvp",
+    "variation_day",
+    "variation_7d",
+    "variation_30d",
+    "market_cap_bi",
+)
+_METRIC_FORMULA_CATALOG = {
+    "price": {
+        "title": "Preco",
+        "description": "Preco atual do ativo.",
+        "formula": "value",
+    },
+    "dy": {
+        "title": "Dividend Yield",
+        "description": "DY anual em percentual.",
+        "formula": "value",
+    },
+    "pl": {
+        "title": "P/L",
+        "description": "Preco sobre lucro.",
+        "formula": "value",
+    },
+    "pvp": {
+        "title": "P/VP",
+        "description": "Preco sobre valor patrimonial.",
+        "formula": "value",
+    },
+    "variation_day": {
+        "title": "Variacao no dia",
+        "description": "Variacao percentual no dia.",
+        "formula": "value",
+    },
+    "variation_7d": {
+        "title": "Variacao 7d",
+        "description": "Variacao percentual em 7 dias.",
+        "formula": "value",
+    },
+    "variation_30d": {
+        "title": "Variacao 30d",
+        "description": "Variacao percentual em 30 dias.",
+        "formula": "value",
+    },
+    "market_cap_bi": {
+        "title": "Valor de mercado (bi)",
+        "description": "Market cap em bilhoes de reais.",
+        "formula": "value",
+    },
+}
+_METRIC_FORMULA_ALLOWED_FUNCS = {
+    "abs": abs,
+    "min": min,
+    "max": max,
+    "round": round,
 }
 
 
@@ -66,6 +128,329 @@ def _row_to_dict(row):
 
 def _now_iso():
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _metric_formula_catalog_items():
+    items = []
+    for key in _METRIC_FORMULA_FIELDS:
+        meta = _METRIC_FORMULA_CATALOG.get(key, {})
+        items.append(
+            {
+                "key": key,
+                "title": str(meta.get("title") or key).strip(),
+                "description": str(meta.get("description") or "").strip(),
+                "default_formula": str(meta.get("formula") or "value").strip() or "value",
+            }
+        )
+    return items
+
+
+def _normalize_metric_formula(formula: str):
+    text = str(formula or "").strip()
+    return text or "value"
+
+
+def _normalize_metric_formula_value(value, fallback=0.0):
+    numeric = _to_number(value)
+    if numeric is None:
+        return float(_to_number(fallback) or 0.0)
+    return float(numeric)
+
+
+def _metric_formula_context(values: dict):
+    context = {}
+    for field in _METRIC_FORMULA_FIELDS:
+        context[field] = _normalize_metric_formula_value((values or {}).get(field), fallback=0.0)
+    return context
+
+
+def _validate_metric_formula_expression(formula: str):
+    expression = _normalize_metric_formula(formula)
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"Formula invalida: {exc.msg}.") from exc
+
+    allowed_names = set(_METRIC_FORMULA_FIELDS) | {"value"} | set(_METRIC_FORMULA_ALLOWED_FUNCS.keys())
+    allowed_node_types = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Constant,
+        ast.Name,
+        ast.Load,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Mod,
+        ast.Pow,
+        ast.FloorDiv,
+        ast.UAdd,
+        ast.USub,
+        ast.Call,
+        ast.Compare,
+        ast.Eq,
+        ast.NotEq,
+        ast.Lt,
+        ast.LtE,
+        ast.Gt,
+        ast.GtE,
+        ast.BoolOp,
+        ast.And,
+        ast.Or,
+        ast.IfExp,
+        ast.Not,
+    )
+
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed_node_types):
+            raise ValueError("Formula contem operacao nao permitida.")
+        if isinstance(node, ast.Name) and node.id not in allowed_names:
+            raise ValueError(f"Variavel/fucao nao permitida: {node.id}.")
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name) or node.func.id not in _METRIC_FORMULA_ALLOWED_FUNCS:
+                raise ValueError("Chamada de funcao nao permitida.")
+    return tree
+
+
+def _evaluate_metric_formula(formula: str, context: dict):
+    expression = _normalize_metric_formula(formula)
+    tree = _validate_metric_formula_expression(expression)
+    compiled = compile(tree, "<metric-formula>", "eval")
+    safe_globals = {"__builtins__": {}}
+    safe_globals.update(_METRIC_FORMULA_ALLOWED_FUNCS)
+    return eval(compiled, safe_globals, dict(context or {}))
+
+
+def _ensure_metric_formula_rows(db):
+    now_iso = _now_iso()
+    for item in _metric_formula_catalog_items():
+        db.execute(
+            """
+            INSERT INTO metric_formulas (metric_key, formula, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(metric_key) DO NOTHING
+            """,
+            (item["key"], item["default_formula"], now_iso),
+        )
+
+
+def _get_metric_formula_map(db):
+    _ensure_metric_formula_rows(db)
+    rows = db.execute("SELECT metric_key, formula FROM metric_formulas").fetchall()
+    payload = {}
+    for row in rows:
+        key = str(row["metric_key"] or "").strip()
+        if key in _METRIC_FORMULA_FIELDS:
+            payload[key] = _normalize_metric_formula(row["formula"])
+    return payload
+
+
+def _upsert_asset_metric_baseline(db, ticker: str, values: dict, updated_at: str | None = None):
+    normalized_ticker = str(ticker or "").strip().upper()
+    if not normalized_ticker:
+        return
+    payload = _metric_formula_context(values)
+    db.execute(
+        """
+        INSERT INTO asset_metric_baselines (
+            ticker, price, dy, pl, pvp, variation_day, variation_7d, variation_30d, market_cap_bi, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ticker) DO UPDATE SET
+            price = excluded.price,
+            dy = excluded.dy,
+            pl = excluded.pl,
+            pvp = excluded.pvp,
+            variation_day = excluded.variation_day,
+            variation_7d = excluded.variation_7d,
+            variation_30d = excluded.variation_30d,
+            market_cap_bi = excluded.market_cap_bi,
+            updated_at = excluded.updated_at
+        """,
+        (
+            normalized_ticker,
+            payload["price"],
+            payload["dy"],
+            payload["pl"],
+            payload["pvp"],
+            payload["variation_day"],
+            payload["variation_7d"],
+            payload["variation_30d"],
+            payload["market_cap_bi"],
+            updated_at or _now_iso(),
+        ),
+    )
+
+
+def _seed_missing_metric_baselines(db):
+    rows = db.execute(
+        """
+        SELECT
+            a.ticker,
+            a.price,
+            a.dy,
+            a.pl,
+            a.pvp,
+            a.variation_day,
+            a.variation_7d,
+            a.variation_30d,
+            a.market_cap_bi
+        FROM assets a
+        LEFT JOIN asset_metric_baselines b ON b.ticker = a.ticker
+        WHERE b.ticker IS NULL
+        """
+    ).fetchall()
+    for row in rows:
+        _upsert_asset_metric_baseline(
+            db,
+            row["ticker"],
+            {
+                "price": row["price"],
+                "dy": row["dy"],
+                "pl": row["pl"],
+                "pvp": row["pvp"],
+                "variation_day": row["variation_day"],
+                "variation_7d": row["variation_7d"],
+                "variation_30d": row["variation_30d"],
+                "market_cap_bi": row["market_cap_bi"],
+            },
+        )
+
+
+def _apply_metric_formulas_to_values(values: dict, formula_map: dict):
+    base_context = _metric_formula_context(values)
+    output = {}
+    for field in _METRIC_FORMULA_FIELDS:
+        formula = _normalize_metric_formula((formula_map or {}).get(field, "value"))
+        scoped_context = dict(base_context)
+        scoped_context["value"] = base_context[field]
+        try:
+            evaluated = _evaluate_metric_formula(formula, scoped_context)
+        except Exception:
+            evaluated = base_context[field]
+        output[field] = _normalize_metric_formula_value(evaluated, fallback=base_context[field])
+    return output
+
+
+def get_metric_formulas_catalog():
+    db = get_db()
+    formula_map = _get_metric_formula_map(db)
+    rows = db.execute("SELECT metric_key, updated_at FROM metric_formulas").fetchall()
+    updated_map = {str(row["metric_key"]): row["updated_at"] for row in rows}
+    items = []
+    for item in _metric_formula_catalog_items():
+        key = item["key"]
+        items.append(
+            {
+                "key": key,
+                "title": item["title"],
+                "description": item["description"],
+                "formula": formula_map.get(key, item["default_formula"]),
+                "updated_at": updated_map.get(key),
+                "example": f"{key} = {item['default_formula']}",
+            }
+        )
+    return {
+        "metrics": items,
+        "allowed_variables": ["value"] + list(_METRIC_FORMULA_FIELDS),
+        "allowed_functions": sorted(_METRIC_FORMULA_ALLOWED_FUNCS.keys()),
+    }
+
+
+def recalculate_metric_formulas_for_all_assets():
+    db = get_db()
+    _seed_missing_metric_baselines(db)
+    formula_map = _get_metric_formula_map(db)
+    rows = db.execute(
+        """
+        SELECT ticker, price, dy, pl, pvp, variation_day, variation_7d, variation_30d, market_cap_bi
+        FROM asset_metric_baselines
+        ORDER BY ticker ASC
+        """
+    ).fetchall()
+    updated = 0
+    for row in rows:
+        ticker = str(row["ticker"] or "").strip().upper()
+        if not ticker:
+            continue
+        applied = _apply_metric_formulas_to_values(
+            {
+                "price": row["price"],
+                "dy": row["dy"],
+                "pl": row["pl"],
+                "pvp": row["pvp"],
+                "variation_day": row["variation_day"],
+                "variation_7d": row["variation_7d"],
+                "variation_30d": row["variation_30d"],
+                "market_cap_bi": row["market_cap_bi"],
+            },
+            formula_map,
+        )
+        cursor = db.execute(
+            """
+            UPDATE assets
+            SET
+                price = ?,
+                dy = ?,
+                pl = ?,
+                pvp = ?,
+                variation_day = ?,
+                variation_7d = ?,
+                variation_30d = ?,
+                market_cap_bi = ?
+            WHERE ticker = ?
+            """,
+            (
+                applied["price"],
+                applied["dy"],
+                applied["pl"],
+                applied["pvp"],
+                applied["variation_day"],
+                applied["variation_7d"],
+                applied["variation_30d"],
+                applied["market_cap_bi"],
+                ticker,
+            ),
+        )
+        if int(cursor.rowcount or 0) > 0:
+            updated += 1
+    db.commit()
+    return {"updated_count": updated, "applied_at": _now_iso()}
+
+
+def update_metric_formula(metric_key: str, formula: str):
+    key = str(metric_key or "").strip().lower()
+    if key not in _METRIC_FORMULA_FIELDS:
+        return False, "Metrica invalida.", None
+
+    normalized_formula = _normalize_metric_formula(formula)
+    try:
+        probe_context = _metric_formula_context({field: 1.0 for field in _METRIC_FORMULA_FIELDS})
+        probe_context["value"] = 1.0
+        probe_value = _evaluate_metric_formula(normalized_formula, probe_context)
+        if _to_number(probe_value) is None:
+            return False, "Formula precisa retornar um valor numerico.", None
+    except Exception as exc:
+        return False, f"Formula invalida: {exc}", None
+
+    db = get_db()
+    _ensure_metric_formula_rows(db)
+    db.execute(
+        """
+        UPDATE metric_formulas
+        SET formula = ?, updated_at = ?
+        WHERE metric_key = ?
+        """,
+        (normalized_formula, _now_iso(), key),
+    )
+    result = recalculate_metric_formulas_for_all_assets()
+    return True, "Formula salva e aplicada em todos os tickers.", {
+        "metric_key": key,
+        "formula": normalized_formula,
+        "recalculate": result,
+    }
 
 
 def _market_data_stale_after_seconds():
@@ -1906,67 +2291,222 @@ def _get_brapi_base_url():
     return (os.getenv("BRAPI_BASE_URL") or "https://brapi.dev/api").rstrip("/")
 
 
-def _fetch_brapi_quote_result(ticker: str, range_key: str = None, interval: str = None, modules=None):
-    if not _is_brazilian_market_ticker(ticker):
-        return None
+def _normalize_brapi_modules(modules):
+    if not modules:
+        return tuple()
+    normalized = []
+    for item in modules:
+        value = str(item or "").strip()
+        if value and value not in normalized:
+            normalized.append(value)
+    return tuple(normalized)
+
+
+def _normalize_brapi_symbol(symbol: str):
+    normalized = (symbol or "").strip().upper()
+    if normalized.endswith(".SA"):
+        normalized = normalized[:-3]
+    return normalized
+
+
+def _build_brapi_quote_query(range_key: str = None, interval: str = None, modules=None):
+    params = {}
+    if range_key:
+        params["range"] = str(range_key).strip()
+    if interval:
+        params["interval"] = str(interval).strip()
+    normalized_modules = _normalize_brapi_modules(modules)
+    if normalized_modules:
+        params["modules"] = ",".join(normalized_modules)
+    return ("?" + urlencode(params)) if params else ""
+
+
+def _brapi_quote_cache_key(ticker: str, range_key: str = None, interval: str = None, modules=None):
+    return (
+        _normalize_brapi_symbol(ticker),
+        (range_key or "").strip().lower(),
+        (interval or "").strip().lower(),
+        _normalize_brapi_modules(modules),
+    )
+
+
+def _set_brapi_cached_quote_result(
+    ticker: str,
+    result,
+    range_key: str = None,
+    interval: str = None,
+    modules=None,
+):
+    cache_key = _brapi_quote_cache_key(ticker, range_key=range_key, interval=interval, modules=modules)
+    _BRAPI_QUOTE_RESULT_CACHE[cache_key] = {
+        "expires_at": time.time() + _BRAPI_QUOTE_CACHE_TTL_SECONDS,
+        "result": result,
+    }
+    if len(_BRAPI_QUOTE_RESULT_CACHE) > 500:
+        now_ts = time.time()
+        expired_keys = [
+            key
+            for key, value in _BRAPI_QUOTE_RESULT_CACHE.items()
+            if float((value or {}).get("expires_at") or 0.0) <= now_ts
+        ]
+        for key in expired_keys:
+            _BRAPI_QUOTE_RESULT_CACHE.pop(key, None)
+
+
+def _get_brapi_cached_quote_result(ticker: str, range_key: str = None, interval: str = None, modules=None):
+    cache_key = _brapi_quote_cache_key(ticker, range_key=range_key, interval=interval, modules=modules)
+    cached = _BRAPI_QUOTE_RESULT_CACHE.get(cache_key)
+    if not cached:
+        return False, None
+    expires_at = float(cached.get("expires_at") or 0.0)
+    if expires_at <= time.time():
+        _BRAPI_QUOTE_RESULT_CACHE.pop(cache_key, None)
+        return False, None
+    return True, cached.get("result")
+
+
+def _log_brapi_empty_payload(tickers, query: str):
+    if not _should_log_market_sources():
+        return
+    for ticker in tickers or []:
+        normalized = _normalize_brapi_symbol(ticker) or "?"
+        if (
+            normalized not in _BRAPI_DIAG["empty_payload_tickers"]
+            and len(_BRAPI_DIAG["empty_payload_tickers"]) < 15
+        ):
+            _get_app_logger().info(
+                "BRAPI sem resposta (payload vazio): ticker=%s query=%s",
+                normalized,
+                query or "(none)",
+            )
+            _BRAPI_DIAG["empty_payload_tickers"].add(normalized)
+
+
+def _log_brapi_empty_results(tickers, query: str):
+    if not _should_log_market_sources():
+        return
+    for ticker in tickers or []:
+        normalized = _normalize_brapi_symbol(ticker) or "?"
+        if (
+            normalized not in _BRAPI_DIAG["empty_results_tickers"]
+            and len(_BRAPI_DIAG["empty_results_tickers"]) < 15
+        ):
+            _get_app_logger().info(
+                "BRAPI retornou results vazio: ticker=%s query=%s",
+                normalized,
+                query or "(none)",
+            )
+            _BRAPI_DIAG["empty_results_tickers"].add(normalized)
+
+
+def _fetch_brapi_quote_results_batch(tickers, range_key: str = None, interval: str = None, modules=None):
+    normalized_tickers = []
+    seen = set()
+    for item in tickers or []:
+        ticker = _normalize_brapi_symbol(item)
+        if not ticker or ticker in seen:
+            continue
+        if not _is_brazilian_market_ticker(ticker):
+            continue
+        seen.add(ticker)
+        normalized_tickers.append(ticker)
+    if not normalized_tickers:
+        return {}
 
     headers = _get_brapi_headers()
     if not headers:
         if _should_log_market_sources() and not _BRAPI_DIAG["missing_token_logged"]:
             _get_app_logger().warning(
                 "BRAPI desabilitado: BRAPI_TOKEN ausente (ticker=%s)",
-                (ticker or "").strip().upper() or "?",
+                normalized_tickers[0] if normalized_tickers else "?",
             )
             _BRAPI_DIAG["missing_token_logged"] = True
-        return None
+        return {}
 
-    params = []
-    if range_key:
-        params.append(f"range={range_key}")
-    if interval:
-        params.append(f"interval={interval}")
-    if modules:
-        params.append(f"modules={','.join(modules)}")
-    query = ("?" + "&".join(params)) if params else ""
+    normalized_modules = _normalize_brapi_modules(modules)
+    query = _build_brapi_quote_query(range_key=range_key, interval=interval, modules=normalized_modules)
 
-    payload = _http_get_json(
-        f"{_get_brapi_base_url()}/quote/{(ticker or '').strip().upper()}{query}",
-        headers=headers,
-        timeout=12.0,
-    )
-    if not payload:
-        if _should_log_market_sources():
-            normalized = (ticker or "").strip().upper() or "?"
-            if (
-                normalized not in _BRAPI_DIAG["empty_payload_tickers"]
-                and len(_BRAPI_DIAG["empty_payload_tickers"]) < 15
-            ):
-                _get_app_logger().info(
-                    "BRAPI sem resposta (payload vazio): ticker=%s query=%s",
-                    normalized,
-                    query or "(none)",
+    result_map = {}
+    pending = []
+    for ticker in normalized_tickers:
+        has_cached, cached_result = _get_brapi_cached_quote_result(
+            ticker,
+            range_key=range_key,
+            interval=interval,
+            modules=normalized_modules,
+        )
+        if has_cached:
+            result_map[ticker] = cached_result
+        else:
+            pending.append(ticker)
+
+    for start in range(0, len(pending), _BRAPI_BATCH_LIMIT):
+        chunk = pending[start : start + _BRAPI_BATCH_LIMIT]
+        payload = _http_get_json(
+            f"{_get_brapi_base_url()}/quote/{','.join(chunk)}{query}",
+            headers=headers,
+            timeout=12.0,
+        )
+        if not payload:
+            _log_brapi_empty_payload(chunk, query)
+            for ticker in chunk:
+                result_map[ticker] = None
+                _set_brapi_cached_quote_result(
+                    ticker,
+                    None,
+                    range_key=range_key,
+                    interval=interval,
+                    modules=normalized_modules,
                 )
-                _BRAPI_DIAG["empty_payload_tickers"].add(normalized)
-        return None
-    try:
-        results = payload.get("results") or []
+            continue
+
+        try:
+            results = payload.get("results") or []
+        except Exception:
+            results = []
         if not results:
-            if _should_log_market_sources():
-                normalized = (ticker or "").strip().upper() or "?"
-                if (
-                    normalized not in _BRAPI_DIAG["empty_results_tickers"]
-                    and len(_BRAPI_DIAG["empty_results_tickers"]) < 15
-                ):
-                    _get_app_logger().info(
-                        "BRAPI retornou results vazio: ticker=%s query=%s",
-                        normalized,
-                        query or "(none)",
-                    )
-                    _BRAPI_DIAG["empty_results_tickers"].add(normalized)
-            return None
-        return results[0] or None
-    except Exception:
+            _log_brapi_empty_results(chunk, query)
+
+        parsed_chunk = {}
+        for idx, item in enumerate(results):
+            if not isinstance(item, dict):
+                continue
+            symbol = _normalize_brapi_symbol(item.get("symbol"))
+            if symbol and symbol in chunk:
+                parsed_chunk[symbol] = item
+                continue
+            if idx < len(chunk):
+                requested = chunk[idx]
+                if requested not in parsed_chunk:
+                    parsed_chunk[requested] = item
+
+        for ticker in chunk:
+            result = parsed_chunk.get(ticker)
+            if result is None:
+                _log_brapi_empty_results([ticker], query)
+            result_map[ticker] = result
+            _set_brapi_cached_quote_result(
+                ticker,
+                result,
+                range_key=range_key,
+                interval=interval,
+                modules=normalized_modules,
+            )
+
+    return result_map
+
+
+def _fetch_brapi_quote_result(ticker: str, range_key: str = None, interval: str = None, modules=None):
+    normalized_ticker = _normalize_brapi_symbol(ticker)
+    if not _is_brazilian_market_ticker(normalized_ticker):
         return None
+    result_map = _fetch_brapi_quote_results_batch(
+        [normalized_ticker],
+        range_key=range_key,
+        interval=interval,
+        modules=modules,
+    )
+    return result_map.get(normalized_ticker)
 
 
 def _history_config_for_brapi(range_key: str):
@@ -2093,18 +2633,24 @@ def _fetch_brapi_metrics(ticker: str):
     prices = history.get("prices") or []
     variation_30d = history.get("change_pct")
     variation_7d = None
+    variation_day_from_history = None
     if len(prices) >= 8:
         base_7 = _to_number(prices[-8])
         last = _to_number(prices[-1])
         if base_7 not in (None, 0) and last is not None:
             variation_7d = ((last / base_7) - 1) * 100
+    if len(prices) >= 2:
+        previous = _to_number(prices[-2])
+        last = _to_number(prices[-1])
+        if previous not in (None, 0) and last is not None:
+            variation_day_from_history = ((last / previous) - 1) * 100
 
     metrics = {
         "price": price,
         "pl": pl,
         "pvp": pvp,
         "dy": dy,
-        "variation_day": variation_day,
+        "variation_day": variation_day if variation_day is not None else variation_day_from_history,
         "variation_7d": variation_7d,
         "variation_30d": variation_30d,
         "market_cap_bi": (market_cap / 1_000_000_000) if market_cap is not None else None,
@@ -2153,6 +2699,32 @@ def _fetch_brapi_history(ticker: str, range_key: str = "1y"):
     result["prices"] = prices
     result["change_pct"] = ((last / first) - 1) * 100 if first not in (None, 0) else None
     return result
+
+
+def _prefetch_brapi_market_data_for_tickers(tickers):
+    candidates = []
+    seen = set()
+    for item in tickers or []:
+        ticker = _normalize_brapi_symbol(item)
+        if not ticker or ticker in seen:
+            continue
+        if not _is_brazilian_market_ticker(ticker):
+            continue
+        if "brapi" not in _market_data_providers_from_env(ticker):
+            continue
+        seen.add(ticker)
+        candidates.append(ticker)
+    if not candidates:
+        return
+
+    _fetch_brapi_quote_results_batch(candidates)
+    _fetch_brapi_quote_results_batch(candidates, modules=["summaryProfile"])
+    _, history_cfg = _history_config_for_brapi("30d")
+    _fetch_brapi_quote_results_batch(
+        candidates,
+        range_key=history_cfg["range"],
+        interval=history_cfg["interval"],
+    )
 
 
 def _fetch_bcb_series(series_code: int, date_start: str, date_end: str):
@@ -2972,6 +3544,36 @@ def refresh_asset_market_data(ticker: str):
         sector = profile.get("sector") or sector
         logo_url = profile.get("logo_url") or logo_url
 
+    baseline_metrics = {
+        "price": metrics.get("price") if metrics.get("price") is not None else asset["price"],
+        "dy": metrics.get("dy") if metrics.get("dy") is not None else asset["dy"],
+        "pl": metrics.get("pl") if metrics.get("pl") is not None else asset["pl"],
+        "pvp": metrics.get("pvp") if metrics.get("pvp") is not None else asset["pvp"],
+        "variation_day": (
+            metrics.get("variation_day")
+            if metrics.get("variation_day") is not None
+            else asset["variation_day"]
+        ),
+        "variation_7d": (
+            metrics.get("variation_7d")
+            if metrics.get("variation_7d") is not None
+            else asset.get("variation_7d", 0.0)
+        ),
+        "variation_30d": (
+            metrics.get("variation_30d")
+            if metrics.get("variation_30d") is not None
+            else asset.get("variation_30d", 0.0)
+        ),
+        "market_cap_bi": (
+            metrics.get("market_cap_bi")
+            if metrics.get("market_cap_bi") is not None
+            else asset["market_cap_bi"]
+        ),
+    }
+    _upsert_asset_metric_baseline(db, ticker.upper(), baseline_metrics, updated_at=attempted_at)
+    metric_formula_map = _get_metric_formula_map(db)
+    applied_metrics = _apply_metric_formulas_to_values(baseline_metrics, metric_formula_map)
+
     db.execute(
         """
         UPDATE assets
@@ -2997,22 +3599,14 @@ def refresh_asset_market_data(ticker: str):
         (
             name,
             sector,
-            metrics.get("price") if metrics.get("price") is not None else asset["price"],
-            metrics.get("dy") if metrics.get("dy") is not None else asset["dy"],
-            metrics.get("pl") if metrics.get("pl") is not None else asset["pl"],
-            metrics.get("pvp") if metrics.get("pvp") is not None else asset["pvp"],
-            metrics.get("variation_day")
-            if metrics.get("variation_day") is not None
-            else asset["variation_day"],
-            metrics.get("variation_7d")
-            if metrics.get("variation_7d") is not None
-            else asset.get("variation_7d", 0.0),
-            metrics.get("variation_30d")
-            if metrics.get("variation_30d") is not None
-            else asset.get("variation_30d", 0.0),
-            metrics.get("market_cap_bi")
-            if metrics.get("market_cap_bi") is not None
-            else asset["market_cap_bi"],
+            applied_metrics["price"],
+            applied_metrics["dy"],
+            applied_metrics["pl"],
+            applied_metrics["pvp"],
+            applied_metrics["variation_day"],
+            applied_metrics["variation_7d"],
+            applied_metrics["variation_30d"],
+            applied_metrics["market_cap_bi"],
             logo_url,
             market_data_status,
             market_data_source,
@@ -3035,14 +3629,14 @@ def refresh_asset_market_data(ticker: str):
             _market_data_provider_label(ticker),
             metrics_source or "none",
             profile_source or "none",
-            metrics.get("price"),
-            metrics.get("dy"),
-            metrics.get("pl"),
-            metrics.get("pvp"),
-            metrics.get("variation_day"),
-            metrics.get("variation_7d"),
-            metrics.get("variation_30d"),
-            metrics.get("market_cap_bi"),
+            applied_metrics.get("price"),
+            applied_metrics.get("dy"),
+            applied_metrics.get("pl"),
+            applied_metrics.get("pvp"),
+            applied_metrics.get("variation_day"),
+            applied_metrics.get("variation_7d"),
+            applied_metrics.get("variation_30d"),
+            applied_metrics.get("market_cap_bi"),
         )
     # Sucesso de "atualizacao Yahoo" significa ter recebido cotacao/indicadores.
     # Atualizacao apenas de nome/setor nao conta como sync completo de mercado.
@@ -3070,7 +3664,9 @@ def refresh_market_data_for_tickers(tickers, attempts: int = 2):
         if not failed:
             break
         next_failed = set()
-        for ticker in list(failed):
+        current_batch = sorted(failed)
+        _prefetch_brapi_market_data_for_tickers(current_batch)
+        for ticker in current_batch:
             try:
                 ok = refresh_asset_market_data(ticker)
             except Exception as exc:

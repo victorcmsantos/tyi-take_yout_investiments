@@ -1350,6 +1350,91 @@ select {
   }
 }
 
+.metrics-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.metrics-editor-sidebar {
+  background: #f7fafc;
+  border: 1px solid #d5dee9;
+  border-radius: 12px;
+  padding: 12px;
+  position: sticky;
+  top: 12px;
+}
+
+.metrics-editor-menu {
+  display: grid;
+  gap: 8px;
+}
+
+.metrics-editor-menu-item {
+  text-align: left;
+  border: 1px solid #cfd9e5;
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+}
+
+.metrics-editor-menu-item strong {
+  font-size: 0.95rem;
+}
+
+.metrics-editor-menu-item small {
+  color: #5f7186;
+}
+
+.metrics-editor-menu-item.active {
+  border-color: #2d8e7d;
+  background: #e8f8f4;
+}
+
+.metrics-editor-content {
+  min-height: 420px;
+}
+
+.metrics-editor-textarea {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  border: 1px solid #cfd9e5;
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+}
+
+.metrics-editor-help {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f6f9fc;
+  border: 1px dashed #c9d7e6;
+}
+
+.metrics-editor-help p {
+  margin: 0 0 6px;
+}
+
+.metrics-editor-help p:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 980px) {
+  .metrics-editor-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .metrics-editor-sidebar {
+    position: static;
+  }
+}
+
 html[data-theme='dark'] {
   color-scheme: dark;
 }
@@ -1520,4 +1605,35 @@ html[data-theme='dark'] .app-v2-menu-link.active {
 
 html[data-theme='dark'] .app-v2-breadcrumbs {
   color: #9eb0c8;
+}
+
+html[data-theme='dark'] .metrics-editor-sidebar {
+  background: #172232;
+  border-color: #27364a;
+}
+
+html[data-theme='dark'] .metrics-editor-menu-item {
+  background: #1b2a3d;
+  border-color: #32465d;
+  color: #dbe5f2;
+}
+
+html[data-theme='dark'] .metrics-editor-menu-item small {
+  color: #9eb0c8;
+}
+
+html[data-theme='dark'] .metrics-editor-menu-item.active {
+  border-color: #4f7aab;
+  background: #243650;
+}
+
+html[data-theme='dark'] .metrics-editor-textarea {
+  background: #101a27;
+  color: #dbe5f2;
+  border-color: #31465f;
+}
+
+html[data-theme='dark'] .metrics-editor-help {
+  background: #132132;
+  border-color: #35506d;
 }

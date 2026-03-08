@@ -2,6 +2,7 @@ import unittest
 
 from app import services
 from app.services import _legacy
+from app.services import legacy_compat
 from app.services import market_data, openclaw, portfolio, scanner
 
 
@@ -150,6 +151,18 @@ class ServicesSplitExportsTest(unittest.TestCase):
             market_data.refresh_market_data_for_tickers = original_refresh
             openclaw.get_asset_enrichment = original_enrichment
             portfolio.get_transactions = original_transactions
+
+    def test_legacy_market_helpers_delegate_to_legacy_compat(self):
+        original_fetch_market_profile = legacy_compat._fetch_market_profile
+        original_provider_label = legacy_compat._market_data_provider_label
+        try:
+            legacy_compat._fetch_market_profile = lambda ticker: ({"name": ticker}, "compat")
+            legacy_compat._market_data_provider_label = lambda ticker="": f"compat:{ticker}"
+            self.assertEqual(_legacy._fetch_market_profile("PETR4"), ({"name": "PETR4"}, "compat"))
+            self.assertEqual(_legacy._market_data_provider_label("PETR4"), "compat:PETR4")
+        finally:
+            legacy_compat._fetch_market_profile = original_fetch_market_profile
+            legacy_compat._market_data_provider_label = original_provider_label
 
 
 if __name__ == "__main__":

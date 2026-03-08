@@ -16,22 +16,49 @@ def _backup_dir_from_app():
     return db_path.parent / "backups"
 
 
-def _backup_file_prefix():
-    db_path = Path(current_app.config["DATABASE"])
-    return f"{db_path.stem}_"
+def _scanner_backup_db_path_from_app():
+    raw = str(current_app.config.get("MARKET_SCANNER_DATABASE_PATH") or "").strip()
+    if not raw:
+        return None
+    return Path(raw)
 
 
-def _backup_glob_pattern():
-    return f"{_backup_file_prefix()}*.sqlite3"
+def _backup_targets_from_app(include_optional: bool = True):
+    targets = [
+        {
+            "key": "backend",
+            "label": "Backend",
+            "path": Path(current_app.config["DATABASE"]),
+            "required": True,
+        }
+    ]
+    scanner_path = _scanner_backup_db_path_from_app()
+    if scanner_path is not None:
+        targets.append(
+            {
+                "key": "market_scanner",
+                "label": "Market Scanner",
+                "path": scanner_path,
+                "required": False,
+            }
+        )
+    if include_optional:
+        return targets
+    return [target for target in targets if target.get("required")]
 
 
-def list_database_backups():
-    backup_dir = _backup_dir_from_app()
-    if not backup_dir.exists():
-        return []
+def _backup_file_prefix_for_target(target):
+    return f"{target['path'].stem}_"
 
+
+def _backup_glob_pattern(prefix: str):
+    return f"{prefix}*.sqlite3"
+
+
+def _list_backups_for_target(target, backup_dir: Path):
+    prefix = _backup_file_prefix_for_target(target)
     rows = []
-    for path in sorted(backup_dir.glob(_backup_glob_pattern()), reverse=True):
+    for path in sorted(backup_dir.glob(_backup_glob_pattern(prefix)), reverse=True):
         stat = path.stat()
         rows.append(
             {
@@ -39,45 +66,116 @@ def list_database_backups():
                 "path": str(path),
                 "size_bytes": int(stat.st_size),
                 "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                "database_key": str(target.get("key") or "unknown"),
+                "database_label": str(target.get("label") or "Unknown"),
             }
         )
     return rows
 
 
-def create_database_backup(reason: str = "manual"):
-    db_path = Path(current_app.config["DATABASE"])
+def _prune_backups_for_target(target, backup_dir: Path, max_files: int):
+    if max_files <= 0:
+        return
+    prefix = _backup_file_prefix_for_target(target)
+    backups = sorted(
+        backup_dir.glob(_backup_glob_pattern(prefix)),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for old_file in backups[max_files:]:
+        try:
+            old_file.unlink()
+        except OSError:
+            current_app.logger.warning("Nao foi possivel remover backup antigo: %s", old_file)
+
+
+def _create_single_database_backup(target, reason: str, stamp: str, backup_dir: Path):
+    db_path = Path(target["path"])
     if not db_path.exists():
         raise FileNotFoundError(f"Banco nao encontrado em {db_path}")
 
-    backup_dir = _backup_dir_from_app()
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = backup_dir / f"{db_path.stem}_{stamp}.sqlite3"
+    backup_path = backup_dir / f"{_backup_file_prefix_for_target(target)}{stamp}.sqlite3"
 
     # Usa a API nativa de backup do SQLite para copia consistente do arquivo.
     source = sqlite3.connect(str(db_path))
-    target = sqlite3.connect(str(backup_path))
+    target_connection = sqlite3.connect(str(backup_path))
     try:
-        source.backup(target)
+        source.backup(target_connection)
     finally:
-        target.close()
+        target_connection.close()
         source.close()
-
-    max_files = int(current_app.config.get("DATABASE_BACKUP_MAX_FILES", 30))
-    if max_files > 0:
-        backups = sorted(backup_dir.glob(_backup_glob_pattern()), key=lambda p: p.stat().st_mtime, reverse=True)
-        for old_file in backups[max_files:]:
-            try:
-                old_file.unlink()
-            except OSError:
-                current_app.logger.warning("Nao foi possivel remover backup antigo: %s", old_file)
 
     return {
         "filename": backup_path.name,
         "path": str(backup_path),
         "reason": reason,
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "database_key": str(target.get("key") or "unknown"),
+        "database_label": str(target.get("label") or "Unknown"),
     }
+
+
+def list_database_backups(database_key: str | None = None):
+    backup_dir = _backup_dir_from_app()
+    if not backup_dir.exists():
+        return []
+
+    rows = []
+    for target in _backup_targets_from_app(include_optional=True):
+        if database_key and str(target.get("key")) != str(database_key):
+            continue
+        rows.extend(_list_backups_for_target(target, backup_dir))
+    rows.sort(key=lambda item: str(item.get("modified_at") or ""), reverse=True)
+    return rows
+
+
+def create_database_backups(reason: str = "manual", include_optional: bool = True):
+    targets = _backup_targets_from_app(include_optional=include_optional)
+    if not targets:
+        raise FileNotFoundError("Nenhum banco configurado para backup.")
+
+    backup_dir = _backup_dir_from_app()
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    created = []
+    failures = []
+    for target in targets:
+        try:
+            created.append(_create_single_database_backup(target, reason=reason, stamp=stamp, backup_dir=backup_dir))
+        except Exception as exc:
+            if target.get("required"):
+                raise
+            failures.append(
+                {
+                    "database_key": str(target.get("key") or "unknown"),
+                    "database_label": str(target.get("label") or "Unknown"),
+                    "database_path": str(target.get("path") or ""),
+                    "error": str(exc),
+                }
+            )
+
+    if not created:
+        raise FileNotFoundError("Nenhum banco disponivel para backup.")
+
+    max_files = int(current_app.config.get("DATABASE_BACKUP_MAX_FILES", 30))
+    for target in targets:
+        _prune_backups_for_target(target, backup_dir, max_files)
+
+    return {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "backups": created,
+        "failures": failures,
+        "partial": bool(failures),
+    }
+
+
+def create_database_backup(reason: str = "manual"):
+    result = create_database_backups(reason=reason, include_optional=False)
+    backups = result.get("backups") or []
+    if not backups:
+        raise FileNotFoundError("Nenhum backup gerado.")
+    return backups[0]
 
 
 def resolve_database_backup_path(filename: str):
@@ -91,7 +189,11 @@ def resolve_database_backup_path(filename: str):
         return None
     if not name.endswith(".sqlite3"):
         return None
-    if not name.startswith(_backup_file_prefix()):
+
+    allowed_prefixes = {
+        _backup_file_prefix_for_target(target) for target in _backup_targets_from_app(include_optional=True)
+    }
+    if not any(name.startswith(prefix) for prefix in allowed_prefixes):
         return None
 
     backup_dir = _backup_dir_from_app()
@@ -114,7 +216,7 @@ def backup_database_on_startup_if_needed():
         return {"created": False, "reason": "disabled"}
 
     min_interval_minutes = int(current_app.config.get("DATABASE_BACKUP_MIN_INTERVAL_MINUTES", 720))
-    backups = list_database_backups()
+    backups = list_database_backups(database_key="backend")
     if backups and min_interval_minutes > 0:
         latest_path = Path(backups[0]["path"])
         latest_age_minutes = (datetime.now().timestamp() - latest_path.stat().st_mtime) / 60.0
@@ -191,6 +293,10 @@ def init_app(app):
     app.config.setdefault(
         "DATABASE_BACKUP_DIR",
         os.getenv("DATABASE_BACKUP_DIR", str(db_path.parent / "backups")),
+    )
+    app.config.setdefault(
+        "MARKET_SCANNER_DATABASE_PATH",
+        os.getenv("MARKET_SCANNER_DATABASE_PATH", ""),
     )
 
     app.teardown_appcontext(close_db)

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
@@ -15,7 +16,7 @@ from .auth import (
     require_admin_user,
     set_user_active_state,
 )
-from .db import create_database_backup, list_database_backups, resolve_database_backup_path
+from .db import create_database_backups, list_database_backups, resolve_database_backup_path
 from .observability import build_health_payload, get_route_metrics
 from .services import (
     add_fixed_income,
@@ -59,6 +60,7 @@ from .services import (
 
 
 api_bp = Blueprint("api", __name__)
+_SCANNER_USER_NOTE_PATTERN = re.compile(r"^\[\[TYI_UID:(\d+)\]\]\s*")
 
 
 def _selected_portfolio_ids_from_request():
@@ -87,6 +89,99 @@ def _as_bool(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _scanner_note_with_user(notes, user_id: int):
+    clean = str(notes or "").strip()
+    # Remove qualquer marcador anterior para evitar spoof de ownership.
+    clean = _SCANNER_USER_NOTE_PATTERN.sub("", clean).strip()
+    if clean:
+        return f"[[TYI_UID:{int(user_id)}]] {clean}"
+    return f"[[TYI_UID:{int(user_id)}]]"
+
+
+def _scanner_user_id_from_notes(notes):
+    match = _SCANNER_USER_NOTE_PATTERN.match(str(notes or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _scanner_strip_user_marker(notes):
+    return _SCANNER_USER_NOTE_PATTERN.sub("", str(notes or "")).strip()
+
+
+def _scanner_trade_visible_for_user(trade: dict, user: dict):
+    owner_id = _scanner_user_id_from_notes((trade or {}).get("notes"))
+    if owner_id is None:
+        # Trades antigos sem marcador ficam acessiveis apenas para admin.
+        return bool(user.get("is_admin"))
+    return int(owner_id) == int(user["id"])
+
+
+def _scanner_trade_to_client(trade: dict):
+    payload = dict(trade or {})
+    payload["notes"] = _scanner_strip_user_marker(payload.get("notes"))
+    return payload
+
+
+def _scanner_summary_from_trades(active, history):
+    all_trades = list(active or []) + list(history or [])
+    status_counts = {
+        "open": sum(1 for trade in all_trades if str(trade.get("status")) == "OPEN"),
+        "success": sum(1 for trade in all_trades if str(trade.get("status")) == "TARGET_HIT"),
+        "failure": sum(1 for trade in all_trades if str(trade.get("status")) == "STOP_HIT"),
+        "closed_profit": sum(1 for trade in all_trades if str(trade.get("status")) == "CLOSED_PROFIT"),
+        "closed_loss": sum(1 for trade in all_trades if str(trade.get("status")) == "CLOSED_LOSS"),
+    }
+    open_invested_amount = round(
+        sum(float((trade or {}).get("invested_amount") or 0.0) for trade in (active or [])),
+        2,
+    )
+    open_pnl_amount = round(
+        sum(float((trade or {}).get("current_pnl_amount") or 0.0) for trade in (active or [])),
+        2,
+    )
+    return {
+        "tracked_count": len(active or []),
+        "history_count": len(history or []),
+        "open_invested_amount": open_invested_amount,
+        "open_pnl_amount": open_pnl_amount,
+        **status_counts,
+    }
+
+
+def _scanner_filter_trades_payload_for_user(payload, user: dict):
+    source = payload if isinstance(payload, dict) else {}
+    raw_active = source.get("active") if isinstance(source.get("active"), list) else []
+    raw_history = source.get("history") if isinstance(source.get("history"), list) else []
+    visible_active = [
+        _scanner_trade_to_client(item)
+        for item in raw_active
+        if isinstance(item, dict) and _scanner_trade_visible_for_user(item, user)
+    ]
+    visible_history = [
+        _scanner_trade_to_client(item)
+        for item in raw_history
+        if isinstance(item, dict) and _scanner_trade_visible_for_user(item, user)
+    ]
+    return {
+        "active": visible_active,
+        "history": visible_history,
+        "tracked_tickers": sorted({str(item.get("ticker") or "").upper() for item in visible_active if item.get("ticker")}),
+        "summary": _scanner_summary_from_trades(visible_active, visible_history),
+    }
+
+
+def _scanner_prepare_trade_payload(payload, user: dict, force_notes: bool = False):
+    prepared = dict(payload or {})
+    prepared["user_id"] = int(user["id"])
+    if force_notes or "notes" in prepared:
+        prepared["notes"] = _scanner_note_with_user(prepared.get("notes"), int(user["id"]))
+    return prepared
+
+
 def _market_scanner_base_url():
     return (os.getenv("MARKET_SCANNER_BASE_URL") or "http://market-scanner:8000").rstrip("/")
 
@@ -104,7 +199,14 @@ def _market_scanner_get(path: str):
 
 
 def _market_scanner_request(method: str, path: str, payload=None):
-    query_items = list(request.args.items(multi=True))
+    user = get_current_user()
+    query_items = [
+        (key, value)
+        for key, value in request.args.items(multi=True)
+        if key not in {"user_id", "scanner_user_id"}
+    ]
+    if user and user.get("id") is not None:
+        query_items.append(("user_id", str(int(user["id"]))))
     query = urlparse.urlencode(query_items, doseq=True)
     url = f"{_market_scanner_base_url()}{path}"
     if query:
@@ -112,7 +214,12 @@ def _market_scanner_request(method: str, path: str, payload=None):
 
     body = None
     headers = {"Accept": "application/json"}
+    if user and user.get("id") is not None:
+        headers["X-TYI-User-Id"] = str(int(user["id"]))
+        headers["X-TYI-Username"] = str(user.get("username") or "")
     if payload is not None:
+        if user and isinstance(payload, dict):
+            payload = {**payload, "user_id": int(user["id"])}
         body = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
 
@@ -361,24 +468,75 @@ def scanner_signal_matrix():
 
 @api_bp.route("/scanner/trades", methods=["GET"])
 def scanner_trades():
-    return _market_scanner_proxy_get("/trades")
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+    ok, status, response_payload = _market_scanner_request("GET", "/trades")
+    if not ok:
+        message = _market_scanner_error_message(response_payload, status)
+        return _json_error(message, status=status, details={"upstream": response_payload})
+    return _json_ok(_scanner_filter_trades_payload_for_user(response_payload, user), status=status)
 
 
 @api_bp.route("/scanner/trades", methods=["POST"])
 def scanner_create_trade():
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
     payload = request.get_json(silent=True) or request.form.to_dict()
+    payload = _scanner_prepare_trade_payload(payload, user, force_notes=True)
     return _market_scanner_proxy("POST", "/trades", payload=payload)
 
 
 @api_bp.route("/scanner/trades/<int:trade_id>", methods=["PATCH"])
 def scanner_update_trade(trade_id: int):
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+
+    ok, status, trades_payload = _market_scanner_request("GET", "/trades")
+    if not ok:
+        message = _market_scanner_error_message(trades_payload, status)
+        return _json_error(message, status=status, details={"upstream": trades_payload})
+
+    all_trades = []
+    if isinstance(trades_payload, dict):
+        all_trades.extend(item for item in (trades_payload.get("active") or []) if isinstance(item, dict))
+        all_trades.extend(item for item in (trades_payload.get("history") or []) if isinstance(item, dict))
+    target = next((item for item in all_trades if int(item.get("id") or 0) == int(trade_id)), None)
+    if target is None:
+        return _json_error("Trade nao encontrado.", status=404)
+    if not _scanner_trade_visible_for_user(target, user):
+        return _json_error("Trade nao pertence ao usuario atual.", status=403)
+
     payload = request.get_json(silent=True) or request.form.to_dict()
+    payload = _scanner_prepare_trade_payload(payload, user, force_notes=("notes" in payload))
     return _market_scanner_proxy("PATCH", f"/trades/{trade_id}", payload=payload)
 
 
 @api_bp.route("/scanner/trades/<int:trade_id>/close", methods=["POST"])
 def scanner_close_trade(trade_id: int):
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+
+    ok, status, trades_payload = _market_scanner_request("GET", "/trades")
+    if not ok:
+        message = _market_scanner_error_message(trades_payload, status)
+        return _json_error(message, status=status, details={"upstream": trades_payload})
+
+    all_trades = []
+    if isinstance(trades_payload, dict):
+        all_trades.extend(item for item in (trades_payload.get("active") or []) if isinstance(item, dict))
+        all_trades.extend(item for item in (trades_payload.get("history") or []) if isinstance(item, dict))
+    target = next((item for item in all_trades if int(item.get("id") or 0) == int(trade_id)), None)
+    if target is None:
+        return _json_error("Trade nao encontrado.", status=404)
+    if not _scanner_trade_visible_for_user(target, user):
+        return _json_error("Trade nao pertence ao usuario atual.", status=403)
+
     payload = request.get_json(silent=True) or request.form.to_dict()
+    payload = _scanner_prepare_trade_payload(payload, user, force_notes=False)
     return _market_scanner_proxy("POST", f"/trades/{trade_id}/close", payload=payload)
 
 
@@ -507,10 +665,12 @@ def backup_database_endpoint():
         return _json_ok({"backups": list_database_backups()})
 
     try:
-        backup = create_database_backup(reason="api")
+        result = create_database_backups(reason="api")
     except Exception as exc:
         return _json_error(f"Nao foi possivel gerar backup: {exc}", status=500)
-    return _json_ok({"backup": backup}, status=201)
+    backups = result.get("backups") or []
+    primary = next((item for item in backups if item.get("database_key") == "backend"), None)
+    return _json_ok({"backup": primary, **result}, status=201)
 
 
 @api_bp.route("/backup/database/<path:filename>", methods=["GET"])

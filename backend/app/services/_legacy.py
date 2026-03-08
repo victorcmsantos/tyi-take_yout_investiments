@@ -1,4 +1,3 @@
-import ast
 import json
 import logging
 import os
@@ -126,26 +125,6 @@ def _now_iso():
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 
-def _metric_formula_catalog_items():
-    items = []
-    for key in _METRIC_FORMULA_FIELDS:
-        meta = _METRIC_FORMULA_CATALOG.get(key, {})
-        items.append(
-            {
-                "key": key,
-                "title": str(meta.get("title") or key).strip(),
-                "description": str(meta.get("description") or "").strip(),
-                "default_formula": str(meta.get("formula") or "value").strip() or "value",
-            }
-        )
-    return items
-
-
-def _normalize_metric_formula(formula: str):
-    text = str(formula or "").strip()
-    return text or "value"
-
-
 def _normalize_metric_formula_value(value, fallback=0.0):
     numeric = _to_number(value)
     if numeric is None:
@@ -158,89 +137,6 @@ def _metric_formula_context(values: dict):
     for field in _METRIC_FORMULA_FIELDS:
         context[field] = _normalize_metric_formula_value((values or {}).get(field), fallback=0.0)
     return context
-
-
-def _validate_metric_formula_expression(formula: str):
-    expression = _normalize_metric_formula(formula)
-    try:
-        tree = ast.parse(expression, mode="eval")
-    except SyntaxError as exc:
-        raise ValueError(f"Formula invalida: {exc.msg}.") from exc
-
-    allowed_names = set(_METRIC_FORMULA_FIELDS) | {"value"} | set(_METRIC_FORMULA_ALLOWED_FUNCS.keys())
-    allowed_node_types = (
-        ast.Expression,
-        ast.BinOp,
-        ast.UnaryOp,
-        ast.Constant,
-        ast.Name,
-        ast.Load,
-        ast.Add,
-        ast.Sub,
-        ast.Mult,
-        ast.Div,
-        ast.Mod,
-        ast.Pow,
-        ast.FloorDiv,
-        ast.UAdd,
-        ast.USub,
-        ast.Call,
-        ast.Compare,
-        ast.Eq,
-        ast.NotEq,
-        ast.Lt,
-        ast.LtE,
-        ast.Gt,
-        ast.GtE,
-        ast.BoolOp,
-        ast.And,
-        ast.Or,
-        ast.IfExp,
-        ast.Not,
-    )
-
-    for node in ast.walk(tree):
-        if not isinstance(node, allowed_node_types):
-            raise ValueError("Formula contem operacao nao permitida.")
-        if isinstance(node, ast.Name) and node.id not in allowed_names:
-            raise ValueError(f"Variavel/fucao nao permitida: {node.id}.")
-        if isinstance(node, ast.Call):
-            if not isinstance(node.func, ast.Name) or node.func.id not in _METRIC_FORMULA_ALLOWED_FUNCS:
-                raise ValueError("Chamada de funcao nao permitida.")
-    return tree
-
-
-def _evaluate_metric_formula(formula: str, context: dict):
-    expression = _normalize_metric_formula(formula)
-    tree = _validate_metric_formula_expression(expression)
-    compiled = compile(tree, "<metric-formula>", "eval")
-    safe_globals = {"__builtins__": {}}
-    safe_globals.update(_METRIC_FORMULA_ALLOWED_FUNCS)
-    return eval(compiled, safe_globals, dict(context or {}))
-
-
-def _ensure_metric_formula_rows(db):
-    now_iso = _now_iso()
-    for item in _metric_formula_catalog_items():
-        db.execute(
-            """
-            INSERT INTO metric_formulas (metric_key, formula, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(metric_key) DO NOTHING
-            """,
-            (item["key"], item["default_formula"], now_iso),
-        )
-
-
-def _get_metric_formula_map(db):
-    _ensure_metric_formula_rows(db)
-    rows = db.execute("SELECT metric_key, formula FROM metric_formulas").fetchall()
-    payload = {}
-    for row in rows:
-        key = str(row["metric_key"] or "").strip()
-        if key in _METRIC_FORMULA_FIELDS:
-            payload[key] = _normalize_metric_formula(row["formula"])
-    return payload
 
 
 def _upsert_asset_metric_baseline(db, ticker: str, values: dict, updated_at: str | None = None):
@@ -278,58 +174,6 @@ def _upsert_asset_metric_baseline(db, ticker: str, values: dict, updated_at: str
             updated_at or _now_iso(),
         ),
     )
-
-
-def _seed_missing_metric_baselines(db):
-    rows = db.execute(
-        """
-        SELECT
-            a.ticker,
-            a.price,
-            a.dy,
-            a.pl,
-            a.pvp,
-            a.variation_day,
-            a.variation_7d,
-            a.variation_30d,
-            a.market_cap_bi
-        FROM assets a
-        LEFT JOIN asset_metric_baselines b ON b.ticker = a.ticker
-        WHERE b.ticker IS NULL
-        """
-    ).fetchall()
-    for row in rows:
-        _upsert_asset_metric_baseline(
-            db,
-            row["ticker"],
-            {
-                "price": row["price"],
-                "dy": row["dy"],
-                "pl": row["pl"],
-                "pvp": row["pvp"],
-                "variation_day": row["variation_day"],
-                "variation_7d": row["variation_7d"],
-                "variation_30d": row["variation_30d"],
-                "market_cap_bi": row["market_cap_bi"],
-            },
-        )
-
-
-def _apply_metric_formulas_to_values(values: dict, formula_map: dict):
-    base_context = _metric_formula_context(values)
-    output = {}
-    for field in _METRIC_FORMULA_FIELDS:
-        formula = _normalize_metric_formula((formula_map or {}).get(field, "value"))
-        scoped_context = dict(base_context)
-        scoped_context["value"] = base_context[field]
-        try:
-            evaluated = _evaluate_metric_formula(formula, scoped_context)
-        except Exception:
-            evaluated = base_context[field]
-        output[field] = _normalize_metric_formula_value(evaluated, fallback=base_context[field])
-    return output
-
-
 def get_metric_formulas_catalog():
     from . import scanner as scanner_services
 
@@ -1995,29 +1839,9 @@ def _fetch_brapi_history(ticker: str, range_key: str = "1y"):
 
 
 def _prefetch_brapi_market_data_for_tickers(tickers):
-    candidates = []
-    seen = set()
-    for item in tickers or []:
-        ticker = _normalize_brapi_symbol(item)
-        if not ticker or ticker in seen:
-            continue
-        if not _is_brazilian_market_ticker(ticker):
-            continue
-        if "brapi" not in _market_data_providers_from_env(ticker):
-            continue
-        seen.add(ticker)
-        candidates.append(ticker)
-    if not candidates:
-        return
+    from . import legacy_compat
 
-    _fetch_brapi_quote_results_batch(candidates)
-    _fetch_brapi_quote_results_batch(candidates, modules=["summaryProfile"])
-    _, history_cfg = _history_config_for_brapi("30d")
-    _fetch_brapi_quote_results_batch(
-        candidates,
-        range_key=history_cfg["range"],
-        interval=history_cfg["interval"],
-    )
+    return legacy_compat._prefetch_brapi_market_data_for_tickers(tickers)
 
 
 def _fetch_bcb_series(series_code: int, date_start: str, date_end: str):
@@ -2607,21 +2431,9 @@ def _fetch_yahoo_metrics(ticker: str):
 
 
 def _has_market_metrics(metrics: dict):
-    if not metrics:
-        return False
-    return any(
-        metrics.get(field) is not None
-        for field in (
-            "price",
-            "dy",
-            "pl",
-            "pvp",
-            "variation_day",
-            "variation_7d",
-            "variation_30d",
-            "market_cap_bi",
-        )
-    )
+    from . import legacy_compat
+
+    return legacy_compat._has_market_metrics(metrics)
 
 
 def _market_data_class_key(ticker: str):
@@ -2693,83 +2505,33 @@ def _market_data_provider_order(capability: str, ticker: str = ""):
 
 
 def _market_data_provider_label(ticker: str = ""):
-    return ",".join(_market_data_providers_from_env(ticker))
+    from . import legacy_compat
+
+    return legacy_compat._market_data_provider_label(ticker)
 
 
 def _is_truthy_env(name: str, default: str = "0"):
-    value = (os.getenv(name, default) or default).strip().lower()
-    return value in {"1", "true", "yes", "on"}
+    from . import legacy_compat
+
+    return legacy_compat._is_truthy_env(name, default=default)
 
 
 def _fetch_market_profile(ticker: str):
-    for provider in _market_data_provider_order("profile", ticker):
-        try:
-            if provider == "alpha_vantage":
-                profile = _fetch_alpha_vantage_profile(ticker)
-            elif provider == "twelve_data":
-                profile = None
-            elif provider == "coingecko":
-                profile = _fetch_coingecko_profile(ticker)
-            elif provider == "brapi":
-                profile = _fetch_brapi_profile(ticker)
-            elif provider == "yahoo":
-                profile = _fetch_yahoo_profile(ticker)
-            else:
-                profile = None
-        except Exception:
-            profile = None
-        if profile and any((profile.get("name"), profile.get("sector"))):
-            return profile, provider
-    return {}, None
+    from . import legacy_compat
+
+    return legacy_compat._fetch_market_profile(ticker)
 
 
 def _fetch_market_metrics(ticker: str):
-    for provider in _market_data_provider_order("metrics", ticker):
-        try:
-            if provider == "alpha_vantage":
-                metrics = _fetch_alpha_vantage_metrics(ticker)
-            elif provider == "twelve_data":
-                metrics = _fetch_twelve_data_metrics(ticker)
-            elif provider == "coingecko":
-                metrics = _fetch_coingecko_metrics(ticker)
-            elif provider == "brapi":
-                metrics = _fetch_brapi_metrics(ticker)
-            elif provider == "google":
-                metrics = _fetch_google_metrics(ticker)
-            else:
-                metrics = _fetch_yahoo_metrics(ticker)
-        except Exception:
-            metrics = None
-        if _has_market_metrics(metrics):
-            return metrics, provider
-    return {}, None
+    from . import legacy_compat
+
+    return legacy_compat._fetch_market_metrics(ticker)
 
 
 def _fetch_market_history(ticker: str, range_key: str):
-    for provider in _market_data_provider_order("history", ticker):
-        try:
-            if provider == "alpha_vantage":
-                history = _fetch_alpha_vantage_history(ticker, range_key)
-            elif provider == "twelve_data":
-                history = _fetch_twelve_data_history(ticker, range_key)
-            elif provider == "coingecko":
-                history = _fetch_coingecko_history(ticker, range_key)
-            elif provider == "brapi":
-                history = _fetch_brapi_history(ticker, range_key)
-            elif provider == "yahoo":
-                history = _get_yahoo_asset_price_history(ticker, range_key)
-            else:
-                history = None
-        except Exception:
-            history = None
-        if history and history.get("prices"):
-            return history, provider
-    return {
-        "range_key": _history_config(range_key)[0],
-        "labels": [],
-        "prices": [],
-        "change_pct": None,
-    }, None
+    from . import legacy_compat
+
+    return legacy_compat._fetch_market_history(ticker, range_key)
 
 
 def refresh_asset_market_data(ticker: str):

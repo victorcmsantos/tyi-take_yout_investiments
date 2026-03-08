@@ -112,9 +112,15 @@ function AdminPage({ currentUser }) {
     setMessage('')
     try {
       const payload = await apiPost('/api/backup/database')
-      const backup = payload?.backup || null
+      const createdBackups = Array.isArray(payload?.backups) ? payload.backups : []
+      const backup = payload?.backup || createdBackups[0] || null
       setLastBackup(backup)
-      setMessage(backup ? `Backup criado: ${backup.filename}` : 'Backup criado com sucesso.')
+      if (createdBackups.length > 1) {
+        const names = createdBackups.map((item) => item.filename).join(', ')
+        setMessage(`Backups criados (${createdBackups.length}): ${names}`)
+      } else {
+        setMessage(backup ? `Backup criado: ${backup.filename}` : 'Backup criado com sucesso.')
+      }
       await loadBackups()
     } catch (err) {
       setError(err.message)
@@ -170,7 +176,7 @@ function AdminPage({ currentUser }) {
       <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
         <Typography variant="h6" sx={{ mb: 1 }}>Backup do banco</Typography>
         <Typography variant="body2" sx={{ mb: 2, opacity: 0.8 }}>
-          Gere um snapshot manual do banco SQLite atual.
+          Gere um snapshot manual dos bancos SQLite (backend e market scanner).
         </Typography>
         <Typography variant="caption" sx={{ mb: 1.5, display: 'block', opacity: 0.7 }}>
           Horários exibidos no seu fuso: {browserTimeZone}
@@ -196,6 +202,7 @@ function AdminPage({ currentUser }) {
               <table className="asset-table">
                 <thead>
                   <tr>
+                    <th>Banco</th>
                     <th>Arquivo</th>
                     <th>Modificado em</th>
                     <th>Tamanho</th>
@@ -205,6 +212,7 @@ function AdminPage({ currentUser }) {
                 <tbody>
                   {backups.map((backup) => (
                     <tr key={backup.filename}>
+                      <td>{backup.database_label || backup.database_key || '-'}</td>
                       <td>{backup.filename}</td>
                       <td>{formatDateTimeLocal(backup.modified_at)}</td>
                       <td>{formatBytes(backup.size_bytes)}</td>

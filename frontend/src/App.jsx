@@ -243,8 +243,6 @@ function App({ themeMode, onToggleTheme }) {
             { to: '/admin', label: 'Usuarios' },
             { to: '/admin/metricas', label: 'Metricas' },
             { to: '/admin/metrics-lab', label: 'Metrics Lab' },
-            { to: '/scanner', label: 'Scanner' },
-            { to: '/swing-trade', label: 'Swing Trade' },
           ],
         },
       ]

@@ -23,6 +23,8 @@ services:
       MARKET_DATA_PROVIDERS_US: "${MARKET_DATA_PROVIDERS_US:-}"
       MARKET_DATA_PROVIDERS_CRYPTO: "${MARKET_DATA_PROVIDERS_CRYPTO:-}"
       MARKET_DATA_PROVIDERS_BR: "${MARKET_DATA_PROVIDERS_BR:-}"
+      MARKET_SCANNER_BASE_URL: "${MARKET_SCANNER_BASE_URL:-http://market-scanner:8000}"
+      MARKET_SCANNER_TIMEOUT_SECONDS: "${MARKET_SCANNER_TIMEOUT_SECONDS:-8}"
       OPENCLAW_GATEWAY_URL: "${OPENCLAW_GATEWAY_URL:-https://openclaw-gateway:18789}"
       OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:-}"
       OPENCLAW_TLS_CA_BUNDLE: "/openclaw-config/gateway/tls/openclaw-local-ca.pem"
@@ -46,6 +48,29 @@ services:
       - "8000:80"
     depends_on:
       - backend
+
+  market-scanner:
+    profiles: ["scanner"]
+    build:
+      context: ${MARKET_SCANNER_CONTEXT:-../TYT-Take_your_trade/market-scanner}
+      dockerfile: Dockerfile
+    image: market-scanner
+    networks:
+      - invest-net
+    environment:
+      BRAPI_TOKEN: "${BRAPI_TOKEN:-}"
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      LOG_LEVEL: "${MARKET_SCANNER_LOG_LEVEL:-INFO}"
+      DATABASE_URL: "${MARKET_SCANNER_DATABASE_URL:-sqlite:///./data/market_scanner.db}"
+      START_SCHEDULER_WITH_API: "${MARKET_SCANNER_START_SCHEDULER_WITH_API:-1}"
+      IMMEDIATE_SCAN_ON_STARTUP: "${MARKET_SCANNER_IMMEDIATE_SCAN_ON_STARTUP:-1}"
+    command: ["python", "main.py", "--mode", "all", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${MARKET_SCANNER_HOST_IP:-0.0.0.0}:${MARKET_SCANNER_PORT:-8089}:8000"
+    volumes:
+      - ${MARKET_SCANNER_DATA_DIR:-/srv/tyi-take_yout_investiments/market-scanner/data}:/app/data
+    restart: unless-stopped
 
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}

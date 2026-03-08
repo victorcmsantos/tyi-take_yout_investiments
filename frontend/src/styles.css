@@ -55,14 +55,27 @@ body {
   font-weight: 600;
 }
 
-.auth-field input {
+.auth-field input,
+.auth-field select,
+.auth-field textarea {
   width: 100%;
-  height: 42px;
   border-radius: 10px;
   border: 1px solid #c6d3e4;
   background: #fff;
+  color: #1f2a38;
   padding: 0 12px;
   font: inherit;
+}
+
+.auth-field input,
+.auth-field select {
+  height: 42px;
+}
+
+.auth-field textarea {
+  min-height: 88px;
+  padding: 10px 12px;
+  resize: vertical;
 }
 
 .admin-panel {
@@ -1074,7 +1087,8 @@ table tbody tr:hover td {
 }
 
 .form-grid input,
-.form-grid select {
+.form-grid select,
+.form-grid textarea {
   width: 100%;
 }
 
@@ -1131,6 +1145,7 @@ select {
   border-radius: 8px;
   border: 1px solid #cbd8e8;
   background: white;
+  color: #1f2a38;
   padding: 0 10px;
 }
 
@@ -1270,6 +1285,12 @@ select {
     margin-top: 118px;
   }
 
+  .app-v2-header-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    row-gap: 8px;
+  }
+
   .app-v2-layout,
   .app-v2-content,
   .app-v2-content section,
@@ -1309,7 +1330,7 @@ select {
 
   .app-v2-brand-logo {
     height: 32px;
-    max-width: min(56vw, 180px);
+    max-width: min(44vw, 150px);
   }
 
   .app-v2-header-left {
@@ -1317,11 +1338,17 @@ select {
   }
 
   .app-v2-header-right {
+    width: 100%;
+    margin-left: 0;
+    flex-direction: row;
+    justify-content: flex-end;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 4px;
   }
 
   .app-v2-header-portfolios {
-    max-width: 190px;
+    display: none;
   }
 
   .app-v2-sidebar {
@@ -1636,4 +1663,361 @@ html[data-theme='dark'] .metrics-editor-textarea {
 html[data-theme='dark'] .metrics-editor-help {
   background: #132132;
   border-color: #35506d;
+}
+
+html[data-theme='dark'] input:not([type='checkbox']):not([type='radio']):not(.app-v2-search),
+html[data-theme='dark'] select,
+html[data-theme='dark'] textarea {
+  background: #101a27;
+  color: #dbe5f2;
+  border-color: #31465f;
+}
+
+html[data-theme='dark'] input:not([type='checkbox']):not([type='radio']):not(.app-v2-search)::placeholder,
+html[data-theme='dark'] textarea::placeholder {
+  color: #9eb0c8;
+}
+
+html[data-theme='dark'] option {
+  background: #101a27;
+  color: #dbe5f2;
+}
+
+.scanner-matrix-wrap {
+  overflow-x: auto;
+}
+
+.scanner-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.scanner-ops-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.scanner-lab-search {
+  margin: 8px 0 10px;
+}
+
+.scanner-lab-param-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.scanner-lab-param-row small {
+  opacity: 0.7;
+}
+
+.scanner-matrix-table th,
+.scanner-matrix-table td {
+  white-space: nowrap;
+}
+
+.scanner-matrix-hit {
+  color: #0f766e;
+  font-weight: 700;
+  text-align: center;
+}
+
+.scanner-matrix-miss {
+  color: #8a9aa8;
+  text-align: center;
+}
+
+.scanner-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.scanner-signal-tile {
+  background: #ffffff;
+  border: 1px solid #dbe4eb;
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scanner-signal-tile--highlight {
+  border-color: #1f8f7d;
+  box-shadow: 0 14px 28px rgba(15, 118, 110, 0.16);
+}
+
+.scanner-signal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.scanner-buy-badge {
+  background: #0f766e;
+  color: #ffffff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.scanner-signal-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.scanner-signal-stats small {
+  display: block;
+  color: #6d7e8d;
+}
+
+.scanner-signal-stats strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 1.05rem;
+}
+
+.scanner-trade-plan {
+  background: #f5f8fb;
+  border: 1px solid #d8e1e8;
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 5px;
+}
+
+.scanner-trade-plan p {
+  margin: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.9rem;
+}
+
+.scanner-trade-plan span {
+  color: #60707f;
+}
+
+.scanner-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.scanner-metric-chip {
+  background: #e9f2f8;
+  border: 1px solid #c7d8e4;
+  color: #1d3f5c;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  padding: 2px 8px;
+}
+
+.scanner-signal-actions {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scanner-signal-actions small {
+  color: #738393;
+}
+
+.scanner-positive {
+  color: #0f766e;
+}
+
+.scanner-negative {
+  color: #b4232f;
+}
+
+.scanner-open-trades-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.scanner-open-trade-card {
+  border: 1px solid #d7e2ed;
+  border-radius: 14px;
+  padding: 12px;
+  background: #fff;
+  display: grid;
+  gap: 10px;
+}
+
+.scanner-open-trade-card--positive {
+  border-color: #a8d8c3;
+}
+
+.scanner-open-trade-card--negative {
+  border-color: #e6b8b8;
+}
+
+.scanner-open-trade-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.scanner-open-trade-head > div {
+  display: grid;
+  gap: 6px;
+}
+
+.scanner-status-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 3px 9px;
+  width: fit-content;
+}
+
+.scanner-status-badge--positive {
+  background: #e7f6ef;
+  color: #116b4a;
+  border: 1px solid #b9e2cf;
+}
+
+.scanner-status-badge--negative {
+  background: #fdeceb;
+  color: #9d2830;
+  border: 1px solid #efb6ba;
+}
+
+.scanner-status-badge--neutral {
+  background: #ecf3fb;
+  color: #315579;
+  border: 1px solid #c9d9eb;
+}
+
+.scanner-open-trade-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.scanner-open-trade-metrics small {
+  display: block;
+  color: #6a7b8a;
+}
+
+.scanner-open-trade-metrics strong {
+  display: block;
+  margin-top: 2px;
+}
+
+.scanner-trade-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 0.83rem;
+  color: #5f7289;
+}
+
+.scanner-trade-edit-form {
+  border-top: 1px dashed #d3ddea;
+  padding-top: 10px;
+}
+
+@media (max-width: 980px) {
+  .scanner-open-trade-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .scanner-open-trades-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+html[data-theme='dark'] .scanner-signal-tile {
+  background: #182434;
+  border-color: #32465d;
+  box-shadow: none;
+}
+
+html[data-theme='dark'] .scanner-signal-tile--highlight {
+  border-color: #3f9d8e;
+  box-shadow: 0 14px 28px rgba(15, 118, 110, 0.24);
+}
+
+html[data-theme='dark'] .scanner-signal-stats small,
+html[data-theme='dark'] .scanner-trade-plan span,
+html[data-theme='dark'] .scanner-signal-actions small,
+html[data-theme='dark'] .scanner-matrix-miss {
+  color: #9fb2c7;
+}
+
+html[data-theme='dark'] .scanner-trade-plan {
+  background: #111d2b;
+  border-color: #31465f;
+}
+
+html[data-theme='dark'] .scanner-metric-chip {
+  background: #1d3146;
+  border-color: #36506f;
+  color: #d8e5f4;
+}
+
+html[data-theme='dark'] .scanner-matrix-hit {
+  color: #38b2a0;
+}
+
+html[data-theme='dark'] .scanner-open-trade-card {
+  background: #182434;
+  border-color: #32465d;
+}
+
+html[data-theme='dark'] .scanner-open-trade-card--positive {
+  border-color: #2f6b57;
+}
+
+html[data-theme='dark'] .scanner-open-trade-card--negative {
+  border-color: #7a4046;
+}
+
+html[data-theme='dark'] .scanner-status-badge--positive {
+  background: #173529;
+  border-color: #2a654f;
+  color: #9de0be;
+}
+
+html[data-theme='dark'] .scanner-status-badge--negative {
+  background: #412427;
+  border-color: #7c4249;
+  color: #ffb8ae;
+}
+
+html[data-theme='dark'] .scanner-status-badge--neutral {
+  background: #1e3044;
+  border-color: #36516f;
+  color: #cde0f3;
+}
+
+html[data-theme='dark'] .scanner-trade-edit-form {
+  border-top-color: #31465f;
+}
+
+html[data-theme='dark'] .scanner-positive {
+  color: #38b2a0;
+}
+
+html[data-theme='dark'] .scanner-negative {
+  color: #ff8f9a;
 }

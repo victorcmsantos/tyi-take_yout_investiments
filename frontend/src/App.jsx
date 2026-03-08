@@ -24,6 +24,9 @@ import LoginPage from './pages/LoginPage'
 import AdminPage from './pages/AdminPage'
 import AllocationPage from './pages/AllocationPage'
 import MetricFormulasPage from './pages/MetricFormulasPage'
+import ScannerPage from './pages/ScannerPage'
+import ScannerMetricsLabPage from './pages/ScannerMetricsLabPage'
+import SwingTradePage from './pages/SwingTradePage'
 
 function App({ themeMode, onToggleTheme }) {
   const navigate = useNavigate()
@@ -101,6 +104,10 @@ function App({ themeMode, onToggleTheme }) {
 
   useEffect(() => {
     setSidebarOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    window.scrollTo({ left: 0, top: window.scrollY, behavior: 'auto' })
   }, [location.pathname])
 
   useEffect(() => {
@@ -202,8 +209,11 @@ function App({ themeMode, onToggleTheme }) {
     '/novo': 'Novo provento',
     '/carteiras': 'Carteiras',
     '/alocador': 'Alocador',
+    '/scanner': 'Scanner',
+    '/swing-trade': 'Swing Trade',
     '/admin': 'Admin',
     '/admin/metricas': 'Metricas',
+    '/admin/metrics-lab': 'Metrics Lab',
   }
 
   const breadcrumbs = useMemo(() => {
@@ -232,6 +242,9 @@ function App({ themeMode, onToggleTheme }) {
           items: [
             { to: '/admin', label: 'Usuarios' },
             { to: '/admin/metricas', label: 'Metricas' },
+            { to: '/admin/metrics-lab', label: 'Metrics Lab' },
+            { to: '/scanner', label: 'Scanner' },
+            { to: '/swing-trade', label: 'Swing Trade' },
           ],
         },
       ]
@@ -263,6 +276,8 @@ function App({ themeMode, onToggleTheme }) {
         title: 'Ferramentas',
         items: [
           { to: '/alocador', label: 'Alocador' },
+          { to: '/scanner', label: 'Scanner' },
+          { to: '/swing-trade', label: 'Swing Trade' },
         ],
       },
       {
@@ -464,6 +479,8 @@ function App({ themeMode, onToggleTheme }) {
               path="/alocador"
               element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <AllocationPage assets={assetSuggestions} />}
             />
+            <Route path="/scanner" element={<ScannerPage />} />
+            <Route path="/swing-trade" element={<SwingTradePage />} />
             <Route
               path="/admin"
               element={currentUser.is_admin ? <AdminPage currentUser={currentUser} /> : <Navigate to="/" replace />}
@@ -471,6 +488,10 @@ function App({ themeMode, onToggleTheme }) {
             <Route
               path="/admin/metricas"
               element={currentUser.is_admin ? <MetricFormulasPage /> : <Navigate to="/" replace />}
+            />
+            <Route
+              path="/admin/metrics-lab"
+              element={currentUser.is_admin ? <ScannerMetricsLabPage /> : <Navigate to="/" replace />}
             />
             <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="/transacoes/nova" element={<Navigate to="/nova" replace />} />

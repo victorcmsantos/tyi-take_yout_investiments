@@ -8,6 +8,10 @@ services:
       - ${APP_VOL_DIR:-./app_vol}:/app_vol
       - ${OPENCLAW_CONFIG_DIR:-./openclaw/config}:/openclaw-config:ro
 
+  market-scanner:
+    volumes:
+      - ${MARKET_SCANNER_DATA_DIR:-./market-scanner/data}:/app/data
+
   openclaw-gateway:
     volumes:
       - ${OPENCLAW_CONFIG_DIR:-./openclaw/config}:/home/node/.openclaw

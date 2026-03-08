@@ -51,6 +51,26 @@ O `docker-compose.yml` agora cria a rede `invest-net` automaticamente.
 Por padrão, o OpenClaw usa `ghcr.io/openclaw/openclaw:latest`. Se você tiver uma build local (ex.: `openclaw:local`), sobrescreva com `OPENCLAW_IMAGE=openclaw:local`.
 O serviço `openclaw-cli` é opcional e fica no profile `cli` (não sobe no `up` padrão). Para usar o CLI manualmente: `docker compose run --rm openclaw-cli health`.
 
+### Integracao com Market Scanner (opcional)
+
+O scanner fica como servico separado no profile `scanner`, com build apontando para `../TYT-Take_your_trade/market-scanner` (ajuste via `MARKET_SCANNER_CONTEXT` no `.env`).
+
+```bash
+docker compose --profile scanner up -d --build market-scanner
+```
+
+- Dashboard do scanner: `http://127.0.0.1:8089/dashboard`
+- Página integrada no portal: `http://127.0.0.1:8000/scanner`
+- Proxy no backend Flask:
+  - `GET /api/scanner/health`
+  - `GET /api/scanner/signals`
+  - `GET /api/scanner/signal-matrix`
+  - `GET /api/scanner/trades`
+  - `GET /api/scanner/ticker/<TICKER>`
+  - `POST /api/scanner/trades`
+  - `PATCH /api/scanner/trades/<TRADE_ID>`
+  - `POST /api/scanner/trades/<TRADE_ID>/close`
+
 ### Arquitetura do enriquecimento por IA
 
 - O frontend nunca fala direto com nenhum provider de IA.

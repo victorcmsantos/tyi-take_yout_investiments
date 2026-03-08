@@ -1,3 +1,9 @@
+import json
+import os
+from urllib import error as urlerror
+from urllib import parse as urlparse
+from urllib import request as urlrequest
+
 from flask import Blueprint, current_app, jsonify, request, send_file
 
 from .auth import (
@@ -79,6 +85,84 @@ def _as_bool(value):
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _market_scanner_base_url():
+    return (os.getenv("MARKET_SCANNER_BASE_URL") or "http://market-scanner:8000").rstrip("/")
+
+
+def _market_scanner_timeout_seconds():
+    raw = (os.getenv("MARKET_SCANNER_TIMEOUT_SECONDS") or "8").strip()
+    try:
+        return max(float(raw), 1.0)
+    except (TypeError, ValueError):
+        return 8.0
+
+
+def _market_scanner_get(path: str):
+    return _market_scanner_request("GET", path)
+
+
+def _market_scanner_request(method: str, path: str, payload=None):
+    query_items = list(request.args.items(multi=True))
+    query = urlparse.urlencode(query_items, doseq=True)
+    url = f"{_market_scanner_base_url()}{path}"
+    if query:
+        url = f"{url}?{query}"
+
+    body = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urlrequest.Request(url, data=body, headers=headers, method=method.upper())
+    try:
+        with urlrequest.urlopen(req, timeout=_market_scanner_timeout_seconds()) as response:
+            status = int(response.getcode() or 200)
+            raw_body = response.read().decode("utf-8", errors="replace")
+    except urlerror.HTTPError as exc:
+        raw_body = exc.read().decode("utf-8", errors="replace")
+        return False, int(exc.code or 502), _market_scanner_parse_body(raw_body)
+    except Exception as exc:
+        return False, 503, str(exc)
+
+    return True, status, _market_scanner_parse_body(raw_body)
+
+
+def _market_scanner_parse_body(raw_body: str):
+    try:
+        return json.loads(raw_body) if raw_body else None
+    except json.JSONDecodeError:
+        return {"raw": raw_body}
+
+
+def _market_scanner_proxy_get(path: str):
+    return _market_scanner_proxy("GET", path)
+
+
+def _market_scanner_proxy(method: str, path: str, payload=None):
+    ok, status, response_payload = _market_scanner_request(method, path, payload=payload)
+    if not ok:
+        message = _market_scanner_error_message(response_payload, status)
+        return _json_error(
+            message,
+            status=status,
+            details={"upstream": response_payload},
+        )
+    return _json_ok(response_payload, status=status)
+
+
+def _market_scanner_error_message(payload, status: int):
+    if isinstance(payload, dict):
+        detail = payload.get("detail") or payload.get("error")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+    if isinstance(payload, str) and payload.strip():
+        return payload.strip()[:300]
+    if status >= 500:
+        return "Market Scanner indisponivel."
+    return "Falha ao processar requisicao no Market Scanner."
 
 
 def _build_charts_core_payload(portfolio_ids):
@@ -258,6 +342,62 @@ def health():
     payload = build_health_payload()
     status_code = 200 if payload["status"] == "ok" else 503
     return _json_ok(payload, status=status_code)
+
+
+@api_bp.route("/scanner/health", methods=["GET"])
+def scanner_health():
+    return _market_scanner_proxy_get("/signal-matrix")
+
+
+@api_bp.route("/scanner/signals", methods=["GET"])
+def scanner_signals():
+    return _market_scanner_proxy_get("/signals")
+
+
+@api_bp.route("/scanner/signal-matrix", methods=["GET"])
+def scanner_signal_matrix():
+    return _market_scanner_proxy_get("/signal-matrix")
+
+
+@api_bp.route("/scanner/trades", methods=["GET"])
+def scanner_trades():
+    return _market_scanner_proxy_get("/trades")
+
+
+@api_bp.route("/scanner/trades", methods=["POST"])
+def scanner_create_trade():
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    return _market_scanner_proxy("POST", "/trades", payload=payload)
+
+
+@api_bp.route("/scanner/trades/<int:trade_id>", methods=["PATCH"])
+def scanner_update_trade(trade_id: int):
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    return _market_scanner_proxy("PATCH", f"/trades/{trade_id}", payload=payload)
+
+
+@api_bp.route("/scanner/trades/<int:trade_id>/close", methods=["POST"])
+def scanner_close_trade(trade_id: int):
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    return _market_scanner_proxy("POST", f"/trades/{trade_id}/close", payload=payload)
+
+
+@api_bp.route("/scanner/ticker/<symbol>", methods=["GET"])
+def scanner_ticker(symbol: str):
+    safe_symbol = urlparse.quote(symbol.upper(), safe="")
+    return _market_scanner_proxy_get(f"/ticker/{safe_symbol}")
+
+
+@api_bp.route("/scanner/metrics/catalog", methods=["GET"])
+def scanner_metrics_catalog():
+    return _market_scanner_proxy_get("/metrics/catalog")
+
+
+@api_bp.route("/scanner/metrics/catalog/<metric_key>", methods=["PATCH"])
+def scanner_metrics_update(metric_key: str):
+    safe_key = urlparse.quote(str(metric_key or "").strip(), safe="")
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    return _market_scanner_proxy("PATCH", f"/metrics/catalog/{safe_key}", payload=payload)
 
 
 @api_bp.route("/auth/me", methods=["GET"])

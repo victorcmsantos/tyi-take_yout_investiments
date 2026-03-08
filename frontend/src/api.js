@@ -33,6 +33,10 @@ export async function apiPost(path, body = {}, params = {}) {
   return requestJson(path, { method: 'POST', params, body })
 }
 
+export async function apiPatch(path, body = {}, params = {}) {
+  return requestJson(path, { method: 'PATCH', params, body })
+}
+
 export async function apiDelete(path, body = {}, params = {}) {
   return requestJson(path, { method: 'DELETE', params, body })
 }

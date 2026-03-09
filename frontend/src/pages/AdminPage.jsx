@@ -12,7 +12,7 @@ function AdminPage({ currentUser }) {
   const [message, setMessage] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [isAdmin, setIsAdmin] = useState(false)
+  const [userRole, setUserRole] = useState('trader')
   const [submitting, setSubmitting] = useState(false)
   const [backupLoading, setBackupLoading] = useState(false)
   const [lastBackup, setLastBackup] = useState(null)
@@ -23,6 +23,10 @@ function AdminPage({ currentUser }) {
   const [batchLimit, setBatchLimit] = useState('10')
   const [batchTickers, setBatchTickers] = useState('')
   const [batchResult, setBatchResult] = useState(null)
+  const [scannerStatus, setScannerStatus] = useState(null)
+  const [scannerStatusLoading, setScannerStatusLoading] = useState(false)
+  const [scannerAudit, setScannerAudit] = useState([])
+  const [scannerAuditLoading, setScannerAuditLoading] = useState(false)
   const browserTimeZone = currentBrowserTimeZone()
 
   const loadUsers = async () => {
@@ -59,6 +63,37 @@ function AdminPage({ currentUser }) {
     loadBackups()
   }, [])
 
+  const loadScannerStatus = async () => {
+    setScannerStatusLoading(true)
+    setError('')
+    try {
+      const payload = await apiGet('/api/admin/scanner/status')
+      setScannerStatus(payload || null)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setScannerStatusLoading(false)
+    }
+  }
+
+  const loadScannerAudit = async () => {
+    setScannerAuditLoading(true)
+    setError('')
+    try {
+      const payload = await apiGet('/api/admin/scanner/audit', { limit: 120 })
+      setScannerAudit(Array.isArray(payload?.items) ? payload.items : [])
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setScannerAuditLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadScannerStatus()
+    loadScannerAudit()
+  }, [])
+
   const formatBytes = (value) => {
     const size = Number(value)
     if (!Number.isFinite(size) || size <= 0) return '0 B'
@@ -78,12 +113,12 @@ function AdminPage({ currentUser }) {
       const payload = await apiPost('/api/admin/users', {
         username,
         password,
-        is_admin: isAdmin,
+        role: userRole,
       })
       setMessage(payload.message || 'Usuario criado com sucesso.')
       setUsername('')
       setPassword('')
-      setIsAdmin(false)
+      setUserRole('trader')
       await loadUsers()
     } catch (err) {
       setError(err.message)
@@ -100,6 +135,18 @@ function AdminPage({ currentUser }) {
         is_active: !user.is_active,
       })
       setMessage(payload.message || 'Usuario atualizado com sucesso.')
+      await loadUsers()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const onChangeUserRole = async (user, role) => {
+    setError('')
+    setMessage('')
+    try {
+      const payload = await apiPost(`/api/admin/users/${user.id}/role`, { role })
+      setMessage(payload.message || 'Perfil atualizado com sucesso.')
       await loadUsers()
     } catch (err) {
       setError(err.message)
@@ -172,6 +219,85 @@ function AdminPage({ currentUser }) {
 
       {!!message && <p className="notice-ok">{message}</p>}
       {!!error && <p className="notice-warn">{error}</p>}
+
+      <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
+        <div className="hero-line" style={{ marginBottom: 12 }}>
+          <div>
+            <Typography variant="h6" sx={{ mb: 0.5 }}>Status do Scanner</Typography>
+            <Typography variant="body2" sx={{ opacity: 0.8 }}>
+              Disponibilidade do banco do scanner e trilha de auditoria das operacoes.
+            </Typography>
+          </div>
+          <div className="hero-actions">
+            <Button variant="outlined" onClick={() => { loadScannerStatus(); loadScannerAudit() }} disabled={scannerStatusLoading || scannerAuditLoading}>
+              {scannerStatusLoading || scannerAuditLoading ? 'Atualizando...' : 'Atualizar status'}
+            </Button>
+          </div>
+        </div>
+
+        {scannerStatusLoading ? (
+          <p>Carregando status do scanner...</p>
+        ) : !scannerStatus ? (
+          <p>Status do scanner indisponivel.</p>
+        ) : (
+          <div>
+            <div className="admin-user-meta" style={{ marginBottom: 10 }}>
+              <span>DB acessivel: {scannerStatus.db_accessible ? 'sim' : 'nao'}</span>
+              <span>Arquivo existe: {scannerStatus.exists ? 'sim' : 'nao'}</span>
+              <span>Tamanho: {formatBytes(scannerStatus.size_bytes || 0)}</span>
+              <span>Ultima atualizacao: {scannerStatus.last_data_update_at ? formatDateTimeLocal(scannerStatus.last_data_update_at) : '-'}</span>
+            </div>
+            <div className="admin-user-meta">
+              <span>Modificado em: {scannerStatus.file_modified_at ? formatDateTimeLocal(scannerStatus.file_modified_at) : '-'}</span>
+              <span>Tabelas: {scannerStatus.table_count || 0}</span>
+              <span>Caminho: {scannerStatus.configured_path || '-'}</span>
+            </div>
+            {!!scannerStatus.error && (
+              <p className="notice-warn" style={{ marginTop: 10 }}>{scannerStatus.error}</p>
+            )}
+          </div>
+        )}
+
+        <div style={{ marginTop: 16 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1, opacity: 0.85 }}>Auditoria do scanner/swing trade</Typography>
+          {scannerAuditLoading ? (
+            <p>Carregando auditoria...</p>
+          ) : scannerAudit.length === 0 ? (
+            <p>Nenhuma acao auditada ainda.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="asset-table">
+                <thead>
+                  <tr>
+                    <th>Quando</th>
+                    <th>Usuario</th>
+                    <th>Acao</th>
+                    <th>Ticker</th>
+                    <th>Trade</th>
+                    <th>Status</th>
+                    <th>Upstream</th>
+                    <th>Erro</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scannerAudit.map((item) => (
+                    <tr key={`scanner-audit-${item.id}`}>
+                      <td>{formatDateTimeLocal(item.created_at)}</td>
+                      <td>{item.username || `#${item.user_id || '-'}`}</td>
+                      <td>{String(item.action || '-').toUpperCase()}</td>
+                      <td>{item.ticker || '-'}</td>
+                      <td>{item.trade_id ?? '-'}</td>
+                      <td>{item.success ? 'OK' : 'Falha'}</td>
+                      <td>{item.upstream_status ?? '-'}</td>
+                      <td>{item.error_message || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </Paper>
 
       <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
         <Typography variant="h6" sx={{ mb: 1 }}>Backup do banco</Typography>
@@ -317,10 +443,14 @@ function AdminPage({ currentUser }) {
             <span>Senha</span>
             <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Minimo de 8 caracteres" />
           </label>
-          <FormControlLabel
-            control={<Checkbox checked={isAdmin} onChange={(event) => setIsAdmin(event.target.checked)} />}
-            label="Administrador"
-          />
+          <label className="auth-field">
+            <span>Perfil</span>
+            <select value={userRole} onChange={(event) => setUserRole(event.target.value)}>
+              <option value="trader">Trader</option>
+              <option value="viewer">Viewer (somente leitura)</option>
+              <option value="admin">Admin</option>
+            </select>
+          </label>
           <Button type="submit" variant="contained" disabled={submitting}>
             {submitting ? 'Criando...' : 'Criar usuario'}
           </Button>
@@ -338,18 +468,31 @@ function AdminPage({ currentUser }) {
                 <div>
                   <strong>{user.username}</strong>
                   <div className="admin-user-meta">
-                    <span>{user.is_admin ? 'Admin' : 'Usuario'}</span>
+                    <span>{String(user.role || (user.is_admin ? 'admin' : 'trader')).toUpperCase()}</span>
                     <span>{user.is_active ? 'Ativo' : 'Inativo'}</span>
                     <span>Ultimo login: {user.last_login_at ? formatDateTimeLocal(user.last_login_at) : 'nunca'}</span>
                   </div>
                 </div>
-                <Button
-                  variant={user.is_active ? 'outlined' : 'contained'}
-                  color={user.is_active ? 'warning' : 'success'}
-                  onClick={() => onToggleUser(user)}
-                >
-                  {user.is_active ? 'Desabilitar' : 'Habilitar'}
-                </Button>
+                <div className="hero-actions" style={{ justifyContent: 'flex-end' }}>
+                  <label className="auth-field" style={{ minWidth: 180 }}>
+                    <span>Perfil</span>
+                    <select
+                      value={String(user.role || (user.is_admin ? 'admin' : 'trader')).toLowerCase()}
+                      onChange={(event) => onChangeUserRole(user, event.target.value)}
+                    >
+                      <option value="trader">Trader</option>
+                      <option value="viewer">Viewer</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </label>
+                  <Button
+                    variant={user.is_active ? 'outlined' : 'contained'}
+                    color={user.is_active ? 'warning' : 'success'}
+                    onClick={() => onToggleUser(user)}
+                  >
+                    {user.is_active ? 'Desabilitar' : 'Habilitar'}
+                  </Button>
+                </div>
               </div>
             ))}
             {users.length === 0 && <p>Nenhum usuario cadastrado.</p>}

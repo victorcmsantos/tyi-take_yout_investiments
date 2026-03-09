@@ -10,12 +10,36 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'trader',
   is_admin INTEGER NOT NULL DEFAULT 0,
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT,
   last_login_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS scanner_trade_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  action TEXT NOT NULL,
+  user_id INTEGER,
+  username TEXT NOT NULL DEFAULT '',
+  trade_id INTEGER,
+  ticker TEXT,
+  request_payload_json TEXT NOT NULL DEFAULT '{}',
+  response_payload_json TEXT NOT NULL DEFAULT '{}',
+  success INTEGER NOT NULL DEFAULT 0,
+  upstream_status INTEGER,
+  error_message TEXT NOT NULL DEFAULT '',
+  remote_addr TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scanner_trade_audit_created_at
+ON scanner_trade_audit (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_scanner_trade_audit_user_id
+ON scanner_trade_audit (user_id);
 
 CREATE TABLE IF NOT EXISTS assets (
   ticker TEXT PRIMARY KEY,

@@ -10,6 +10,11 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from .db import get_db
 from .runtime_lock import exclusive_file_lock
 
+USER_ROLE_ADMIN = "admin"
+USER_ROLE_TRADER = "trader"
+USER_ROLE_VIEWER = "viewer"
+VALID_USER_ROLES = {USER_ROLE_ADMIN, USER_ROLE_TRADER, USER_ROLE_VIEWER}
+
 
 def _now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -29,6 +34,26 @@ def _admin_bootstrap_file_from_app():
 
 def _initial_portfolio_name(username: str):
     return f"Carteira de {username}"
+
+
+def _normalize_user_role(role, *, fallback: str = USER_ROLE_TRADER):
+    value = str(role or "").strip().lower()
+    if value in VALID_USER_ROLES:
+        return value
+    return fallback
+
+
+def _resolve_user_role(role=None, *, is_admin: bool = False):
+    if is_admin:
+        return USER_ROLE_ADMIN
+    return _normalize_user_role(role, fallback=USER_ROLE_TRADER)
+
+
+def can_user_write(user: dict | None):
+    if not user:
+        return False
+    role = _resolve_user_role(user.get("role"), is_admin=bool(user.get("is_admin")))
+    return role != USER_ROLE_VIEWER
 
 
 def _load_or_create_secret_key():
@@ -87,8 +112,8 @@ def ensure_admin_user():
         password = secrets.token_urlsafe(12)
         now = _now_iso()
         db.execute(
-            "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
-            (generate_password_hash(password), now, int(admin_row["id"])),
+            "UPDATE users SET password_hash = ?, role = ?, updated_at = ? WHERE id = ?",
+            (generate_password_hash(password), USER_ROLE_ADMIN, now, int(admin_row["id"])),
         )
         db.commit()
         bootstrap_file.parent.mkdir(parents=True, exist_ok=True)
@@ -109,12 +134,13 @@ def ensure_admin_user():
         INSERT INTO users (
             username,
             password_hash,
+            role,
             is_admin,
             is_active,
             created_at
-        ) VALUES (?, ?, 1, 1, ?)
+        ) VALUES (?, ?, ?, 1, 1, ?)
         """,
-        (username, generate_password_hash(password), _now_iso()),
+        (username, generate_password_hash(password), USER_ROLE_ADMIN, _now_iso()),
     )
     db.commit()
 
@@ -136,6 +162,7 @@ def _user_row_to_dict(row):
     return {
         "id": int(row["id"]),
         "username": row["username"],
+        "role": _resolve_user_role(row["role"], is_admin=bool(row["is_admin"])),
         "is_admin": bool(row["is_admin"]),
         "is_active": bool(row["is_active"]),
         "created_at": row["created_at"],
@@ -162,7 +189,7 @@ def _create_initial_portfolio_for_user(user_id: int, portfolio_name: str = "Cart
 def get_user_by_id(user_id):
     row = get_db().execute(
         """
-        SELECT id, username, is_admin, is_active, created_at, updated_at, last_login_at
+        SELECT id, username, role, is_admin, is_active, created_at, updated_at, last_login_at
         FROM users
         WHERE id = ?
         """,
@@ -200,7 +227,7 @@ def login_user(username: str, password: str):
 
     row = get_db().execute(
         """
-        SELECT id, username, password_hash, is_admin, is_active, created_at, updated_at, last_login_at
+        SELECT id, username, role, password_hash, is_admin, is_active, created_at, updated_at, last_login_at
         FROM users
         WHERE username = ?
         """,
@@ -239,7 +266,8 @@ def require_authenticated_user():
 
 def require_admin_user():
     user = require_authenticated_user()
-    if not user["is_admin"]:
+    role = _resolve_user_role(user.get("role"), is_admin=bool(user.get("is_admin")))
+    if role != USER_ROLE_ADMIN:
         raise Forbidden("Acesso restrito a administradores.")
     return user
 
@@ -252,10 +280,16 @@ def is_auth_exempt_path(path: str):
     }
 
 
+def is_viewer_write_exempt_path(path: str):
+    return path in {
+        "/api/auth/logout",
+    }
+
+
 def list_users():
     rows = get_db().execute(
         """
-        SELECT id, username, is_admin, is_active, created_at, updated_at, last_login_at
+        SELECT id, username, role, is_admin, is_active, created_at, updated_at, last_login_at
         FROM users
         ORDER BY username ASC
         """
@@ -263,7 +297,7 @@ def list_users():
     return [_user_row_to_dict(row) for row in rows]
 
 
-def create_user_account(username: str, password: str, is_admin: bool = False):
+def create_user_account(username: str, password: str, is_admin: bool = False, role: str | None = None):
     normalized = _normalize_username(username)
     if not normalized:
         return False, "Nome de usuario obrigatorio.", None
@@ -271,6 +305,9 @@ def create_user_account(username: str, password: str, is_admin: bool = False):
         return False, "Nome de usuario deve ter ao menos 3 caracteres.", None
     if not password or len(password) < 8:
         return False, "Senha deve ter ao menos 8 caracteres.", None
+
+    resolved_role = _resolve_user_role(role, is_admin=is_admin)
+    is_admin_flag = resolved_role == USER_ROLE_ADMIN
 
     db = get_db()
     exists = db.execute("SELECT id FROM users WHERE username = ?", (normalized,)).fetchone()
@@ -283,17 +320,25 @@ def create_user_account(username: str, password: str, is_admin: bool = False):
         INSERT INTO users (
             username,
             password_hash,
+            role,
             is_admin,
             is_active,
             created_at,
             updated_at
-        ) VALUES (?, ?, ?, 1, ?, ?)
+        ) VALUES (?, ?, ?, ?, 1, ?, ?)
         """,
-        (normalized, generate_password_hash(password), 1 if is_admin else 0, now, now),
+        (
+            normalized,
+            generate_password_hash(password),
+            resolved_role,
+            1 if is_admin_flag else 0,
+            now,
+            now,
+        ),
     )
     db.commit()
     created_user = get_user_by_id(cursor.lastrowid)
-    if created_user and not created_user["is_admin"]:
+    if created_user and _resolve_user_role(created_user.get("role"), is_admin=bool(created_user.get("is_admin"))) != USER_ROLE_ADMIN:
         _create_initial_portfolio_for_user(
             created_user["id"],
             _initial_portfolio_name(created_user["username"]),
@@ -305,7 +350,7 @@ def set_user_active_state(user_id: int, is_active: bool, acting_user_id: int | N
     db = get_db()
     row = db.execute(
         """
-        SELECT id, username, is_admin, is_active, created_at, updated_at, last_login_at
+        SELECT id, username, role, is_admin, is_active, created_at, updated_at, last_login_at
         FROM users
         WHERE id = ?
         """,
@@ -336,3 +381,56 @@ def set_user_active_state(user_id: int, is_active: bool, acting_user_id: int | N
     )
     db.commit()
     return True, "Usuario atualizado com sucesso.", get_user_by_id(user_id)
+
+
+def set_user_role(user_id: int, role: str, acting_user_id: int | None = None):
+    normalized_role = _normalize_user_role(role, fallback="")
+    if normalized_role not in VALID_USER_ROLES:
+        return False, "Perfil invalido. Use admin, trader ou viewer.", None
+
+    db = get_db()
+    row = db.execute(
+        """
+        SELECT id, username, role, is_admin, is_active, created_at, updated_at, last_login_at
+        FROM users
+        WHERE id = ?
+        """,
+        (int(user_id),),
+    ).fetchone()
+    if not row:
+        return False, "Usuario nao encontrado.", None
+
+    target = _user_row_to_dict(row)
+    current_role = _resolve_user_role(target.get("role"), is_admin=bool(target.get("is_admin")))
+    if current_role == normalized_role:
+        return True, "Usuario ja possui esse perfil.", target
+
+    # Evita remover o ultimo admin ativo do sistema.
+    if current_role == USER_ROLE_ADMIN and normalized_role != USER_ROLE_ADMIN and bool(target.get("is_active")):
+        active_admins = db.execute(
+            "SELECT COUNT(*) AS total FROM users WHERE role = 'admin' AND is_active = 1"
+        ).fetchone()
+        if active_admins and int(active_admins["total"]) <= 1:
+            return False, "Nao e permitido remover o perfil do ultimo administrador ativo.", None
+
+    # Impede que o proprio usuario em sessao se remova de admin acidentalmente.
+    if (
+        acting_user_id
+        and int(target["id"]) == int(acting_user_id)
+        and current_role == USER_ROLE_ADMIN
+        and normalized_role != USER_ROLE_ADMIN
+    ):
+        return False, "Nao e permitido remover o proprio perfil de administrador.", None
+
+    now = _now_iso()
+    db.execute(
+        "UPDATE users SET role = ?, is_admin = ?, updated_at = ? WHERE id = ?",
+        (
+            normalized_role,
+            1 if normalized_role == USER_ROLE_ADMIN else 0,
+            now,
+            int(user_id),
+        ),
+    )
+    db.commit()
+    return True, "Perfil de usuario atualizado com sucesso.", get_user_by_id(user_id)

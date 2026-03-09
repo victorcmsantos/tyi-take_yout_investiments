@@ -328,12 +328,56 @@ def ensure_schema_upgrades():
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           username TEXT NOT NULL UNIQUE,
           password_hash TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'trader',
           is_admin INTEGER NOT NULL DEFAULT 0,
           is_active INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT,
           last_login_at TEXT
         )
+        """
+    )
+    user_cols = [row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()]
+    if "role" not in user_cols:
+        db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'trader'")
+
+    db.execute("UPDATE users SET role = 'admin' WHERE is_admin = 1 AND (role IS NULL OR TRIM(role) = '' OR LOWER(role) != 'admin')")
+    db.execute("UPDATE users SET role = 'trader' WHERE role IS NULL OR TRIM(role) = ''")
+    db.execute("UPDATE users SET role = LOWER(role)")
+    db.execute("UPDATE users SET role = 'trader' WHERE role NOT IN ('admin', 'trader', 'viewer')")
+    db.execute("UPDATE users SET is_admin = 1 WHERE role = 'admin' AND is_admin = 0")
+    db.execute("UPDATE users SET is_admin = 0 WHERE role != 'admin' AND is_admin != 0")
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scanner_trade_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          action TEXT NOT NULL,
+          user_id INTEGER,
+          username TEXT NOT NULL DEFAULT '',
+          trade_id INTEGER,
+          ticker TEXT,
+          request_payload_json TEXT NOT NULL DEFAULT '{}',
+          response_payload_json TEXT NOT NULL DEFAULT '{}',
+          success INTEGER NOT NULL DEFAULT 0,
+          upstream_status INTEGER,
+          error_message TEXT NOT NULL DEFAULT '',
+          remote_addr TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_scanner_trade_audit_created_at
+        ON scanner_trade_audit (created_at DESC)
+        """
+    )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_scanner_trade_audit_user_id
+        ON scanner_trade_audit (user_id)
         """
     )
 

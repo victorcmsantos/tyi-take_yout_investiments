@@ -40,6 +40,9 @@ function App({ themeMode, onToggleTheme }) {
   const [assetSearch, setAssetSearch] = useState('')
   const [assetSuggestions, setAssetSuggestions] = useState([])
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const currentUserRole = String(currentUser?.role || '').toLowerCase()
+  const isAdminUser = Boolean(currentUser?.is_admin) || currentUserRole === 'admin'
+  const isViewerUser = currentUserRole === 'viewer'
 
   const shouldShowAssetSuggestions = String(assetSearch || '').trim().length >= 1
 
@@ -235,7 +238,7 @@ function App({ themeMode, onToggleTheme }) {
   }, [location.pathname])
 
   const menuSections = useMemo(() => {
-    if (currentUser?.is_admin) {
+    if (isAdminUser) {
       return [
         {
           title: 'Administracao',
@@ -264,13 +267,6 @@ function App({ themeMode, onToggleTheme }) {
         ],
       },
       {
-        title: 'Lancamentos',
-        items: [
-          { to: '/nova', label: 'Nova transacao' },
-          { to: '/novo', label: 'Novo provento' },
-        ],
-      },
-      {
         title: 'Ferramentas',
         items: [
           { to: '/alocador', label: 'Alocador' },
@@ -278,15 +274,24 @@ function App({ themeMode, onToggleTheme }) {
           { to: '/swing-trade', label: 'Swing Trade' },
         ],
       },
-      {
+    ]
+    if (!isViewerUser) {
+      sections.splice(2, 0, {
+        title: 'Lancamentos',
+        items: [
+          { to: '/nova', label: 'Nova transacao' },
+          { to: '/novo', label: 'Novo provento' },
+        ],
+      })
+      sections.push({
         title: 'Configuracao',
         items: [
           { to: '/carteiras', label: 'Carteiras' },
         ],
-      },
-    ]
+      })
+    }
     return sections
-  }, [currentUser])
+  }, [isAdminUser, isViewerUser])
 
   if (authLoading) {
     return <main className="auth-shell"><p>Carregando autenticacao...</p></main>
@@ -326,7 +331,7 @@ function App({ themeMode, onToggleTheme }) {
             </Box>
             <Box className="app-v2-header-right">
               <Typography variant="body2" className="app-v2-header-portfolios" title={activePortfolioNames}>
-                {currentUser.username}{currentUser.is_admin ? ' · Admin' : ` · ${activePortfolioNames}`}
+                {currentUser.username}{isAdminUser ? ' · Admin' : isViewerUser ? ' · Viewer' : ` · ${activePortfolioNames}`}
               </Typography>
               <Button color="inherit" variant="outlined" onClick={onToggleTheme} sx={{ borderColor: 'rgba(255,255,255,0.35)' }}>
                 {themeMode === 'dark' ? 'Modo claro' : 'Modo escuro'}
@@ -430,40 +435,42 @@ function App({ themeMode, onToggleTheme }) {
             <Route
               path="/"
               element={
-                currentUser.is_admin
+                isAdminUser
                   ? <Navigate to="/admin" replace />
                   : <HomePage selectedPortfolioIds={selectedPortfolioIds} />
               }
             />
             <Route
               path="/carteira"
-              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <PortfolioPage selectedPortfolioIds={selectedPortfolioIds} />}
+              element={isAdminUser ? <Navigate to="/admin" replace /> : <PortfolioPage selectedPortfolioIds={selectedPortfolioIds} />}
             />
             <Route
               path="/renda-fixa"
-              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <FixedIncomePage selectedPortfolioIds={selectedPortfolioIds} />}
+              element={isAdminUser ? <Navigate to="/admin" replace /> : <FixedIncomePage selectedPortfolioIds={selectedPortfolioIds} />}
             />
             <Route
               path="/graficos"
-              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <ChartsPage selectedPortfolioIds={selectedPortfolioIds} />}
+              element={isAdminUser ? <Navigate to="/admin" replace /> : <ChartsPage selectedPortfolioIds={selectedPortfolioIds} />}
             />
             <Route
               path="/ativo/:ticker"
-              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <AssetPage selectedPortfolioIds={selectedPortfolioIds} />}
+              element={isAdminUser ? <Navigate to="/admin" replace /> : <AssetPage selectedPortfolioIds={selectedPortfolioIds} />}
             />
             <Route
               path="/nova"
-              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <NewTransactionPage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
+              element={(isAdminUser || isViewerUser) ? <Navigate to="/" replace /> : <NewTransactionPage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
             />
             <Route
               path="/novo"
-              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <NewIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
+              element={(isAdminUser || isViewerUser) ? <Navigate to="/" replace /> : <NewIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
             />
             <Route
               path="/carteiras"
               element={
-                currentUser.is_admin
+                isAdminUser
                   ? <Navigate to="/admin" replace />
+                  : isViewerUser
+                    ? <Navigate to="/" replace />
                   : (
                     <PortfoliosPage
                       portfolios={portfolios}
@@ -475,21 +482,21 @@ function App({ themeMode, onToggleTheme }) {
             />
             <Route
               path="/alocador"
-              element={currentUser.is_admin ? <Navigate to="/admin" replace /> : <AllocationPage assets={assetSuggestions} />}
+              element={isAdminUser ? <Navigate to="/admin" replace /> : <AllocationPage assets={assetSuggestions} />}
             />
-            <Route path="/scanner" element={<ScannerPage />} />
-            <Route path="/swing-trade" element={<SwingTradePage />} />
+            <Route path="/scanner" element={<ScannerPage readOnly={isViewerUser} />} />
+            <Route path="/swing-trade" element={<SwingTradePage readOnly={isViewerUser} />} />
             <Route
               path="/admin"
-              element={currentUser.is_admin ? <AdminPage currentUser={currentUser} /> : <Navigate to="/" replace />}
+              element={isAdminUser ? <AdminPage currentUser={currentUser} /> : <Navigate to="/" replace />}
             />
             <Route
               path="/admin/metricas"
-              element={currentUser.is_admin ? <MetricFormulasPage /> : <Navigate to="/" replace />}
+              element={isAdminUser ? <MetricFormulasPage /> : <Navigate to="/" replace />}
             />
             <Route
               path="/admin/metrics-lab"
-              element={currentUser.is_admin ? <ScannerMetricsLabPage /> : <Navigate to="/" replace />}
+              element={isAdminUser ? <ScannerMetricsLabPage /> : <Navigate to="/" replace />}
             />
             <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="/transacoes/nova" element={<Navigate to="/nova" replace />} />

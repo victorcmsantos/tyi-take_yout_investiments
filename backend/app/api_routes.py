@@ -1,11 +1,14 @@
 import json
 import os
 import re
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
 from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
-from flask import Blueprint, current_app, jsonify, request, send_file
+from flask import Blueprint, current_app, has_request_context, jsonify, request, send_file
 
 from .auth import (
     create_user_account,
@@ -14,9 +17,10 @@ from .auth import (
     login_user,
     logout_current_user,
     require_admin_user,
+    set_user_role,
     set_user_active_state,
 )
-from .db import create_database_backups, list_database_backups, resolve_database_backup_path
+from .db import create_database_backups, get_db, list_database_backups, resolve_database_backup_path
 from .observability import build_health_payload, get_route_metrics
 from .services import (
     add_fixed_income,
@@ -61,6 +65,19 @@ from .services import (
 
 api_bp = Blueprint("api", __name__)
 _SCANNER_USER_NOTE_PATTERN = re.compile(r"^\[\[TYI_UID:(\d+)\]\]\s*")
+_SAFE_SQL_IDENT_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SCANNER_TIMESTAMP_CANDIDATE_COLUMNS = (
+    "created_at",
+    "updated_at",
+    "timestamp",
+    "opened_at",
+    "closed_at",
+    "last_checked_at",
+    "last_scan_at",
+    "last_verified_at",
+    "discovered_at",
+    "signal_timestamp",
+)
 
 
 def _selected_portfolio_ids_from_request():
@@ -87,6 +104,210 @@ def _as_bool(value):
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _now_iso_utc():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _safe_sql_ident(name: str):
+    value = str(name or "").strip()
+    if not _SAFE_SQL_IDENT_PATTERN.match(value):
+        return None
+    return value
+
+
+def _json_compact(payload, limit: int = 4000):
+    try:
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        text = str(payload)
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(limit - 3, 0)]}..."
+
+
+def _parse_datetime_like(value):
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    numeric = raw.replace(".", "", 1)
+    if numeric.isdigit():
+        try:
+            number = float(raw)
+            if number > 1e12:
+                number = number / 1000.0
+            if number > 0:
+                return datetime.fromtimestamp(number, tz=timezone.utc)
+        except Exception:
+            pass
+
+    normalized = raw
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _scanner_db_status_payload():
+    configured_path = str(current_app.config.get("MARKET_SCANNER_DATABASE_PATH") or "").strip()
+    payload = {
+        "configured_path": configured_path,
+        "exists": False,
+        "db_accessible": False,
+        "size_bytes": 0,
+        "file_modified_at": None,
+        "last_data_update_at": None,
+        "table_count": 0,
+        "tables": [],
+        "row_counts": {},
+        "error": None,
+    }
+    if not configured_path:
+        payload["error"] = "MARKET_SCANNER_DATABASE_PATH nao configurado."
+        return payload
+
+    db_path = Path(configured_path)
+    payload["exists"] = db_path.exists()
+    if not db_path.exists():
+        payload["error"] = f"Banco do scanner nao encontrado em {configured_path}."
+        return payload
+
+    try:
+        stat = db_path.stat()
+        payload["size_bytes"] = int(stat.st_size)
+        payload["file_modified_at"] = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(
+            timespec="seconds"
+        )
+    except OSError as exc:
+        payload["error"] = f"Falha ao ler metadados do banco: {exc}"
+        return payload
+
+    try:
+        connection = sqlite3.connect(str(db_path), timeout=2)
+        connection.row_factory = sqlite3.Row
+        try:
+            table_rows = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            ).fetchall()
+            table_names = [
+                row["name"]
+                for row in table_rows
+                if _safe_sql_ident(row["name"])
+            ]
+            payload["tables"] = table_names
+            payload["table_count"] = len(table_names)
+            payload["db_accessible"] = True
+
+            latest_dt = None
+            latest_raw = None
+            for table_name in table_names:
+                safe_table = _safe_sql_ident(table_name)
+                if not safe_table:
+                    continue
+                row_count = connection.execute(f'SELECT COUNT(*) AS total FROM "{safe_table}"').fetchone()
+                payload["row_counts"][safe_table] = int((row_count["total"] if row_count else 0) or 0)
+
+                columns = [
+                    row["name"]
+                    for row in connection.execute(f'PRAGMA table_info("{safe_table}")').fetchall()
+                    if _safe_sql_ident(row["name"])
+                ]
+                for column in columns:
+                    if column not in _SCANNER_TIMESTAMP_CANDIDATE_COLUMNS:
+                        continue
+                    row = connection.execute(
+                        f'SELECT MAX("{column}") AS value FROM "{safe_table}" WHERE "{column}" IS NOT NULL'
+                    ).fetchone()
+                    raw_value = row["value"] if row else None
+                    if raw_value is None:
+                        continue
+                    raw_text = str(raw_value).strip()
+                    if not raw_text:
+                        continue
+                    parsed_dt = _parse_datetime_like(raw_text)
+                    if parsed_dt is not None:
+                        if latest_dt is None or parsed_dt > latest_dt:
+                            latest_dt = parsed_dt
+                    elif latest_raw is None or raw_text > latest_raw:
+                        latest_raw = raw_text
+
+            if latest_dt is not None:
+                payload["last_data_update_at"] = latest_dt.isoformat(timespec="seconds")
+            elif latest_raw is not None:
+                payload["last_data_update_at"] = latest_raw
+        finally:
+            connection.close()
+    except Exception as exc:
+        payload["db_accessible"] = False
+        payload["error"] = str(exc)
+    return payload
+
+
+def _log_scanner_trade_audit(
+    *,
+    action: str,
+    user: dict | None,
+    trade_id=None,
+    ticker: str | None = None,
+    request_payload=None,
+    response_payload=None,
+    success: bool,
+    upstream_status: int | None = None,
+    error_message: str | None = None,
+):
+    try:
+        actor_id = None
+        if user and user.get("id") is not None:
+            actor_id = int(user["id"])
+        actor_username = str((user or {}).get("username") or "")
+        remote_addr = ""
+        if has_request_context():
+            remote_addr = request.headers.get("X-Forwarded-For") or request.remote_addr or ""
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO scanner_trade_audit (
+              action,
+              user_id,
+              username,
+              trade_id,
+              ticker,
+              request_payload_json,
+              response_payload_json,
+              success,
+              upstream_status,
+              error_message,
+              remote_addr,
+              created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(action or "").strip().lower(),
+                actor_id,
+                actor_username,
+                int(trade_id) if trade_id is not None else None,
+                str(ticker or "").strip().upper() or None,
+                _json_compact(request_payload),
+                _json_compact(response_payload),
+                1 if success else 0,
+                int(upstream_status) if upstream_status is not None else None,
+                str(error_message or "").strip(),
+                remote_addr,
+                _now_iso_utc(),
+            ),
+        )
+        db.commit()
+    except Exception:
+        current_app.logger.exception("Falha ao registrar auditoria de scanner trade.")
 
 
 def _scanner_note_with_user(notes, user_id: int):
@@ -248,8 +469,7 @@ def _market_scanner_proxy_get(path: str):
     return _market_scanner_proxy("GET", path)
 
 
-def _market_scanner_proxy(method: str, path: str, payload=None):
-    ok, status, response_payload = _market_scanner_request(method, path, payload=payload)
+def _market_scanner_result_to_api_response(ok: bool, status: int, response_payload):
     if not ok:
         message = _market_scanner_error_message(response_payload, status)
         return _json_error(
@@ -258,6 +478,11 @@ def _market_scanner_proxy(method: str, path: str, payload=None):
             details={"upstream": response_payload},
         )
     return _json_ok(response_payload, status=status)
+
+
+def _market_scanner_proxy(method: str, path: str, payload=None):
+    ok, status, response_payload = _market_scanner_request(method, path, payload=payload)
+    return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
 def _market_scanner_error_message(payload, status: int):
@@ -483,9 +708,22 @@ def scanner_create_trade():
     user = get_current_user()
     if not user:
         return _json_error("Nao autenticado.", status=401)
-    payload = request.get_json(silent=True) or request.form.to_dict()
-    payload = _scanner_prepare_trade_payload(payload, user, force_notes=True)
-    return _market_scanner_proxy("POST", "/trades", payload=payload)
+    incoming_payload = request.get_json(silent=True) or request.form.to_dict()
+    payload = _scanner_prepare_trade_payload(incoming_payload, user, force_notes=True)
+    ok, status, response_payload = _market_scanner_request("POST", "/trades", payload=payload)
+    error_message = None if ok else _market_scanner_error_message(response_payload, status)
+    _log_scanner_trade_audit(
+        action="create",
+        user=user,
+        trade_id=(response_payload or {}).get("id") if isinstance(response_payload, dict) else None,
+        ticker=payload.get("ticker"),
+        request_payload=payload,
+        response_payload=response_payload,
+        success=ok,
+        upstream_status=status,
+        error_message=error_message,
+    )
+    return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
 @api_bp.route("/scanner/trades/<int:trade_id>", methods=["PATCH"])
@@ -497,6 +735,16 @@ def scanner_update_trade(trade_id: int):
     ok, status, trades_payload = _market_scanner_request("GET", "/trades")
     if not ok:
         message = _market_scanner_error_message(trades_payload, status)
+        _log_scanner_trade_audit(
+            action="update",
+            user=user,
+            trade_id=trade_id,
+            request_payload=None,
+            response_payload=trades_payload,
+            success=False,
+            upstream_status=status,
+            error_message=message,
+        )
         return _json_error(message, status=status, details={"upstream": trades_payload})
 
     all_trades = []
@@ -505,13 +753,47 @@ def scanner_update_trade(trade_id: int):
         all_trades.extend(item for item in (trades_payload.get("history") or []) if isinstance(item, dict))
     target = next((item for item in all_trades if int(item.get("id") or 0) == int(trade_id)), None)
     if target is None:
+        _log_scanner_trade_audit(
+            action="update",
+            user=user,
+            trade_id=trade_id,
+            request_payload=None,
+            response_payload=None,
+            success=False,
+            upstream_status=404,
+            error_message="Trade nao encontrado.",
+        )
         return _json_error("Trade nao encontrado.", status=404)
     if not _scanner_trade_visible_for_user(target, user):
+        _log_scanner_trade_audit(
+            action="update",
+            user=user,
+            trade_id=trade_id,
+            ticker=target.get("ticker"),
+            request_payload=None,
+            response_payload=None,
+            success=False,
+            upstream_status=403,
+            error_message="Trade nao pertence ao usuario atual.",
+        )
         return _json_error("Trade nao pertence ao usuario atual.", status=403)
 
     payload = request.get_json(silent=True) or request.form.to_dict()
     payload = _scanner_prepare_trade_payload(payload, user, force_notes=("notes" in payload))
-    return _market_scanner_proxy("PATCH", f"/trades/{trade_id}", payload=payload)
+    ok, status, response_payload = _market_scanner_request("PATCH", f"/trades/{trade_id}", payload=payload)
+    error_message = None if ok else _market_scanner_error_message(response_payload, status)
+    _log_scanner_trade_audit(
+        action="update",
+        user=user,
+        trade_id=trade_id,
+        ticker=target.get("ticker"),
+        request_payload=payload,
+        response_payload=response_payload,
+        success=ok,
+        upstream_status=status,
+        error_message=error_message,
+    )
+    return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
 @api_bp.route("/scanner/trades/<int:trade_id>/close", methods=["POST"])
@@ -523,6 +805,16 @@ def scanner_close_trade(trade_id: int):
     ok, status, trades_payload = _market_scanner_request("GET", "/trades")
     if not ok:
         message = _market_scanner_error_message(trades_payload, status)
+        _log_scanner_trade_audit(
+            action="close",
+            user=user,
+            trade_id=trade_id,
+            request_payload=None,
+            response_payload=trades_payload,
+            success=False,
+            upstream_status=status,
+            error_message=message,
+        )
         return _json_error(message, status=status, details={"upstream": trades_payload})
 
     all_trades = []
@@ -531,13 +823,47 @@ def scanner_close_trade(trade_id: int):
         all_trades.extend(item for item in (trades_payload.get("history") or []) if isinstance(item, dict))
     target = next((item for item in all_trades if int(item.get("id") or 0) == int(trade_id)), None)
     if target is None:
+        _log_scanner_trade_audit(
+            action="close",
+            user=user,
+            trade_id=trade_id,
+            request_payload=None,
+            response_payload=None,
+            success=False,
+            upstream_status=404,
+            error_message="Trade nao encontrado.",
+        )
         return _json_error("Trade nao encontrado.", status=404)
     if not _scanner_trade_visible_for_user(target, user):
+        _log_scanner_trade_audit(
+            action="close",
+            user=user,
+            trade_id=trade_id,
+            ticker=target.get("ticker"),
+            request_payload=None,
+            response_payload=None,
+            success=False,
+            upstream_status=403,
+            error_message="Trade nao pertence ao usuario atual.",
+        )
         return _json_error("Trade nao pertence ao usuario atual.", status=403)
 
     payload = request.get_json(silent=True) or request.form.to_dict()
     payload = _scanner_prepare_trade_payload(payload, user, force_notes=False)
-    return _market_scanner_proxy("POST", f"/trades/{trade_id}/close", payload=payload)
+    ok, status, response_payload = _market_scanner_request("POST", f"/trades/{trade_id}/close", payload=payload)
+    error_message = None if ok else _market_scanner_error_message(response_payload, status)
+    _log_scanner_trade_audit(
+        action="close",
+        user=user,
+        trade_id=trade_id,
+        ticker=target.get("ticker"),
+        request_payload=payload,
+        response_payload=response_payload,
+        success=ok,
+        upstream_status=status,
+        error_message=error_message,
+    )
+    return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
 @api_bp.route("/scanner/ticker/<symbol>", methods=["GET"])
@@ -590,6 +916,7 @@ def admin_users():
         payload.get("username", ""),
         payload.get("password", ""),
         _as_bool(payload.get("is_admin")),
+        role=payload.get("role"),
     )
     if not ok:
         return _json_error(message, status=400)
@@ -608,6 +935,60 @@ def admin_user_status(user_id: int):
     if not ok:
         return _json_error(message, status=400)
     return _json_ok({"message": message, "user": user})
+
+
+@api_bp.route("/admin/users/<int:user_id>/role", methods=["POST"])
+def admin_user_role(user_id: int):
+    admin = require_admin_user()
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    ok, message, user = set_user_role(
+        user_id,
+        str(payload.get("role") or ""),
+        acting_user_id=admin["id"],
+    )
+    if not ok:
+        return _json_error(message, status=400)
+    return _json_ok({"message": message, "user": user})
+
+
+@api_bp.route("/admin/scanner/status", methods=["GET"])
+def admin_scanner_status():
+    require_admin_user()
+    return _json_ok(_scanner_db_status_payload())
+
+
+@api_bp.route("/admin/scanner/audit", methods=["GET"])
+def admin_scanner_audit():
+    require_admin_user()
+    raw_limit = request.args.get("limit", "100")
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 500))
+
+    rows = get_db().execute(
+        """
+        SELECT
+          id,
+          action,
+          user_id,
+          username,
+          trade_id,
+          ticker,
+          success,
+          upstream_status,
+          error_message,
+          remote_addr,
+          created_at
+        FROM scanner_trade_audit
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    items = [dict(row) for row in rows]
+    return _json_ok({"items": items, "limit": limit})
 
 
 @api_bp.route("/admin/openclaw/enrich-assets", methods=["POST"])

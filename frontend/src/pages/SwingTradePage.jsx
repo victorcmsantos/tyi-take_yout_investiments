@@ -21,7 +21,7 @@ function formatCurrency(value) {
   }).format(Number.isFinite(num) ? num : 0)
 }
 
-function SwingTradePage() {
+function SwingTradePage({ readOnly = false }) {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -62,6 +62,10 @@ function SwingTradePage() {
   }), [trades?.summary])
 
   const onCloseTrade = async (tradeId) => {
+    if (readOnly) {
+      setError('Perfil viewer possui acesso somente leitura.')
+      return
+    }
     setError('')
     setMessage('')
     try {
@@ -75,6 +79,10 @@ function SwingTradePage() {
 
   const onUpdateTradeInline = async (event, tradeId) => {
     event.preventDefault()
+    if (readOnly) {
+      setError('Perfil viewer possui acesso somente leitura.')
+      return
+    }
     const formData = new FormData(event.currentTarget)
     const quantity = toNumberOrNull(String(formData.get('quantity') || '').replace(',', '.'))
     const investedAmount = toNumberOrNull(String(formData.get('invested_amount') || '').replace(',', '.'))
@@ -172,7 +180,7 @@ function SwingTradePage() {
                       {trade.status_label || trade.status || 'N/A'}
                     </span>
                   </div>
-                  <Button size="small" color="error" variant="outlined" onClick={() => onCloseTrade(trade.id)}>
+                  <Button size="small" color="error" variant="outlined" onClick={() => onCloseTrade(trade.id)} disabled={readOnly}>
                     Encerrar agora
                   </Button>
                 </header>
@@ -200,33 +208,37 @@ function SwingTradePage() {
                   <span>Última checagem {formatDateTimeLocal(trade.last_checked_at)}</span>
                 </div>
 
-                <form className="scanner-trade-edit-form" onSubmit={(event) => onUpdateTradeInline(event, trade.id)}>
-                  <div className="form-grid">
-                    <label className="auth-field">
-                      <span>Quantidade</span>
-                      <input name="quantity" defaultValue={trade.quantity} type="number" min="0.000001" step="0.000001" />
-                    </label>
-                    <label className="auth-field">
-                      <span>Investido</span>
-                      <input name="invested_amount" defaultValue={trade.invested_amount} type="number" min="0.01" step="0.01" />
-                    </label>
-                    <label className="auth-field">
-                      <span>Objetivo</span>
-                      <input name="objective_price" defaultValue={trade.objective_price} type="number" min="0.0001" step="0.0001" />
-                    </label>
-                    <label className="auth-field">
-                      <span>Stop</span>
-                      <input name="stop_price" defaultValue={trade.stop_price} type="number" min="0.0001" step="0.0001" />
-                    </label>
-                    <label className="auth-field" style={{ gridColumn: '1 / -1' }}>
-                      <span>Observações</span>
-                      <input name="notes" defaultValue={trade.notes || ''} />
-                    </label>
-                  </div>
-                  <div className="hero-actions" style={{ marginTop: 10 }}>
-                    <Button size="small" type="submit" variant="contained">Salvar ajuste</Button>
-                  </div>
-                </form>
+                {readOnly ? (
+                  <p className="subtitle">Perfil viewer possui acesso somente leitura.</p>
+                ) : (
+                  <form className="scanner-trade-edit-form" onSubmit={(event) => onUpdateTradeInline(event, trade.id)}>
+                    <div className="form-grid">
+                      <label className="auth-field">
+                        <span>Quantidade</span>
+                        <input name="quantity" defaultValue={trade.quantity} type="number" min="0.000001" step="0.000001" />
+                      </label>
+                      <label className="auth-field">
+                        <span>Investido</span>
+                        <input name="invested_amount" defaultValue={trade.invested_amount} type="number" min="0.01" step="0.01" />
+                      </label>
+                      <label className="auth-field">
+                        <span>Objetivo</span>
+                        <input name="objective_price" defaultValue={trade.objective_price} type="number" min="0.0001" step="0.0001" />
+                      </label>
+                      <label className="auth-field">
+                        <span>Stop</span>
+                        <input name="stop_price" defaultValue={trade.stop_price} type="number" min="0.0001" step="0.0001" />
+                      </label>
+                      <label className="auth-field" style={{ gridColumn: '1 / -1' }}>
+                        <span>Observações</span>
+                        <input name="notes" defaultValue={trade.notes || ''} />
+                      </label>
+                    </div>
+                    <div className="hero-actions" style={{ marginTop: 10 }}>
+                      <Button size="small" type="submit" variant="contained">Salvar ajuste</Button>
+                    </div>
+                  </form>
+                )}
 
                 <div className="scanner-metrics">
                   {(Array.isArray(trade.metrics_triggered) ? trade.metrics_triggered : []).map((metric) => (

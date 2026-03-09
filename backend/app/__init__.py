@@ -1,7 +1,7 @@
 from flask import Flask, g, request
 
 from .api_routes import api_bp
-from .auth import configure_auth, get_current_user, is_auth_exempt_path
+from .auth import can_user_write, configure_auth, get_current_user, is_auth_exempt_path, is_viewer_write_exempt_path
 from .chart_sync import start_chart_sync
 from .db import init_app as init_db_app
 from .fixed_income_sync import start_fixed_income_sync
@@ -28,6 +28,12 @@ def create_app() -> Flask:
             user = get_current_user()
             if not user:
                 return {"ok": False, "error": "Autenticacao necessaria."}, 401
+            if (
+                request.method in {"POST", "PUT", "PATCH", "DELETE"}
+                and not is_viewer_write_exempt_path(request.path)
+                and not can_user_write(user)
+            ):
+                return {"ok": False, "error": "Perfil viewer possui acesso somente leitura."}, 403
 
     @app.after_request
     def _add_api_cors_headers(response):

@@ -122,7 +122,7 @@ function buildMatrixFromSignals(signals) {
   return { columns, rows }
 }
 
-function ScannerPage() {
+function ScannerPage({ readOnly = false }) {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -209,6 +209,7 @@ function ScannerPage() {
   }, [signals])
 
   const openTradeModal = (signal) => {
+    if (readOnly) return
     const value = String(signal?.ticker || '').trim().toUpperCase()
     if (!value) return
     if (trackedTickerSet.has(value)) return
@@ -243,6 +244,10 @@ function ScannerPage() {
   }
 
   const onCreateTradeFromModal = async () => {
+    if (readOnly) {
+      setError('Perfil viewer possui acesso somente leitura.')
+      return
+    }
     const ticker = String(tradeModalForm.ticker || '').trim().toUpperCase()
     const quantity = toNumberOrNull(tradeModalForm.quantity)
     const investedAmount = toNumberOrNull(tradeModalForm.investedAmount)
@@ -356,6 +361,10 @@ function ScannerPage() {
 
   const onCreateTrade = async (event) => {
     event.preventDefault()
+    if (readOnly) {
+      setError('Perfil viewer possui acesso somente leitura.')
+      return
+    }
     const ticker = String(createForm.ticker || '').trim().toUpperCase()
     if (!ticker) {
       setError('Informe o ticker para abrir trade.')
@@ -580,7 +589,7 @@ function ScannerPage() {
                     size="small"
                     variant="contained"
                     onClick={() => openTradeModal(signal)}
-                    disabled={trackedTickerSet.has(String(signal?.ticker || '').toUpperCase())}
+                    disabled={readOnly || trackedTickerSet.has(String(signal?.ticker || '').toUpperCase())}
                   >
                     {trackedTickerSet.has(String(signal?.ticker || '').toUpperCase()) ? 'Acompanhando' : 'Comprei'}
                   </Button>
@@ -594,44 +603,48 @@ function ScannerPage() {
 
       <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
         <Typography variant="h6" sx={{ mb: 1 }}>Abrir trade</Typography>
-        <form onSubmit={onCreateTrade} className="form-grid">
-          <label className="auth-field">
-            <span>Ticker</span>
-            <input
-              value={createForm.ticker}
-              onChange={(event) => setCreateForm((current) => ({ ...current, ticker: event.target.value }))}
-              placeholder="PETR4"
-            />
-          </label>
-          <label className="auth-field">
-            <span>Quantidade</span>
-            <input
-              value={createForm.quantity}
-              onChange={(event) => setCreateForm((current) => ({ ...current, quantity: event.target.value }))}
-              inputMode="decimal"
-            />
-          </label>
-          <label className="auth-field">
-            <span>Investido (opcional)</span>
-            <input
-              value={createForm.investedAmount}
-              onChange={(event) => setCreateForm((current) => ({ ...current, investedAmount: event.target.value }))}
-              inputMode="decimal"
-              placeholder="1000.00"
-            />
-          </label>
-          <label className="auth-field">
-            <span>Notas</span>
-            <input
-              value={createForm.notes}
-              onChange={(event) => setCreateForm((current) => ({ ...current, notes: event.target.value }))}
-              placeholder="Entrada por sinal forte"
-            />
-          </label>
-          <div>
-            <Button type="submit" variant="contained">Criar trade</Button>
-          </div>
-        </form>
+        {readOnly ? (
+          <p>Perfil viewer possui acesso somente leitura.</p>
+        ) : (
+          <form onSubmit={onCreateTrade} className="form-grid">
+            <label className="auth-field">
+              <span>Ticker</span>
+              <input
+                value={createForm.ticker}
+                onChange={(event) => setCreateForm((current) => ({ ...current, ticker: event.target.value }))}
+                placeholder="PETR4"
+              />
+            </label>
+            <label className="auth-field">
+              <span>Quantidade</span>
+              <input
+                value={createForm.quantity}
+                onChange={(event) => setCreateForm((current) => ({ ...current, quantity: event.target.value }))}
+                inputMode="decimal"
+              />
+            </label>
+            <label className="auth-field">
+              <span>Investido (opcional)</span>
+              <input
+                value={createForm.investedAmount}
+                onChange={(event) => setCreateForm((current) => ({ ...current, investedAmount: event.target.value }))}
+                inputMode="decimal"
+                placeholder="1000.00"
+              />
+            </label>
+            <label className="auth-field">
+              <span>Notas</span>
+              <input
+                value={createForm.notes}
+                onChange={(event) => setCreateForm((current) => ({ ...current, notes: event.target.value }))}
+                placeholder="Entrada por sinal forte"
+              />
+            </label>
+            <div>
+              <Button type="submit" variant="contained">Criar trade</Button>
+            </div>
+          </form>
+        )}
       </Paper>
 
       <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>

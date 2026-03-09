@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator, Sequence
 
-from sqlalchemy import create_engine, desc, func, select, text, update
+from sqlalchemy import create_engine, desc, event, func, select, text, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -24,17 +25,48 @@ MANUAL_PROFIT_STATUS = "CLOSED_PROFIT"
 MANUAL_LOSS_STATUS = "CLOSED_LOSS"
 
 
+def _ticker_symbol_candidates(symbol: str) -> list[str]:
+    value = str(symbol or "").strip().upper()
+    if not value:
+        return []
+    candidates = [value]
+    if value.endswith(".SA"):
+        base = value.removesuffix(".SA")
+        if base:
+            candidates.append(base)
+    elif re.fullmatch(r"[A-Z]{4}\d{1,2}[A-Z]?", value):
+        candidates.append(f"{value}.SA")
+    deduped: list[str] = []
+    for item in candidates:
+        if item and item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
 def create_session_factory(settings: AppSettings) -> sessionmaker[Session]:
     """Build the SQLAlchemy engine and session factory."""
 
     _ensure_sqlite_directory(settings.database_url)
-    connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+    connect_args = {}
+    if settings.database_url.startswith("sqlite"):
+        connect_args = {"check_same_thread": False, "timeout": 30}
     engine = create_engine(
         settings.database_url,
         echo=False,
         future=True,
         connect_args=connect_args,
     )
+    if settings.database_url.startswith("sqlite"):
+        @event.listens_for(engine, "connect")
+        def _sqlite_configure(connection, _):
+            cursor = connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys = ON")
+                cursor.execute("PRAGMA busy_timeout = 30000")
+                cursor.execute("PRAGMA journal_mode = WAL")
+                cursor.execute("PRAGMA synchronous = NORMAL")
+            finally:
+                cursor.close()
     Base.metadata.create_all(engine)
     _run_sqlite_migrations(engine, settings.database_url)
     return sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
@@ -232,6 +264,57 @@ def touch_ticker_scan_status(
     )
 
 
+def has_backend_assets_table(session: Session) -> bool:
+    """Return whether the shared SQLite DB contains the backend assets table."""
+
+    row = session.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assets' LIMIT 1")
+    ).first()
+    return row is not None
+
+
+def update_backend_asset_market_snapshot(
+    session: Session,
+    *,
+    ticker: str,
+    price: float,
+    variation_day: float | None,
+    variation_7d: float | None,
+    variation_30d: float | None,
+    updated_at: datetime,
+) -> int:
+    """Propagate scanner price snapshot into backend assets when sharing one DB."""
+
+    updated_iso = updated_at.replace(microsecond=0).isoformat() + "Z"
+    result = session.execute(
+        text(
+            """
+            UPDATE assets
+            SET
+                price = :price,
+                variation_day = :variation_day,
+                variation_7d = :variation_7d,
+                variation_30d = :variation_30d,
+                market_data_status = 'fresh',
+                market_data_source = 'market_scanner',
+                market_data_updated_at = :updated_iso,
+                market_data_last_attempt_at = :updated_iso,
+                market_data_last_error = ''
+            WHERE ticker = :ticker
+            """
+        ),
+        {
+            "ticker": str(ticker or "").strip().upper(),
+            "price": float(price),
+            "variation_day": float(variation_day or 0.0),
+            "variation_7d": float(variation_7d or 0.0),
+            "variation_30d": float(variation_30d or 0.0),
+            "updated_iso": updated_iso,
+        },
+    )
+    return int(result.rowcount or 0)
+
+
 def create_trade_from_signal(
     session: Session,
     ticker: str,
@@ -244,13 +327,16 @@ def create_trade_from_signal(
 ) -> dict[str, object]:
     """Persist a new tracked trade from the latest available signal."""
 
-    normalized_ticker = ticker.upper()
+    ticker_candidates = _ticker_symbol_candidates(ticker)
+    if not ticker_candidates:
+        raise ValueError("Ticker is required")
+    normalized_ticker = ticker_candidates[0]
     normalized_quantity = float(quantity)
     if normalized_quantity <= 0:
         raise ValueError("Quantity must be greater than zero")
     existing_open_trade = session.scalar(
         select(Trade)
-        .where(Trade.ticker == normalized_ticker, Trade.status == OPEN_TRADE_STATUS)
+        .where(Trade.ticker.in_(ticker_candidates), Trade.status == OPEN_TRADE_STATUS)
         .order_by(desc(Trade.opened_at))
         .limit(1)
     )
@@ -260,19 +346,20 @@ def create_trade_from_signal(
     cutoff = datetime.utcnow() - timedelta(hours=active_hours)
     signal = session.scalar(
         select(Signal)
-        .where(Signal.ticker == normalized_ticker, Signal.created_at >= cutoff)
+        .where(Signal.ticker.in_(ticker_candidates), Signal.created_at >= cutoff)
         .order_by(desc(Signal.created_at), desc(Signal.score))
         .limit(1)
     )
     if signal is None:
         signal = session.scalar(
             select(Signal)
-            .where(Signal.ticker == normalized_ticker)
+            .where(Signal.ticker.in_(ticker_candidates))
             .order_by(desc(Signal.created_at), desc(Signal.score))
             .limit(1)
         )
     if signal is None:
         raise ValueError(f"No signal available for ticker {normalized_ticker}")
+    normalized_ticker = signal.ticker
 
     atr_percent = _load_latest_metric_map(
         session,
@@ -700,19 +787,51 @@ def _get_trade_status_tone(status: str) -> str:
 def get_ticker_details(session: Session, symbol: str) -> dict[str, object]:
     """Return the latest price, metrics, and signals for a ticker."""
 
+    symbol_candidates = _ticker_symbol_candidates(symbol)
+    if not symbol_candidates:
+        symbol_candidates = [str(symbol or "").strip().upper()]
+    symbol_set = set(symbol_candidates)
+    base_candidates = {
+        item.removesuffix(".SA")
+        for item in symbol_candidates
+        if item
+    }
+
     catalog_row = session.scalar(
-        select(TickerCatalog).where(TickerCatalog.ticker == symbol.removesuffix(".SA")).limit(1)
+        select(TickerCatalog)
+        .where(TickerCatalog.ticker.in_(list(base_candidates)))
+        .order_by(desc(TickerCatalog.last_scan_at), desc(TickerCatalog.last_verified_at))
+        .limit(1)
     )
     latest_price = session.scalar(
-        select(Price).where(Price.ticker == symbol).order_by(desc(Price.timestamp)).limit(1)
+        select(Price)
+        .where(Price.ticker.in_(list(symbol_set)))
+        .order_by(desc(Price.timestamp))
+        .limit(1)
     )
     latest_signal = session.scalar(
-        select(Signal).where(Signal.ticker == symbol).order_by(desc(Signal.created_at)).limit(1)
+        select(Signal)
+        .where(Signal.ticker.in_(list(symbol_set)))
+        .order_by(desc(Signal.created_at))
+        .limit(1)
+    )
+    resolved_symbol = (
+        str(latest_price.ticker)
+        if latest_price is not None
+        else (
+            str(latest_signal.ticker)
+            if latest_signal is not None
+            else (
+                f"{catalog_row.ticker}.SA"
+                if catalog_row is not None
+                else symbol_candidates[0]
+            )
+        )
     )
 
     metric_rows = session.scalars(
         select(Metric)
-        .where(Metric.ticker == symbol)
+        .where(Metric.ticker == resolved_symbol)
         .order_by(desc(Metric.timestamp))
         .limit(200)
     ).all()
@@ -726,7 +845,7 @@ def get_ticker_details(session: Session, symbol: str) -> dict[str, object]:
             latest_metrics[row.metric_name] = round(row.metric_value, 6)
 
     return {
-        "ticker": symbol,
+        "ticker": resolved_symbol,
         "catalog": None
         if catalog_row is None
         else {

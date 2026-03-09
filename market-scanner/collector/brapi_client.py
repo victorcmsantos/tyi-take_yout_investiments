@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -65,9 +66,59 @@ class BRAPIClient:
                 continue
             source_symbol = requested_symbol_map.get(raw_symbol, f"{raw_symbol}.SA")
             frame = self._normalize_rows(result.get("historicalDataPrice"))
+            frame = self._merge_live_quote_into_frame(frame, result)
             if not frame.empty:
                 normalized[source_symbol] = frame
         return normalized
+
+    def _merge_live_quote_into_frame(
+        self,
+        frame: pd.DataFrame,
+        quote_result: dict[str, object],
+    ) -> pd.DataFrame:
+        """Overlay live quote data into the latest daily row.
+
+        BRAPI historicalDataPrice can lag during market hours. We keep one row per day
+        (03:00 UTC convention) and update it with regularMarketPrice when available.
+        """
+
+        price = self._to_float(quote_result.get("regularMarketPrice"))
+        if price is None or price <= 0:
+            return frame
+
+        quote_ts = self._quote_day_timestamp(quote_result.get("regularMarketTime"))
+        if quote_ts is None:
+            quote_ts = self._quote_day_timestamp(datetime.now(timezone.utc).timestamp())
+        if quote_ts is None:
+            return frame
+
+        open_value = self._to_float(quote_result.get("regularMarketOpen")) or price
+        high_value = self._to_float(quote_result.get("regularMarketDayHigh")) or price
+        low_value = self._to_float(quote_result.get("regularMarketDayLow")) or price
+        volume_value = self._to_float(quote_result.get("regularMarketVolume")) or 0.0
+
+        row_payload = {
+            "open": float(open_value),
+            "high": float(max(high_value, price)),
+            "low": float(min(low_value, price)),
+            "close": float(price),
+            "volume": float(max(volume_value, 0.0)),
+        }
+
+        if frame.empty:
+            merged = pd.DataFrame([row_payload], index=pd.DatetimeIndex([quote_ts]))
+            return merged[self.PRICE_COLUMNS].sort_index()
+
+        merged = frame.copy()
+        merged.loc[quote_ts, self.PRICE_COLUMNS] = [
+            row_payload["open"],
+            row_payload["high"],
+            row_payload["low"],
+            row_payload["close"],
+            row_payload["volume"],
+        ]
+        merged = merged[self.PRICE_COLUMNS].sort_index()
+        return merged
 
     def fetch_live_quotes(self, tickers: list[str]) -> dict[str, dict[str, object]]:
         """Fetch latest quote snapshots for the requested symbols."""
@@ -146,6 +197,26 @@ class BRAPIClient:
 
     def _to_brapi_symbol(self, symbol: str) -> str:
         return symbol.strip().upper().removesuffix(".SA")
+
+    def _to_float(self, value: object) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _quote_day_timestamp(self, market_time: object) -> datetime | None:
+        if market_time is None:
+            return None
+        seconds: float | None = None
+        try:
+            seconds = float(market_time)
+        except (TypeError, ValueError):
+            seconds = None
+        if seconds is None or seconds <= 0:
+            return None
+        instant = datetime.fromtimestamp(seconds, tz=timezone.utc)
+        # Keep one daily candle key compatible with BRAPI historical data convention.
+        return datetime(instant.year, instant.month, instant.day, 3, 0, 0)
 
     def _normalize_rows(self, rows: object) -> pd.DataFrame:
         if not isinstance(rows, list) or not rows:

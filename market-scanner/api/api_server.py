@@ -25,7 +25,6 @@ from database.db import (
     session_scope,
     update_trade,
 )
-from database.models import Trade
 from metrics.indicators import build_metric_catalog
 from scheduler.daemon import MarketScannerDaemon
 
@@ -51,167 +50,6 @@ class UpdateTradeRequest(BaseModel):
 
 class UpdateMetricRequest(BaseModel):
     parameters: dict[str, float] = Field(default_factory=dict)
-
-
-def _safe_float(value, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
-
-
-def _apply_live_quotes_to_trades_payload(
-    payload: dict[str, object],
-    daemon: MarketScannerDaemon,
-) -> dict[str, object]:
-    if not isinstance(payload, dict):
-        return payload
-
-    active = payload.get("active")
-    if not isinstance(active, list) or not active:
-        return payload
-
-    tickers = []
-    for trade in active:
-        if not isinstance(trade, dict):
-            continue
-        ticker = str(trade.get("ticker") or "").strip().upper()
-        if ticker and ticker not in tickers:
-            tickers.append(ticker)
-
-    if not tickers:
-        return payload
-
-    try:
-        live_quotes = daemon.brapi_client.fetch_live_quotes(tickers)
-    except Exception:
-        return payload
-
-    if not live_quotes:
-        return payload
-
-    patched_payload = dict(payload)
-    patched_active: list[dict[str, object]] = []
-    open_pnl_amount = 0.0
-    for trade in active:
-        if not isinstance(trade, dict):
-            continue
-        next_trade = dict(trade)
-        ticker = str(next_trade.get("ticker") or "").strip().upper()
-        quote = live_quotes.get(ticker)
-        if quote:
-            live_price = _safe_float(quote.get("price"), default=next_trade.get("last_price") or 0.0)
-            quantity = _safe_float(next_trade.get("quantity"), default=0.0)
-            invested_amount = _safe_float(next_trade.get("invested_amount"), default=0.0)
-            current_market_value = round(live_price * quantity, 2)
-            current_pnl_amount = round(current_market_value - invested_amount, 2)
-            current_pnl_pct = (
-                round((current_market_value / invested_amount - 1.0) * 100.0, 2)
-                if invested_amount > 0
-                else 0.0
-            )
-            next_trade["last_price"] = round(live_price, 4)
-            next_trade["current_market_value"] = current_market_value
-            next_trade["current_pnl_amount"] = current_pnl_amount
-            next_trade["current_pnl_pct"] = current_pnl_pct
-            quote_ts = str(quote.get("timestamp") or "").strip()
-            if quote_ts:
-                next_trade["last_checked_at"] = quote_ts
-
-        open_pnl_amount += _safe_float(next_trade.get("current_pnl_amount"), default=0.0)
-        patched_active.append(next_trade)
-
-    patched_payload["active"] = patched_active
-    summary = payload.get("summary")
-    if isinstance(summary, dict):
-        patched_summary = dict(summary)
-        patched_summary["open_pnl_amount"] = round(open_pnl_amount, 2)
-        patched_payload["summary"] = patched_summary
-    return patched_payload
-
-
-def _apply_live_quotes_to_signal_rows(
-    rows: list[dict[str, object]],
-    daemon: MarketScannerDaemon,
-) -> list[dict[str, object]]:
-    if not isinstance(rows, list) or not rows:
-        return rows
-    tickers = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        ticker = str(row.get("ticker") or "").strip().upper()
-        if ticker and ticker not in tickers:
-            tickers.append(ticker)
-    if not tickers:
-        return rows
-    try:
-        live_quotes = daemon.brapi_client.fetch_live_quotes(tickers)
-    except Exception:
-        return rows
-    if not live_quotes:
-        return rows
-
-    patched_rows: list[dict[str, object]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        next_row = dict(row)
-        ticker = str(next_row.get("ticker") or "").strip().upper()
-        quote = live_quotes.get(ticker)
-        if quote:
-            next_row["price"] = round(_safe_float(quote.get("price"), default=next_row.get("price")), 4)
-            quote_ts = str(quote.get("timestamp") or "").strip()
-            if quote_ts:
-                next_row["timestamp"] = quote_ts
-        patched_rows.append(next_row)
-    return patched_rows
-
-
-def _apply_live_quotes_to_signal_matrix_payload(
-    payload: dict[str, object],
-    daemon: MarketScannerDaemon,
-) -> dict[str, object]:
-    if not isinstance(payload, dict):
-        return payload
-    patched_payload = dict(payload)
-    rows = patched_payload.get("rows")
-    if isinstance(rows, list):
-        patched_payload["rows"] = _apply_live_quotes_to_signal_rows(rows, daemon)
-    return patched_payload
-
-
-def _apply_live_quote_to_ticker_payload(
-    payload: dict[str, object],
-    daemon: MarketScannerDaemon,
-) -> dict[str, object]:
-    if not isinstance(payload, dict):
-        return payload
-    ticker = str(payload.get("ticker") or "").strip().upper()
-    if not ticker:
-        return payload
-    try:
-        quote = daemon.brapi_client.fetch_live_quotes([ticker]).get(ticker)
-    except Exception:
-        quote = None
-    if not quote:
-        return payload
-
-    patched_payload = dict(payload)
-    live_price = round(_safe_float(quote.get("price"), default=patched_payload.get("latest_price")), 4)
-    patched_payload["latest_price"] = live_price
-    quote_ts = str(quote.get("timestamp") or "").strip()
-    if quote_ts:
-        patched_payload["latest_price_timestamp"] = quote_ts
-
-    latest_signal = patched_payload.get("latest_signal")
-    if isinstance(latest_signal, dict):
-        patched_signal = dict(latest_signal)
-        patched_signal["price"] = live_price
-        if quote_ts:
-            patched_signal["timestamp"] = quote_ts
-        patched_payload["latest_signal"] = patched_signal
-    return patched_payload
 
 
 def create_app(settings: AppSettings | None = None) -> FastAPI:
@@ -251,7 +89,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 app_settings.active_signal_hours,
                 trade_level_settings=app_settings.trade_levels,
             )
-        return _apply_live_quotes_to_signal_rows(payload, daemon)
+        return payload
 
     @app.get("/signal-matrix")
     def signal_matrix() -> dict[str, object]:
@@ -261,13 +99,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 app_settings.active_signal_hours,
                 trade_level_settings=app_settings.trade_levels,
             )
-        return _apply_live_quotes_to_signal_matrix_payload(payload, daemon)
+        return payload
 
     @app.get("/trades")
     def trades() -> dict[str, object]:
         with session_scope(session_factory) as session:
             payload = list_trades(session)
-        return _apply_live_quotes_to_trades_payload(payload, daemon)
+        return payload
 
     @app.post("/trades")
     def create_trade(payload: CreateTradeRequest) -> dict[str, object]:
@@ -305,16 +143,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     def close_trade_endpoint(trade_id: int, payload: CloseTradeRequest) -> dict[str, object]:
         try:
             with session_scope(session_factory) as session:
-                resolved_exit_price = payload.exit_price
-                if resolved_exit_price is None:
-                    trade = session.get(Trade, trade_id)
-                    if trade is not None and str(trade.status) == "OPEN":
-                        quote = daemon.brapi_client.fetch_live_quotes([trade.ticker]).get(trade.ticker)
-                        if quote:
-                            live_price = _safe_float(quote.get("price"), default=0.0)
-                            if live_price > 0:
-                                resolved_exit_price = live_price
-                return close_trade(session, trade_id, exit_price=resolved_exit_price)
+                return close_trade(session, trade_id, exit_price=payload.exit_price)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -322,7 +151,33 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     def ticker_details(symbol: str) -> dict[str, object]:
         with session_scope(session_factory) as session:
             payload = get_ticker_details(session, symbol.upper())
-        return _apply_live_quote_to_ticker_payload(payload, daemon)
+        return payload
+
+    @app.post("/scan")
+    def scan_now() -> dict[str, object]:
+        summary = daemon.scan_market(force=True)
+        return {
+            "scan_summary": {
+                "tickers_loaded": summary.tickers_loaded,
+                "tickers_processed": summary.tickers_processed,
+                "signals_triggered": summary.signals_triggered,
+            }
+        }
+
+    @app.post("/scan/ticker/{symbol}")
+    def scan_single_ticker(symbol: str) -> dict[str, object]:
+        try:
+            summary = daemon.scan_ticker(symbol, force=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ticker": str(symbol or "").upper(),
+            "scan_summary": {
+                "tickers_loaded": summary.tickers_loaded,
+                "tickers_processed": summary.tickers_processed,
+                "signals_triggered": summary.signals_triggered,
+            },
+        }
 
     @app.get("/metrics/history/{symbol}")
     def metrics_history(symbol: str) -> dict[str, list[dict[str, object]]]:
@@ -369,15 +224,10 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             setattr(app_settings.metrics, key, cast_value)
             updated_parameters[key] = cast_value
 
-        summary = daemon.scan_market(force=True)
         return {
             "metric_key": metric_key,
             "updated_parameters": updated_parameters,
-            "scan_summary": {
-                "tickers_loaded": summary.tickers_loaded,
-                "tickers_processed": summary.tickers_processed,
-                "signals_triggered": summary.signals_triggered,
-            },
+            "scan_summary": None,
             "catalog": build_metric_catalog(app_settings.metrics),
         }
 

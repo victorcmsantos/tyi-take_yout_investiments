@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
@@ -15,12 +16,14 @@ from loguru import logger
 from sqlalchemy.orm import Session, sessionmaker
 
 from collector.brapi_client import BRAPIClient
-from collector.ticker_provider import B3TickerProvider
+from collector.ticker_provider import B3ListedTicker, B3TickerProvider
 from config.settings import AppSettings
 from database.db import (
+    has_backend_assets_table,
     mark_missing_tickers_inactive,
     session_scope,
     touch_ticker_scan_status,
+    update_backend_asset_market_snapshot,
     update_open_trades_for_ticker,
     upsert_metrics,
     upsert_prices,
@@ -93,7 +96,12 @@ class MarketScannerDaemon:
                 cron_minute=self.MARKET_CRON_MINUTE,
             )
         if self.settings.immediate_scan_on_startup:
-            self.scan_market()
+            Thread(
+                target=self.scan_market,
+                kwargs={"force": True},
+                daemon=True,
+                name="market-scanner-startup-scan",
+            ).start()
 
     def stop(self) -> None:
         """Stop the scheduler cleanly."""
@@ -117,9 +125,22 @@ class MarketScannerDaemon:
         """Fetch prices, compute metrics, evaluate signals, and persist results."""
 
         with self._scan_lock:
-            return self._scan_market_internal(force=force)
+            return self._scan_market_internal(force=force, requested_symbols=None)
 
-    def _scan_market_internal(self, force: bool = False) -> ScanSummary:
+    def scan_ticker(self, symbol: str, force: bool = True) -> ScanSummary:
+        """Run a manual scan for a single ticker."""
+
+        normalized = self._normalize_symbol(symbol)
+        if not normalized:
+            raise ValueError("Ticker invalido para scan manual.")
+        with self._scan_lock:
+            return self._scan_market_internal(force=force, requested_symbols=[normalized])
+
+    def _scan_market_internal(
+        self,
+        force: bool = False,
+        requested_symbols: list[str] | None = None,
+    ) -> ScanSummary:
         if not force and not self._is_market_open():
             now_local = datetime.now(timezone.utc).astimezone(self.market_timezone)
             logger.info(
@@ -128,8 +149,15 @@ class MarketScannerDaemon:
             )
             return ScanSummary(tickers_loaded=0, tickers_processed=0, signals_triggered=0)
 
-        catalog = self.ticker_provider.load_catalog()
+        full_catalog = self.ticker_provider.load_catalog()
+        catalog = self._catalog_for_requested_symbols(full_catalog, requested_symbols)
         tickers = [record.yahoo_symbol for record in catalog]
+        if requested_symbols and not tickers:
+            logger.warning(
+                "Requested symbols are not available in catalog",
+                requested_symbols=requested_symbols,
+            )
+            return ScanSummary(tickers_loaded=0, tickers_processed=0, signals_triggered=0)
         benchmark_symbol = self.settings.benchmark_symbol.strip() or "^BVSP"
         benchmark_frame = None
         try:
@@ -169,7 +197,8 @@ class MarketScannerDaemon:
                     for record in catalog
                 ],
             )
-            mark_missing_tickers_inactive(session, [record.ticker for record in catalog])
+            if not requested_symbols:
+                mark_missing_tickers_inactive(session, [record.ticker for record in catalog])
         logger.info("Starting market scan", tickers=len(tickers))
 
         processed = 0
@@ -200,6 +229,7 @@ class MarketScannerDaemon:
                 continue
 
             with session_scope(self.session_factory) as session:
+                can_sync_backend_assets = has_backend_assets_table(session)
                 touch_ticker_scan_status(
                     session,
                     [ticker.removesuffix(".SA") for ticker in data.keys()],
@@ -234,6 +264,27 @@ class MarketScannerDaemon:
                             low=float(latest_bar["low"]),
                             close=float(latest_bar["close"]),
                         )
+
+                        if can_sync_backend_assets:
+                            closes = [float(value) for value in frame["close"].tolist() if value is not None]
+                            variation_day = 0.0
+                            variation_7d = 0.0
+                            variation_30d = 0.0
+                            if len(closes) >= 2 and closes[-2] != 0:
+                                variation_day = ((closes[-1] / closes[-2]) - 1.0) * 100.0
+                            if len(closes) >= 8 and closes[-8] != 0:
+                                variation_7d = ((closes[-1] / closes[-8]) - 1.0) * 100.0
+                            if len(closes) >= 31 and closes[-31] != 0:
+                                variation_30d = ((closes[-1] / closes[-31]) - 1.0) * 100.0
+                            update_backend_asset_market_snapshot(
+                                session,
+                                ticker=ticker.removesuffix(".SA"),
+                                price=float(latest_bar["close"]),
+                                variation_day=variation_day,
+                                variation_7d=variation_7d,
+                                variation_30d=variation_30d,
+                                updated_at=datetime.utcnow(),
+                            )
 
                         computation = self.metric_engine.compute(
                             frame,
@@ -276,6 +327,60 @@ class MarketScannerDaemon:
             tickers_processed=processed,
             signals_triggered=triggered,
         )
+
+    def _catalog_for_requested_symbols(
+        self,
+        catalog: list[B3ListedTicker],
+        requested_symbols: list[str] | None,
+    ) -> list[B3ListedTicker]:
+        if not requested_symbols:
+            return list(catalog)
+
+        by_yahoo = {record.yahoo_symbol.upper(): record for record in catalog}
+        by_ticker = {record.ticker.upper(): record for record in catalog}
+        selected: list[B3ListedTicker] = []
+        seen: set[str] = set()
+        now = datetime.utcnow()
+
+        for raw_symbol in requested_symbols:
+            normalized = self._normalize_symbol(raw_symbol)
+            if not normalized:
+                continue
+            base = normalized.removesuffix(".SA")
+            record = by_yahoo.get(normalized) or by_ticker.get(base)
+            if record is None and re.fullmatch(r"[A-Z]{4}\d{1,2}[A-Z]?", base):
+                record = B3ListedTicker(
+                    ticker=base,
+                    yahoo_symbol=f"{base}.SA",
+                    issuer_code=base[:4],
+                    issuer_name=base[:4],
+                    trading_name=base[:4],
+                    specification="MANUAL",
+                    isin="",
+                    source="manual_runtime",
+                    is_active=True,
+                    yahoo_supported=True,
+                    discovered_at=now,
+                    last_verified_at=now,
+                )
+            if record is None:
+                continue
+            key = record.yahoo_symbol.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(record)
+        return selected
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        raw = str(symbol or "").strip().upper()
+        if not raw:
+            return ""
+        if raw.endswith(".SA"):
+            return raw
+        if re.fullmatch(r"[A-Z]{4}\d{1,2}[A-Z]?", raw):
+            return f"{raw}.SA"
+        return raw
 
     def _chunks(self, values: list[str], size: int) -> Iterable[list[str]]:
         for index in range(0, len(values), size):

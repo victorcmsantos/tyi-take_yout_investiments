@@ -11,6 +11,7 @@ from urllib import request as urlrequest
 from flask import Blueprint, current_app, has_request_context, jsonify, request, send_file
 
 from .auth import (
+    can_user_write,
     create_user_account,
     get_current_user,
     list_users,
@@ -54,7 +55,6 @@ from .services import (
     import_fixed_incomes_csv,
     import_transactions_csv,
     normalize_portfolio_ids,
-    refresh_assets_market_data,
     refresh_asset_market_data,
     resolve_portfolio_id,
     enrich_asset_with_openclaw,
@@ -62,8 +62,6 @@ from .services import (
     update_metric_formula,
 )
 from .services import _legacy as legacy_market
-
-
 api_bp = Blueprint("api", __name__)
 _SCANNER_USER_NOTE_PATTERN = re.compile(r"^\[\[TYI_UID:(\d+)\]\]\s*")
 _SAFE_SQL_IDENT_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -404,108 +402,6 @@ def _scanner_prepare_trade_payload(payload, user: dict, force_notes: bool = Fals
     return prepared
 
 
-def _scanner_brapi_symbol(value: str):
-    symbol = str(value or "").strip().upper()
-    if symbol.endswith(".SA"):
-        symbol = symbol[:-3]
-    if not symbol:
-        return ""
-    if not legacy_market._is_brazilian_market_ticker(symbol):
-        return ""
-    return symbol
-
-
-def _scanner_live_quote_overrides(symbols):
-    normalized = []
-    for item in symbols or []:
-        symbol = _scanner_brapi_symbol(item)
-        if symbol and symbol not in normalized:
-            normalized.append(symbol)
-    if not normalized:
-        return {}
-
-    result_map = legacy_market._fetch_brapi_quote_results_batch(normalized)
-    overrides = {}
-    for symbol in normalized:
-        row = result_map.get(symbol)
-        if not isinstance(row, dict):
-            continue
-        price_raw = row.get("regularMarketPrice")
-        try:
-            price_value = float(price_raw)
-        except (TypeError, ValueError):
-            continue
-
-        timestamp_value = None
-        raw_timestamp = row.get("regularMarketTime")
-        if isinstance(raw_timestamp, (int, float)):
-            try:
-                timestamp_value = datetime.fromtimestamp(
-                    float(raw_timestamp),
-                    tz=timezone.utc,
-                ).isoformat(timespec="seconds")
-            except Exception:
-                timestamp_value = None
-        elif isinstance(raw_timestamp, str):
-            timestamp_value = raw_timestamp.strip() or None
-
-        overrides[symbol] = {"price": price_value, "timestamp": timestamp_value}
-    return overrides
-
-
-def _scanner_apply_live_quote_overrides(rows):
-    if not isinstance(rows, list) or not rows:
-        return rows
-    overrides = _scanner_live_quote_overrides(
-        [(item or {}).get("ticker") for item in rows if isinstance(item, dict)]
-    )
-    if not overrides:
-        return rows
-
-    patched = []
-    for item in rows:
-        if not isinstance(item, dict):
-            patched.append(item)
-            continue
-        next_item = dict(item)
-        symbol = _scanner_brapi_symbol(next_item.get("ticker"))
-        override = overrides.get(symbol)
-        if override:
-            next_item["price"] = override["price"]
-            if override.get("timestamp"):
-                next_item["timestamp"] = override["timestamp"]
-        patched.append(next_item)
-    return patched
-
-
-def _scanner_apply_live_quote_overrides_to_ticker_payload(payload):
-    if not isinstance(payload, dict):
-        return payload
-    symbol = _scanner_brapi_symbol(
-        payload.get("ticker")
-        or ((payload.get("catalog") or {}).get("ticker") if isinstance(payload.get("catalog"), dict) else "")
-    )
-    if not symbol:
-        return payload
-    override = _scanner_live_quote_overrides([symbol]).get(symbol)
-    if not override:
-        return payload
-
-    next_payload = dict(payload)
-    next_payload["latest_price"] = override["price"]
-    if override.get("timestamp"):
-        next_payload["latest_price_timestamp"] = override["timestamp"]
-
-    latest_signal = next_payload.get("latest_signal")
-    if isinstance(latest_signal, dict):
-        next_signal = dict(latest_signal)
-        next_signal["price"] = override["price"]
-        if override.get("timestamp"):
-            next_signal["timestamp"] = override["timestamp"]
-        next_payload["latest_signal"] = next_signal
-    return next_payload
-
-
 def _market_scanner_base_url():
     return (os.getenv("MARKET_SCANNER_BASE_URL") or "http://market-scanner:8000").rstrip("/")
 
@@ -518,11 +414,19 @@ def _market_scanner_timeout_seconds():
         return 8.0
 
 
+def _market_scanner_scan_timeout_seconds():
+    raw = (os.getenv("MARKET_SCANNER_SCAN_TIMEOUT_SECONDS") or "600").strip()
+    try:
+        return max(float(raw), _market_scanner_timeout_seconds())
+    except (TypeError, ValueError):
+        return 600.0
+
+
 def _market_scanner_get(path: str):
     return _market_scanner_request("GET", path)
 
 
-def _market_scanner_request(method: str, path: str, payload=None):
+def _market_scanner_request(method: str, path: str, payload=None, timeout_seconds=None):
     user = get_current_user()
     query_items = [
         (key, value)
@@ -548,8 +452,9 @@ def _market_scanner_request(method: str, path: str, payload=None):
         headers["Content-Type"] = "application/json"
 
     req = urlrequest.Request(url, data=body, headers=headers, method=method.upper())
+    timeout_value = float(timeout_seconds) if timeout_seconds is not None else _market_scanner_timeout_seconds()
     try:
-        with urlrequest.urlopen(req, timeout=_market_scanner_timeout_seconds()) as response:
+        with urlrequest.urlopen(req, timeout=timeout_value) as response:
             status = int(response.getcode() or 200)
             raw_body = response.read().decode("utf-8", errors="replace")
     except urlerror.HTTPError as exc:
@@ -787,24 +692,13 @@ def scanner_health():
 @api_bp.route("/scanner/signals", methods=["GET"])
 def scanner_signals():
     ok, status, response_payload = _market_scanner_request("GET", "/signals")
-    if not ok:
-        return _market_scanner_result_to_api_response(ok, status, response_payload)
-    response_payload = _scanner_apply_live_quote_overrides(response_payload)
-    return _json_ok(response_payload, status=status)
+    return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
 @api_bp.route("/scanner/signal-matrix", methods=["GET"])
 def scanner_signal_matrix():
     ok, status, response_payload = _market_scanner_request("GET", "/signal-matrix")
-    if not ok:
-        return _market_scanner_result_to_api_response(ok, status, response_payload)
-    if isinstance(response_payload, dict):
-        patched_payload = dict(response_payload)
-        patched_payload["rows"] = _scanner_apply_live_quote_overrides(
-            patched_payload.get("rows") or []
-        )
-        response_payload = patched_payload
-    return _json_ok(response_payload, status=status)
+    return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
 @api_bp.route("/scanner/trades", methods=["GET"])
@@ -986,10 +880,40 @@ def scanner_close_trade(trade_id: int):
 def scanner_ticker(symbol: str):
     safe_symbol = urlparse.quote(symbol.upper(), safe="")
     ok, status, response_payload = _market_scanner_request("GET", f"/ticker/{safe_symbol}")
-    if not ok:
-        return _market_scanner_result_to_api_response(ok, status, response_payload)
-    response_payload = _scanner_apply_live_quote_overrides_to_ticker_payload(response_payload)
-    return _json_ok(response_payload, status=status)
+    return _market_scanner_result_to_api_response(ok, status, response_payload)
+
+
+@api_bp.route("/scanner/scan", methods=["POST"])
+def scanner_manual_scan():
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+    if not can_user_write(user):
+        return _json_error("Perfil viewer possui acesso somente leitura.", status=403)
+    ok, status, response_payload = _market_scanner_request(
+        "POST",
+        "/scan",
+        payload={},
+        timeout_seconds=_market_scanner_scan_timeout_seconds(),
+    )
+    return _market_scanner_result_to_api_response(ok, status, response_payload)
+
+
+@api_bp.route("/scanner/scan/<symbol>", methods=["POST"])
+def scanner_manual_scan_ticker(symbol: str):
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+    if not can_user_write(user):
+        return _json_error("Perfil viewer possui acesso somente leitura.", status=403)
+    safe_symbol = urlparse.quote(str(symbol or "").strip().upper(), safe="")
+    ok, status, response_payload = _market_scanner_request(
+        "POST",
+        f"/scan/ticker/{safe_symbol}",
+        payload={},
+        timeout_seconds=_market_scanner_scan_timeout_seconds(),
+    )
+    return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
 @api_bp.route("/scanner/metrics/catalog", methods=["GET"])
@@ -1420,77 +1344,82 @@ def charts_dashboard():
 
 @api_bp.route("/sync/market-data", methods=["POST"])
 def sync_market_data_all():
-    request_payload = request.get_json(silent=True) or request.form.to_dict()
-    scope = str(request.args.get("scope") or request_payload.get("scope") or "all").strip().lower()
-    mode = str(request.args.get("mode") or request_payload.get("mode") or "full").strip().lower()
-    force_live = _as_bool(request.args.get("force_live")) or _as_bool(
-        request_payload.get("force_live")
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+    if not can_user_write(user):
+        return _json_error("Perfil viewer possui acesso somente leitura.", status=403)
+
+    ok, status, response_payload = _market_scanner_request(
+        "POST",
+        "/scan",
+        payload={},
+        timeout_seconds=_market_scanner_scan_timeout_seconds(),
     )
-    stale_only = mode in {"stale", "stale_only", "incremental"} or _as_bool(
-        request.args.get("only_stale") or request_payload.get("only_stale")
-    )
-    try:
-        result = refresh_assets_market_data(
-            scope_key=scope,
-            stale_only=stale_only,
-            attempts=3,
-            include_scanner_br=not force_live,
-        )
-    except ValueError as exc:
-        return _json_error(str(exc), status=400)
-    except Exception:
-        result = {
-            "scope": scope or "all",
-            "stale_only": stale_only,
-            "selected_count": 0,
-            "failed": ["erro"],
-        }
-    failed = result["failed"]
+    if not ok:
+        return _market_scanner_result_to_api_response(ok, status, response_payload)
+
+    summary = {}
+    if isinstance(response_payload, dict) and isinstance(response_payload.get("scan_summary"), dict):
+        summary = dict(response_payload.get("scan_summary") or {})
     return _json_ok(
         {
-            "scope": result["scope"],
-            "mode": "stale" if result["stale_only"] else "full",
-            "force_live": force_live,
-            "selected_count": result["selected_count"],
-            "failed": failed,
-            "failed_count": len(failed),
-            "success": len(failed) == 0,
-        }
+            "mode": "manual_full_scan",
+            "source": "market_scanner",
+            "scan_summary": summary,
+        },
+        status=status,
     )
 
 
 @api_bp.route("/sync/market-data/<ticker>", methods=["POST"])
 def sync_market_data_ticker(ticker):
-    request_payload = request.get_json(silent=True) or request.form.to_dict()
-    force_live = _as_bool(request.args.get("force_live")) or _as_bool(
-        request_payload.get("force_live")
-    )
-    ok = False
-    try:
-        ok = refresh_asset_market_data(
-            ticker,
-            include_scanner_br=not force_live,
-        )
-    except Exception:
-        ok = False
-    if not ok:
-        if force_live:
-            return _json_error(
-                "Nao foi possivel atualizar este ticker ao vivo agora.",
-                status=503,
-            )
-        return _json_error("Nao foi possivel atualizar este ticker agora.", status=503)
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+    if not can_user_write(user):
+        return _json_error("Perfil viewer possui acesso somente leitura.", status=403)
 
-    asset_payload = get_asset(ticker)
-    market_data_payload = (
-        ((asset_payload or {}).get("asset") or {}).get("market_data") or {}
-    )
+    normalized_ticker = str(ticker or "").strip().upper()
+    if not normalized_ticker:
+        return _json_error("Ticker invalido.", status=400)
+
+    scan_payload = None
+    use_scanner = legacy_market._is_brazilian_market_ticker(normalized_ticker)
+    if use_scanner:
+        safe_symbol = urlparse.quote(normalized_ticker, safe="")
+        scan_ok, scan_status, scan_payload = _market_scanner_request(
+            "POST",
+            f"/scan/ticker/{safe_symbol}",
+            payload={},
+            timeout_seconds=_market_scanner_scan_timeout_seconds(),
+        )
+        if not scan_ok:
+            return _market_scanner_result_to_api_response(scan_ok, scan_status, scan_payload)
+    else:
+        ok = False
+        try:
+            ok = refresh_asset_market_data(
+                normalized_ticker,
+                include_scanner_br=False,
+                preferred_provider=None,
+            )
+        except Exception:
+            ok = False
+        if not ok:
+            return _json_error("Nao foi possivel atualizar este ticker agora.", status=503)
+
+    asset_payload = get_asset(normalized_ticker)
+    market_data_payload = ((asset_payload or {}).get("market_data") or {})
     return _json_ok(
         {
-            "ticker": ticker.upper(),
+            "ticker": normalized_ticker,
             "success": True,
-            "force_live": force_live,
+            "force_live": False,
             "source": market_data_payload.get("source"),
             "updated_at": market_data_payload.get("updated_at"),
+            "scan_summary": (scan_payload or {}).get("scan_summary")
+            if isinstance(scan_payload, dict)
+            else None,
         }
     )

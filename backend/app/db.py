@@ -34,6 +34,15 @@ def _backup_targets_from_app(include_optional: bool = True):
     ]
     scanner_path = _scanner_backup_db_path_from_app()
     if scanner_path is not None:
+        backend_path = Path(current_app.config["DATABASE"])
+        same_database = False
+        try:
+            same_database = scanner_path.resolve() == backend_path.resolve()
+        except OSError:
+            same_database = str(scanner_path) == str(backend_path)
+        if same_database:
+            scanner_path = None
+    if scanner_path is not None:
         targets.append(
             {
                 "key": "market_scanner",

@@ -2881,7 +2881,7 @@ def _default_market_data_providers(class_key: str):
     defaults = {
         "crypto": ["coingecko", "yahoo"],
         "us": ["twelve_data", "alpha_vantage", "yahoo"],
-        "br": ["market_scanner", "brapi", "yahoo", "google"],
+        "br": ["market_scanner"],
     }
     return list(defaults.get(class_key, ["yahoo"]))
 
@@ -2896,19 +2896,21 @@ def _market_data_providers_from_env(ticker: str = "", include_scanner_br: bool =
         "br": "MARKET_DATA_PROVIDERS_BR",
     }
     class_specific_value = os.getenv(class_specific_env.get(class_key, ""), "")
-    configured.extend(_providers_from_csv(class_specific_value))
+    class_specific = _providers_from_csv(class_specific_value)
+    if class_specific:
+        configured.extend(class_specific)
+    else:
+        raw_list = (os.getenv("MARKET_DATA_PROVIDERS") or "").strip()
+        configured.extend(_providers_from_csv(raw_list))
 
-    raw_list = (os.getenv("MARKET_DATA_PROVIDERS") or "").strip()
-    configured.extend(_providers_from_csv(raw_list))
+        single = (os.getenv("MARKET_DATA_PROVIDER") or "").strip().lower()
+        if single:
+            configured.append(single)
 
-    single = (os.getenv("MARKET_DATA_PROVIDER") or "").strip().lower()
-    if single:
-        configured.append(single)
-
-    # Compatibilidade com a configuracao antiga.
-    primary = (os.getenv("MARKET_DATA_PRIMARY") or "").strip().lower()
-    fallback = (os.getenv("MARKET_DATA_FALLBACK") or "").strip().lower()
-    configured.extend([primary, fallback])
+        # Compatibilidade com a configuracao antiga.
+        primary = (os.getenv("MARKET_DATA_PRIMARY") or "").strip().lower()
+        fallback = (os.getenv("MARKET_DATA_FALLBACK") or "").strip().lower()
+        configured.extend([primary, fallback])
 
     if not configured:
         configured.extend(_default_market_data_providers(class_key))
@@ -2929,6 +2931,10 @@ def _market_data_providers_from_env(ticker: str = "", include_scanner_br: bool =
     }
     if class_key == "br" and include_scanner_br and use_scanner_br and "market_scanner" not in order:
         order.insert(0, "market_scanner")
+    if class_key == "br" and not include_scanner_br:
+        order = [provider for provider in order if provider != "market_scanner"]
+        if not order:
+            order = ["brapi", "yahoo", "google"]
     return order
 
 

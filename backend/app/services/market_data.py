@@ -161,19 +161,29 @@ def get_asset_price_history(ticker: str, range_key: str = "1y"):
     return history
 
 
-def refresh_asset_market_data(ticker: str, include_scanner_br: bool = True):
+def refresh_asset_market_data(
+    ticker: str,
+    include_scanner_br: bool = True,
+    preferred_provider: str | None = None,
+):
     asset = get_asset(ticker)
     if not asset:
         return False
 
-    profile, profile_source = legacy._fetch_market_profile(
-        ticker,
-        include_scanner_br=include_scanner_br,
-    )
-    metrics, metrics_source = legacy._fetch_market_metrics(
-        ticker,
-        include_scanner_br=include_scanner_br,
-    )
+    if str(preferred_provider or "").strip().lower() == "market_scanner":
+        profile = legacy._fetch_market_scanner_profile(ticker) or {}
+        profile_source = "market_scanner" if profile else None
+        metrics = legacy._fetch_market_scanner_metrics(ticker) or {}
+        metrics_source = "market_scanner" if legacy._has_market_metrics(metrics) else None
+    else:
+        profile, profile_source = legacy._fetch_market_profile(
+            ticker,
+            include_scanner_br=include_scanner_br,
+        )
+        metrics, metrics_source = legacy._fetch_market_metrics(
+            ticker,
+            include_scanner_br=include_scanner_br,
+        )
     if not metrics and not profile:
         _mark_asset_market_data_failed(ticker, "Nenhum provider retornou dados de mercado.")
         return False

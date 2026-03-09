@@ -6,12 +6,12 @@ services:
   backend:
     volumes:
       - ${APP_VOL_DIR:-./app_vol}:/app_vol
-      - ${MARKET_SCANNER_DATA_DIR:-./market-scanner/data}:/scanner_data:ro
       - ${OPENCLAW_CONFIG_DIR:-./openclaw/config}:/openclaw-config:ro
 
   market-scanner:
     volumes:
       - ${MARKET_SCANNER_DATA_DIR:-./market-scanner/data}:/app/data
+      - ${APP_VOL_DIR:-./app_vol}:/app_vol
 
   openclaw-gateway:
     volumes:

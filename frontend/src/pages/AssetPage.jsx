@@ -411,15 +411,15 @@ function AssetPage({ selectedPortfolioIds }) {
     setSyncing(true)
     setSyncMessage('')
     try {
-      const response = await apiPost(`/api/sync/market-data/${ticker}`, {}, { force_live: 1 })
+      const response = await apiPost(`/api/sync/market-data/${ticker}`, {})
       const sourceLabel = String(response?.source || '').trim().toUpperCase()
       const updatedLabel = formatDateTimeLocal(response?.updated_at)
       if (sourceLabel && updatedLabel) {
-        setSyncMessage(`Atualizacao ao vivo concluida via ${sourceLabel} em ${updatedLabel}.`)
+        setSyncMessage(`Atualizacao concluida via ${sourceLabel} em ${updatedLabel}.`)
       } else if (sourceLabel) {
-        setSyncMessage(`Atualizacao ao vivo concluida via ${sourceLabel}.`)
+        setSyncMessage(`Atualizacao concluida via ${sourceLabel}.`)
       } else {
-        setSyncMessage('Atualizacao ao vivo concluida via provider configurado.')
+        setSyncMessage('Atualizacao concluida via scanner.')
       }
       const data = await apiGet(`/api/assets/${ticker}`, {
         portfolio_id: selectedPortfolioIds,

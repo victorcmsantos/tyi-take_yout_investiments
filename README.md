@@ -67,6 +67,8 @@ docker compose --profile scanner up -d --build market-scanner
   - `GET /api/scanner/signal-matrix`
   - `GET /api/scanner/trades`
   - `GET /api/scanner/ticker/<TICKER>`
+  - `POST /api/scanner/scan` (dispara leitura manual de todos os tickers)
+  - `POST /api/scanner/scan/<TICKER>` (dispara leitura manual de um ticker)
   - `POST /api/scanner/trades`
   - `PATCH /api/scanner/trades/<TRADE_ID>`
   - `POST /api/scanner/trades/<TRADE_ID>/close`
@@ -233,8 +235,8 @@ docker exec backend cat /app_vol/admin-bootstrap.txt
 - Tambem e possivel configurar ordem automatica por classe com `MARKET_DATA_PROVIDERS_US`, `MARKET_DATA_PROVIDERS_CRYPTO` e `MARKET_DATA_PROVIDERS_BR`.
 - Exemplo: `MARKET_DATA_PROVIDERS_US=twelve_data,alpha_vantage,yahoo`
 - Exemplo: `MARKET_DATA_PROVIDERS_CRYPTO=coingecko,yahoo`
-- Exemplo: `MARKET_DATA_PROVIDERS_BR=market_scanner,brapi,yahoo,google`
-- Para ativos BR, o backend pode priorizar o banco do `market-scanner` com `MARKET_DATA_USE_SCANNER_BR=1` (padrao).
+- Exemplo recomendado para BR: `MARKET_DATA_PROVIDERS_BR=market_scanner`
+- Para ativos BR, a estrategia recomendada e `scanner-only` (o scanner concentra chamadas BRAPI e o backend so le do banco).
 - O cache dessa leitura local pode ser ajustado com `MARKET_SCANNER_DATA_TTL_SECONDS` (padrao: `120`).
 - A chave da Twelve Data deve ser informada em `TWELVE_DATA_API_KEY`.
 - A chave da Alpha Vantage deve ser informada em `ALPHA_VANTAGE_API_KEY`.
@@ -277,7 +279,7 @@ cp /srv/tyi-take_yout_investiments/app_vol/backups/investments_YYYYMMDD_HHMMSS.s
 - `SQLITE_TIMEOUT_SECONDS`: timeout das conexoes SQLite antes de falhar com lock. Padrao: `30`
 - `BACKGROUND_JOBS_LOCK_FILE`: arquivo de lock que define o worker lider dos jobs. Padrao: ao lado do banco, em `.background-jobs.lock`
 - `DATABASE_STARTUP_LOCK_FILE`: arquivo de lock usado durante inicializacao/migracao do banco. Padrao: ao lado do banco, em `.db-startup.lock`
-- `MARKET_SYNC_ENABLED`: habilita/desabilita o job de sync de mercado. Padrao: `1`
+- `MARKET_SYNC_ENABLED`: habilita/desabilita o job de sync de mercado. Padrao: `0`
 - `MARKET_SYNC_INTERVAL_SECONDS`: intervalo do job de sync em segundos. Padrao: `300`
 - `MARKET_SYNC_SCOPE`: escopo do job de sync (`all`, `br`, `us`, `crypto`). Padrao: `all`
 - `MARKET_SYNC_FORCE_LIVE_BR`: quando `1`, ignora `market_scanner` para BR no job automatico. Padrao: `0`
@@ -306,8 +308,10 @@ cp /srv/tyi-take_yout_investiments/app_vol/backups/investments_YYYYMMDD_HHMMSS.s
   - `/api/auth/logout`
   - `/api/admin/users`
   - `/api/admin/users/:id/status`
-  - `/api/sync/market-data`
-  - `/api/sync/market-data/:ticker`
+  - `/api/scanner/scan` (leitura manual de todos os tickers)
+  - `/api/scanner/scan/:ticker` (leitura manual de um ticker)
+  - `/api/sync/market-data` (scan geral manual)
+  - `/api/sync/market-data/:ticker` (sync manual por ativo)
 
 ## Banco SQL
 

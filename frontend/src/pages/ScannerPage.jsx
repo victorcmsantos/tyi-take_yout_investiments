@@ -125,6 +125,7 @@ function buildMatrixFromSignals(signals) {
 function ScannerPage({ readOnly = false }) {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [scanningAll, setScanningAll] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [signals, setSignals] = useState([])
@@ -359,6 +360,28 @@ function ScannerPage({ readOnly = false }) {
     }
   }
 
+  const onScanAllTickers = async () => {
+    if (readOnly) {
+      setError('Perfil viewer possui acesso somente leitura.')
+      return
+    }
+    setScanningAll(true)
+    setError('')
+    setMessage('')
+    try {
+      const payload = await apiPost('/api/scanner/scan', {})
+      const summary = payload?.scan_summary || {}
+      const processed = Number(summary?.tickers_processed || 0)
+      const triggered = Number(summary?.signals_triggered || 0)
+      setMessage(`Leitura manual concluida: ${processed} ticker(s), ${triggered} sinal(is).`)
+      await loadScanner(true)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setScanningAll(false)
+    }
+  }
+
   const onCreateTrade = async (event) => {
     event.preventDefault()
     if (readOnly) {
@@ -402,8 +425,16 @@ function ScannerPage({ readOnly = false }) {
           <p className="subtitle">Leitura do Market Scanner integrada ao portal principal.</p>
         </div>
         <div className="hero-actions">
+          <Button
+            variant="contained"
+            color="secondary"
+            onClick={onScanAllTickers}
+            disabled={readOnly || scanningAll || refreshing}
+          >
+            {scanningAll ? 'Lendo tickers...' : 'Ler todos os tickers'}
+          </Button>
           <Button variant="contained" onClick={() => loadScanner(true)} disabled={refreshing}>
-            {refreshing ? 'Atualizando...' : 'Atualizar'}
+            {refreshing ? 'Recarregando...' : 'Recarregar painel'}
           </Button>
         </div>
       </div>

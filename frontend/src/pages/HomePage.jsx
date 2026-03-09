@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { apiGet, apiPost } from '../api'
+import { apiGet } from '../api'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const pct = (value) => `${Number(value || 0).toFixed(2)}%`
@@ -20,9 +20,6 @@ function HomePage({ selectedPortfolioIds }) {
   const [sectors, setSectors] = useState([])
   const [incomesByTicker, setIncomesByTicker] = useState({})
   const [incomesTotal, setIncomesTotal] = useState(0)
-  const [syncMessage, setSyncMessage] = useState('')
-  const [syncStatus, setSyncStatus] = useState('')
-  const [syncing, setSyncing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [sortBy, setSortBy] = useState('name')
@@ -76,40 +73,6 @@ function HomePage({ selectedPortfolioIds }) {
     }
   }, [selectedPortfolioIds])
 
-  const onSyncMarketData = async (scope = 'br') => {
-    setSyncing(true)
-    setSyncMessage('')
-    setSyncStatus('')
-    try {
-      const result = await apiPost('/api/sync/market-data', {}, {
-        scope,
-        mode: 'full',
-        force_live: 1,
-      })
-      const [assetsData, sectorsData] = await Promise.all([
-        apiGet('/api/assets'),
-        apiGet('/api/sectors'),
-      ])
-      setAssets(Array.isArray(assetsData) ? assetsData : [])
-      setSectors(Array.isArray(sectorsData) ? sectorsData : [])
-      const failed = Number(result.failed_count || 0)
-      const selected = Number(result.selected_count || 0)
-      const scopeLabel = String(result.scope || scope || 'all').toUpperCase()
-      if (failed > 0) {
-        setSyncStatus('warn')
-        setSyncMessage(`Sync ${scopeLabel} concluido com pendencias: ${failed} de ${selected} ticker(s) falharam.`)
-      } else {
-        setSyncStatus('ok')
-        setSyncMessage(`Sync ${scopeLabel} concluido com sucesso para ${selected} ticker(s).`)
-      }
-    } catch (err) {
-      setSyncStatus('warn')
-      setSyncMessage(err.message)
-    } finally {
-      setSyncing(false)
-    }
-  }
-
   const highlights = assets.length > 0
     ? {
       highestDy: assets.reduce((best, asset) => (Number(asset.dy || 0) > Number(best.dy || 0) ? asset : best), assets[0]),
@@ -157,17 +120,6 @@ function HomePage({ selectedPortfolioIds }) {
   return (
     <section>
       <h1>Acoes</h1>
-      <div className="hero-actions">
-        <button type="button" className="btn-primary" onClick={() => onSyncMarketData('br')} disabled={syncing}>
-          {syncing ? 'Sincronizando...' : 'Sync BR (manual)'}
-        </button>
-        <button type="button" className="btn-secondary" onClick={() => onSyncMarketData('all')} disabled={syncing}>
-          {syncing ? 'Sincronizando...' : 'Sync todos (manual)'}
-        </button>
-      </div>
-      {!!syncMessage && (
-        <p className={syncStatus === 'ok' ? 'notice-ok' : 'notice-warn'}>{syncMessage}</p>
-      )}
       {staleAssetsCount > 0 && (
         <p className="notice-warn">
           {staleAssetsCount} ativo(s) exibem cotacao possivelmente antiga. Veja a coluna de preco para identificar quais.

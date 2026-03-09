@@ -95,7 +95,7 @@ def trigger_market_sync_if_due(app, force: bool = False, blocking: bool = False)
 
 
 def start_market_sync(app):
-    enabled_default = str(os.getenv("MARKET_SYNC_ENABLED", "1")).strip().lower() in {
+    enabled_default = str(os.getenv("MARKET_SYNC_ENABLED", "0")).strip().lower() in {
         "1",
         "true",
         "yes",

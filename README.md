@@ -53,7 +53,7 @@ O serviço `openclaw-cli` é opcional e fica no profile `cli` (não sobe no `up`
 
 ### Integracao com Market Scanner (opcional)
 
-O scanner fica como servico separado no profile `scanner`, com build apontando para `../TYT-Take_your_trade/market-scanner` (ajuste via `MARKET_SCANNER_CONTEXT` no `.env`).
+O scanner fica como servico separado no profile `scanner`, com build fixo local em `./market-scanner`.
 
 ```bash
 docker compose --profile scanner up -d --build market-scanner
@@ -233,11 +233,16 @@ docker exec backend cat /app_vol/admin-bootstrap.txt
 - Tambem e possivel configurar ordem automatica por classe com `MARKET_DATA_PROVIDERS_US`, `MARKET_DATA_PROVIDERS_CRYPTO` e `MARKET_DATA_PROVIDERS_BR`.
 - Exemplo: `MARKET_DATA_PROVIDERS_US=twelve_data,alpha_vantage,yahoo`
 - Exemplo: `MARKET_DATA_PROVIDERS_CRYPTO=coingecko,yahoo`
-- Exemplo: `MARKET_DATA_PROVIDERS_BR=brapi,yahoo,google`
+- Exemplo: `MARKET_DATA_PROVIDERS_BR=market_scanner,brapi,yahoo,google`
+- Para ativos BR, o backend pode priorizar o banco do `market-scanner` com `MARKET_DATA_USE_SCANNER_BR=1` (padrao).
+- O cache dessa leitura local pode ser ajustado com `MARKET_SCANNER_DATA_TTL_SECONDS` (padrao: `120`).
 - A chave da Twelve Data deve ser informada em `TWELVE_DATA_API_KEY`.
 - A chave da Alpha Vantage deve ser informada em `ALPHA_VANTAGE_API_KEY`.
 - O token do Brapi deve ser informado em `BRAPI_TOKEN`.
+- O cache de quote do Brapi pode ser ajustado com `BRAPI_QUOTE_CACHE_TTL_SECONDS` (padrao: `120`).
+- Se o Brapi retornar limite/erro temporario, use `BRAPI_RATE_LIMIT_COOLDOWN_SECONDS` para pausar novas tentativas (padrao: `300`).
 - A chave demo/pro da CoinGecko deve ser informada em `COINGECKO_API_KEY`.
+- Se a CoinGecko estiver retornando limite (`429`), use `COINGECKO_RATE_LIMIT_COOLDOWN_SECONDS` para pausar novas tentativas por alguns minutos (padrao: `900`).
 - A variavel legada `MARKET_DATA_PROVIDER` tambem funciona para um provider unico.
 - `brapi` atualmente fornece metricas, perfil do ativo e historico para ativos do mercado brasileiro.
 - `coingecko` atualmente fornece metricas, perfil e historico para tickers cripto no formato `BTC-USD`.
@@ -272,6 +277,10 @@ cp /srv/tyi-take_yout_investiments/app_vol/backups/investments_YYYYMMDD_HHMMSS.s
 - `SQLITE_TIMEOUT_SECONDS`: timeout das conexoes SQLite antes de falhar com lock. Padrao: `30`
 - `BACKGROUND_JOBS_LOCK_FILE`: arquivo de lock que define o worker lider dos jobs. Padrao: ao lado do banco, em `.background-jobs.lock`
 - `DATABASE_STARTUP_LOCK_FILE`: arquivo de lock usado durante inicializacao/migracao do banco. Padrao: ao lado do banco, em `.db-startup.lock`
+- `MARKET_SYNC_ENABLED`: habilita/desabilita o job de sync de mercado. Padrao: `1`
+- `MARKET_SYNC_INTERVAL_SECONDS`: intervalo do job de sync em segundos. Padrao: `300`
+- `MARKET_SYNC_SCOPE`: escopo do job de sync (`all`, `br`, `us`, `crypto`). Padrao: `all`
+- `MARKET_SYNC_FORCE_LIVE_BR`: quando `1`, ignora `market_scanner` para BR no job automatico. Padrao: `0`
 - Essas configuracoes ajudam a evitar `sqlite3.OperationalError: database is locked` no startup e nos warmups dos snapshots.
 - Com o `docker-compose` atual, esses arquivos ficam em `/app_vol`.
 

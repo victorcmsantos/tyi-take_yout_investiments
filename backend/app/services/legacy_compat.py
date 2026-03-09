@@ -49,8 +49,10 @@ def _has_market_metrics(metrics: dict):
     )
 
 
-def _market_data_provider_label(ticker: str = ""):
-    return ",".join(legacy._market_data_providers_from_env(ticker))
+def _market_data_provider_label(ticker: str = "", include_scanner_br: bool = True):
+    return ",".join(
+        legacy._market_data_providers_from_env(ticker, include_scanner_br=include_scanner_br)
+    )
 
 
 def _is_truthy_env(name: str, default: str = "0"):
@@ -58,13 +60,19 @@ def _is_truthy_env(name: str, default: str = "0"):
     return value in {"1", "true", "yes", "on"}
 
 
-def _fetch_market_profile(ticker: str):
-    for provider in legacy._market_data_provider_order("profile", ticker):
+def _fetch_market_profile(ticker: str, include_scanner_br: bool = True):
+    for provider in legacy._market_data_provider_order(
+        "profile",
+        ticker,
+        include_scanner_br=include_scanner_br,
+    ):
         try:
             if provider == "alpha_vantage":
                 profile = legacy._fetch_alpha_vantage_profile(ticker)
             elif provider == "twelve_data":
                 profile = None
+            elif provider == "market_scanner":
+                profile = legacy._fetch_market_scanner_profile(ticker)
             elif provider == "coingecko":
                 profile = legacy._fetch_coingecko_profile(ticker)
             elif provider == "brapi":
@@ -80,13 +88,19 @@ def _fetch_market_profile(ticker: str):
     return {}, None
 
 
-def _fetch_market_metrics(ticker: str):
-    for provider in legacy._market_data_provider_order("metrics", ticker):
+def _fetch_market_metrics(ticker: str, include_scanner_br: bool = True):
+    for provider in legacy._market_data_provider_order(
+        "metrics",
+        ticker,
+        include_scanner_br=include_scanner_br,
+    ):
         try:
             if provider == "alpha_vantage":
                 metrics = legacy._fetch_alpha_vantage_metrics(ticker)
             elif provider == "twelve_data":
                 metrics = legacy._fetch_twelve_data_metrics(ticker)
+            elif provider == "market_scanner":
+                metrics = legacy._fetch_market_scanner_metrics(ticker)
             elif provider == "coingecko":
                 metrics = legacy._fetch_coingecko_metrics(ticker)
             elif provider == "brapi":
@@ -102,13 +116,19 @@ def _fetch_market_metrics(ticker: str):
     return {}, None
 
 
-def _fetch_market_history(ticker: str, range_key: str):
-    for provider in legacy._market_data_provider_order("history", ticker):
+def _fetch_market_history(ticker: str, range_key: str, include_scanner_br: bool = True):
+    for provider in legacy._market_data_provider_order(
+        "history",
+        ticker,
+        include_scanner_br=include_scanner_br,
+    ):
         try:
             if provider == "alpha_vantage":
                 history = legacy._fetch_alpha_vantage_history(ticker, range_key)
             elif provider == "twelve_data":
                 history = legacy._fetch_twelve_data_history(ticker, range_key)
+            elif provider == "market_scanner":
+                history = legacy._fetch_market_scanner_history(ticker, range_key)
             elif provider == "coingecko":
                 history = legacy._fetch_coingecko_history(ticker, range_key)
             elif provider == "brapi":

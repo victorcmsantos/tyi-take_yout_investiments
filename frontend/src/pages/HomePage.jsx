@@ -76,19 +76,31 @@ function HomePage({ selectedPortfolioIds }) {
     }
   }, [selectedPortfolioIds])
 
-  const onSyncMarketData = async () => {
+  const onSyncMarketData = async (scope = 'br') => {
     setSyncing(true)
     setSyncMessage('')
     setSyncStatus('')
     try {
-      const result = await apiPost('/api/sync/market-data')
+      const result = await apiPost('/api/sync/market-data', {}, {
+        scope,
+        mode: 'full',
+        force_live: 1,
+      })
+      const [assetsData, sectorsData] = await Promise.all([
+        apiGet('/api/assets'),
+        apiGet('/api/sectors'),
+      ])
+      setAssets(Array.isArray(assetsData) ? assetsData : [])
+      setSectors(Array.isArray(sectorsData) ? sectorsData : [])
       const failed = Number(result.failed_count || 0)
+      const selected = Number(result.selected_count || 0)
+      const scopeLabel = String(result.scope || scope || 'all').toUpperCase()
       if (failed > 0) {
         setSyncStatus('warn')
-        setSyncMessage(`Atualizacao concluida com pendencias: ${failed} ticker(s) falharam no provider configurado.`)
+        setSyncMessage(`Sync ${scopeLabel} concluido com pendencias: ${failed} de ${selected} ticker(s) falharam.`)
       } else {
         setSyncStatus('ok')
-        setSyncMessage('Consulta de market data concluida com sucesso.')
+        setSyncMessage(`Sync ${scopeLabel} concluido com sucesso para ${selected} ticker(s).`)
       }
     } catch (err) {
       setSyncStatus('warn')
@@ -146,8 +158,11 @@ function HomePage({ selectedPortfolioIds }) {
     <section>
       <h1>Acoes</h1>
       <div className="hero-actions">
-        <button type="button" className="btn-primary" onClick={onSyncMarketData} disabled={syncing}>
-          {syncing ? 'Atualizando market data...' : 'Buscar market data'}
+        <button type="button" className="btn-primary" onClick={() => onSyncMarketData('br')} disabled={syncing}>
+          {syncing ? 'Sincronizando...' : 'Sync BR (manual)'}
+        </button>
+        <button type="button" className="btn-secondary" onClick={() => onSyncMarketData('all')} disabled={syncing}>
+          {syncing ? 'Sincronizando...' : 'Sync todos (manual)'}
         </button>
       </div>
       {!!syncMessage && (

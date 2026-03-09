@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Market Scanner Operations</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v={{ style_version }}" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <nav class="page-nav">
+        <a class="page-nav__link" href="/dashboard">Dashboard</a>
+        <a class="page-nav__link page-nav__link--active" href="/operations">Operações</a>
+        <a class="page-nav__link" href="/metrics-lab">Métricas</a>
+      </nav>
+
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Trade Journal</p>
+          <h1>Operações acompanhadas</h1>
+          <p class="hero-copy">
+            Ativos marcados como comprados ficam sob acompanhamento até alvo, stop ou encerramento manual.
+          </p>
+        </div>
+        <div class="hero-stats operation-stats" id="operation-stats">
+          <div class="stat-card">
+            <span class="stat-label">Em andamento</span>
+            <strong>{{ trade_data.summary.tracked_count }}</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Histórico</span>
+            <strong>{{ trade_data.summary.history_count }}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="operations-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Open Positions</p>
+            <h2>Operações abertas</h2>
+          </div>
+          <p class="hero-copy">
+            O status é atualizado automaticamente a cada scan com base no último candle persistido.
+          </p>
+        </div>
+        <div class="operations-grid" id="operations-grid"></div>
+      </section>
+
+      <section class="history-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Attempt History</p>
+            <h2>Histórico de tentativas</h2>
+          </div>
+        </div>
+        <div class="history-shell" id="history-shell"></div>
+      </section>
+    </main>
+
+    <script id="initial-trade-data" type="application/json">{{ trade_data|tojson }}</script>
+    <script src="{{ url_for('static', path='operations.js') }}?v={{ operations_js_version }}"></script>
+  </body>
+</html>

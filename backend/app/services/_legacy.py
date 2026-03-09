@@ -2,10 +2,11 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import time
 import unicodedata
 from datetime import datetime, timedelta
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -22,11 +23,13 @@ except ImportError:  # pragma: no cover
 _FX_CACHE = {"usdbrl": None, "expires_at": 0.0}
 _BCB_SERIES_CACHE = {}
 _COINGECKO_CACHE = {}
+_COINGECKO_CIRCUIT = {"until": 0.0, "status_code": None}
 _TWELVE_DATA_CACHE = {}
 _ALPHA_VANTAGE_CACHE = {}
 _YAHOO_MONTHLY_CACHE = {}
 _ASSET_PRICE_HISTORY_CACHE = {}
 _BENCHMARK_CACHE = {}
+_MARKET_SCANNER_CACHE = {}
 _LOGGER = logging.getLogger(__name__)
 _BRAPI_DIAG = {
     "missing_token_logged": False,
@@ -34,12 +37,14 @@ _BRAPI_DIAG = {
     "empty_results_tickers": set(),
 }
 _BRAPI_BATCH_LIMIT = 10
-_BRAPI_QUOTE_CACHE_TTL_SECONDS = 20.0
+_BRAPI_QUOTE_CACHE_TTL_DEFAULT_SECONDS = 120.0
 _BRAPI_QUOTE_RESULT_CACHE = {}
+_BRAPI_CIRCUIT = {"until": 0.0, "status_code": None}
 _MARKET_DATA_PROVIDER_CAPABILITIES = {
     "alpha_vantage": {"metrics", "profile", "history"},
     "brapi": {"metrics", "profile", "history"},
     "coingecko": {"metrics", "profile", "history"},
+    "market_scanner": {"metrics", "profile", "history"},
     "twelve_data": {"metrics", "history"},
     "google": {"metrics"},
     "yahoo": {"metrics", "profile", "history"},
@@ -765,7 +770,7 @@ def _candidate_yahoo_symbols(ticker: str):
     return symbols
 
 
-def _http_get_json(url: str, headers=None, timeout: float = 8.0):
+def _http_get_json_with_status(url: str, headers=None, timeout: float = 8.0, attempts: int = 2):
     request_headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -774,24 +779,50 @@ def _http_get_json(url: str, headers=None, timeout: float = 8.0):
     }
     if headers:
         request_headers.update(headers)
-    request = Request(
-        url,
-        headers=request_headers,
-    )
-    for _ in range(2):
+    total_attempts = max(int(attempts or 1), 1)
+    for attempt in range(total_attempts):
+        request = Request(
+            url,
+            headers=request_headers,
+        )
         try:
             with urlopen(request, timeout=timeout) as response:
                 body = response.read()
+                status_code = int(getattr(response, "status", 200) or 200)
             if not body:
+                if attempt < total_attempts - 1:
+                    time.sleep(0.15 * (attempt + 1))
+                    continue
+                return None, status_code
+            try:
+                return json.loads(body.decode("utf-8")), status_code
+            except ValueError:
+                if attempt < total_attempts - 1:
+                    time.sleep(0.15 * (attempt + 1))
+                    continue
+                return None, status_code
+        except HTTPError as exc:
+            status_code = int(getattr(exc, "code", 0) or 0) or None
+            if status_code in {408, 425, 429, 500, 502, 503, 504} and attempt < total_attempts - 1:
+                time.sleep(0.15 * (attempt + 1))
                 continue
-            return json.loads(body.decode("utf-8"))
-        except (URLError, TimeoutError, ValueError):
-            time.sleep(0.15)
-            continue
+            return None, status_code
+        except (URLError, TimeoutError):
+            if attempt < total_attempts - 1:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            return None, None
         except Exception:
-            time.sleep(0.15)
-            continue
-    return None
+            if attempt < total_attempts - 1:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            return None, None
+    return None, None
+
+
+def _http_get_json(url: str, headers=None, timeout: float = 8.0):
+    payload, _ = _http_get_json_with_status(url, headers=headers, timeout=timeout, attempts=2)
+    return payload
 
 
 def _http_get_text(url: str, timeout: float = 8.0):
@@ -894,6 +925,65 @@ def _get_coingecko_base_url():
     return (os.getenv("COINGECKO_BASE_URL") or "https://api.coingecko.com/api/v3").rstrip("/")
 
 
+def _coingecko_cooldown_seconds():
+    raw_value = (os.getenv("COINGECKO_RATE_LIMIT_COOLDOWN_SECONDS") or "900").strip()
+    try:
+        return max(int(raw_value), 30)
+    except (TypeError, ValueError):
+        return 900
+
+
+def _coingecko_is_temporarily_unavailable():
+    now = time.time()
+    disabled_until = float(_COINGECKO_CIRCUIT.get("until", 0.0) or 0.0)
+    if disabled_until <= 0:
+        return False
+    if now >= disabled_until:
+        _COINGECKO_CIRCUIT["until"] = 0.0
+        _COINGECKO_CIRCUIT["status_code"] = None
+        return False
+    return True
+
+
+def _coingecko_open_circuit(status_code=None):
+    now = time.time()
+    cooldown_seconds = _coingecko_cooldown_seconds()
+    was_open = _coingecko_is_temporarily_unavailable()
+    _COINGECKO_CIRCUIT["until"] = now + cooldown_seconds
+    _COINGECKO_CIRCUIT["status_code"] = status_code
+    if not was_open:
+        logger = _get_app_logger()
+        logger.warning(
+            "CoinGecko temporariamente pausado por %ss apos falha HTTP status=%s.",
+            cooldown_seconds,
+            status_code if status_code is not None else "n/a",
+        )
+
+
+def _coingecko_close_circuit():
+    _COINGECKO_CIRCUIT["until"] = 0.0
+    _COINGECKO_CIRCUIT["status_code"] = None
+
+
+def _coingecko_get_json(url: str, timeout: float = 12.0):
+    if _coingecko_is_temporarily_unavailable():
+        return None
+
+    payload, status_code = _http_get_json_with_status(
+        url,
+        headers=_get_coingecko_headers(),
+        timeout=timeout,
+        attempts=2,
+    )
+    if payload is None:
+        if status_code is None or status_code in {401, 403, 408, 425, 429, 500, 502, 503, 504}:
+            _coingecko_open_circuit(status_code)
+        return None
+
+    _coingecko_close_circuit()
+    return payload
+
+
 def _coingecko_symbol_from_ticker(ticker: str):
     raw = (ticker or "").strip().upper()
     if not _is_crypto_ticker(raw):
@@ -924,12 +1014,11 @@ def _fetch_coingecko_market_item(ticker: str):
     if cached is not None:
         return dict(cached)
 
-    payload = _http_get_json(
+    payload = _coingecko_get_json(
         (
             f"{_get_coingecko_base_url()}/coins/markets"
             f"?vs_currency=usd&symbols={symbol}&price_change_percentage=24h,7d,30d"
         ),
-        headers=_get_coingecko_headers(),
         timeout=12.0,
     ) or []
     try:
@@ -1005,9 +1094,8 @@ def _fetch_coingecko_history(ticker: str, range_key: str = "1y"):
     if cached is not None:
         return dict(cached)
 
-    payload = _http_get_json(
+    payload = _coingecko_get_json(
         f"{_get_coingecko_base_url()}/coins/{coin_id}/market_chart?vs_currency=usd&days={cfg['days']}",
-        headers=_get_coingecko_headers(),
         timeout=12.0,
     ) or {}
     prices_payload = payload.get("prices") or []
@@ -1413,6 +1501,279 @@ def _is_brazilian_market_ticker(ticker: str):
     return True
 
 
+def _market_scanner_symbol_from_ticker(ticker: str):
+    normalized = _normalize_brapi_symbol(ticker)
+    if not normalized or not _is_brazilian_market_ticker(normalized):
+        return ""
+    return f"{normalized}.SA"
+
+
+def _market_scanner_db_path():
+    return (os.getenv("MARKET_SCANNER_DATABASE_PATH") or "").strip()
+
+
+def _market_scanner_data_ttl_seconds():
+    raw_value = (os.getenv("MARKET_SCANNER_DATA_TTL_SECONDS") or "120").strip()
+    try:
+        return max(int(raw_value), 10)
+    except (TypeError, ValueError):
+        return 120
+
+
+def _market_scanner_load_snapshot(symbol: str):
+    if not symbol:
+        return None
+    db_path = _market_scanner_db_path()
+    if not db_path or not os.path.exists(db_path):
+        return None
+
+    conn = None
+    try:
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.5)
+        except Exception:
+            conn = sqlite3.connect(db_path, timeout=1.5)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        ticker_base = symbol.removesuffix(".SA")
+
+        catalog_row = cursor.execute(
+            """
+            SELECT ticker, yahoo_symbol, issuer_name, trading_name, specification,
+                   is_active, yahoo_supported, last_scan_at, last_verified_at
+            FROM tickers
+            WHERE yahoo_symbol = ? OR ticker = ?
+            LIMIT 1
+            """,
+            (symbol, ticker_base),
+        ).fetchone()
+
+        price_rows = cursor.execute(
+            """
+            SELECT close, timestamp
+            FROM prices
+            WHERE ticker = ? AND interval = '1d'
+            ORDER BY timestamp DESC
+            LIMIT 400
+            """,
+            (symbol,),
+        ).fetchall()
+        if not price_rows:
+            price_rows = cursor.execute(
+                """
+                SELECT close, timestamp
+                FROM prices
+                WHERE ticker = ?
+                ORDER BY timestamp DESC
+                LIMIT 400
+                """,
+                (symbol,),
+            ).fetchall()
+
+        metric_rows = cursor.execute(
+            """
+            SELECT metric_name, metric_value, timestamp
+            FROM metrics
+            WHERE ticker = ?
+            ORDER BY timestamp DESC
+            LIMIT 200
+            """,
+            (symbol,),
+        ).fetchall()
+
+        latest_metrics = {}
+        latest_metric_ts = None
+        if metric_rows:
+            latest_metric_ts = metric_rows[0]["timestamp"]
+            for row in metric_rows:
+                if row["timestamp"] != latest_metric_ts:
+                    continue
+                metric_name = str(row["metric_name"] or "").strip().lower()
+                metric_value = _to_number(row["metric_value"])
+                if metric_name and metric_value is not None:
+                    latest_metrics[metric_name] = float(metric_value)
+
+        catalog = dict(catalog_row) if catalog_row else {}
+        prices_desc = [dict(row) for row in price_rows]
+        latest_price = _to_number(prices_desc[0]["close"]) if prices_desc else None
+        latest_price_ts = prices_desc[0]["timestamp"] if prices_desc else None
+        return {
+            "symbol": symbol,
+            "catalog": catalog,
+            "latest_price": latest_price,
+            "latest_price_timestamp": latest_price_ts,
+            "latest_metrics": latest_metrics,
+            "latest_metrics_timestamp": latest_metric_ts,
+            "prices_desc": prices_desc,
+        }
+    except Exception:
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _fetch_market_scanner_snapshot(ticker: str):
+    symbol = _market_scanner_symbol_from_ticker(ticker)
+    if not symbol:
+        return None
+
+    cache_key = ("market_scanner_snapshot", symbol)
+    cached = _memory_cache_get(_MARKET_SCANNER_CACHE, cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    snapshot = _market_scanner_load_snapshot(symbol)
+    if snapshot is None:
+        return None
+    _memory_cache_set(
+        _MARKET_SCANNER_CACHE,
+        cache_key,
+        dict(snapshot),
+        _market_scanner_data_ttl_seconds(),
+    )
+    return snapshot
+
+
+def _market_scanner_price_series_desc(snapshot):
+    rows = (snapshot or {}).get("prices_desc") or []
+    series = []
+    for row in rows:
+        close_value = _to_number((row or {}).get("close"))
+        if close_value is None:
+            continue
+        series.append(float(close_value))
+    return series
+
+
+def _scanner_datetime_from_text(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _fetch_market_scanner_profile(ticker: str):
+    snapshot = _fetch_market_scanner_snapshot(ticker)
+    if not snapshot:
+        return {}
+
+    catalog = snapshot.get("catalog") or {}
+    name = (
+        str(catalog.get("trading_name") or "").strip()
+        or str(catalog.get("issuer_name") or "").strip()
+        or str(catalog.get("ticker") or "").strip()
+        or str((ticker or "").strip().upper())
+    )
+
+    specification = str(catalog.get("specification") or "").strip().upper()
+    ticker_up = str((ticker or "").strip().upper())
+    if "FII" in specification or ticker_up.endswith("11"):
+        sector = "Fundos/ETFs"
+    else:
+        sector = "Acoes BR"
+
+    return {
+        "name": name,
+        "sector": sector,
+        "logo_url": "",
+    }
+
+
+def _fetch_market_scanner_metrics(ticker: str):
+    snapshot = _fetch_market_scanner_snapshot(ticker)
+    if not snapshot:
+        return None
+
+    prices_desc = _market_scanner_price_series_desc(snapshot)
+    current_price = _to_number(snapshot.get("latest_price"))
+    if current_price is None and prices_desc:
+        current_price = prices_desc[0]
+
+    variation_day = None
+    variation_7d = None
+    variation_30d = None
+    if len(prices_desc) >= 2:
+        previous = _to_number(prices_desc[1])
+        if previous not in (None, 0):
+            variation_day = ((float(prices_desc[0]) / float(previous)) - 1) * 100
+    if len(prices_desc) >= 8:
+        base_7d = _to_number(prices_desc[7])
+        if base_7d not in (None, 0):
+            variation_7d = ((float(prices_desc[0]) / float(base_7d)) - 1) * 100
+    if len(prices_desc) >= 31:
+        base_30d = _to_number(prices_desc[30])
+        if base_30d not in (None, 0):
+            variation_30d = ((float(prices_desc[0]) / float(base_30d)) - 1) * 100
+
+    metrics = {
+        "price": _to_number(current_price),
+        "pl": None,
+        "pvp": None,
+        "dy": None,
+        "variation_day": variation_day,
+        "variation_7d": variation_7d,
+        "variation_30d": variation_30d,
+        "market_cap_bi": None,
+    }
+    return metrics if _has_market_metrics(metrics) else None
+
+
+def _market_scanner_history_limit_for_range(range_key: str):
+    mapping = {
+        "1d": 2,
+        "7d": 8,
+        "30d": 31,
+        "6m": 180,
+        "1y": 365,
+        "5y": 1825,
+    }
+    return mapping.get((range_key or "1y").strip().lower(), 365)
+
+
+def _fetch_market_scanner_history(ticker: str, range_key: str = "1y"):
+    normalized_key, cfg = _history_config_for_brapi(range_key)
+    result = {
+        "range_key": normalized_key,
+        "labels": [],
+        "prices": [],
+        "change_pct": None,
+    }
+
+    snapshot = _fetch_market_scanner_snapshot(ticker)
+    if not snapshot:
+        return result
+
+    rows_desc = (snapshot.get("prices_desc") or [])[: _market_scanner_history_limit_for_range(normalized_key)]
+    rows = list(reversed(rows_desc))
+    prices = []
+    labels = []
+    for row in rows:
+        close_value = _to_number((row or {}).get("close"))
+        dt = _scanner_datetime_from_text((row or {}).get("timestamp"))
+        if close_value is None or dt is None:
+            continue
+        prices.append(round(float(close_value), 2))
+        labels.append(dt.strftime(cfg["date_fmt"]))
+
+    if not prices:
+        return result
+
+    first = prices[0]
+    last = prices[-1]
+    result["labels"] = labels
+    result["prices"] = prices
+    result["change_pct"] = ((last / first) - 1) * 100 if first not in (None, 0) else None
+    return result
+
+
 def _get_brapi_token():
     return (os.getenv("BRAPI_TOKEN") or "").strip()
 
@@ -1426,6 +1787,55 @@ def _get_brapi_headers():
 
 def _get_brapi_base_url():
     return (os.getenv("BRAPI_BASE_URL") or "https://brapi.dev/api").rstrip("/")
+
+
+def _brapi_quote_cache_ttl_seconds():
+    raw_value = (os.getenv("BRAPI_QUOTE_CACHE_TTL_SECONDS") or "").strip()
+    if not raw_value:
+        return _BRAPI_QUOTE_CACHE_TTL_DEFAULT_SECONDS
+    try:
+        return max(float(raw_value), 5.0)
+    except (TypeError, ValueError):
+        return _BRAPI_QUOTE_CACHE_TTL_DEFAULT_SECONDS
+
+
+def _brapi_cooldown_seconds():
+    raw_value = (os.getenv("BRAPI_RATE_LIMIT_COOLDOWN_SECONDS") or "300").strip()
+    try:
+        return max(int(raw_value), 30)
+    except (TypeError, ValueError):
+        return 300
+
+
+def _brapi_is_temporarily_unavailable():
+    now = time.time()
+    disabled_until = float(_BRAPI_CIRCUIT.get("until", 0.0) or 0.0)
+    if disabled_until <= 0:
+        return False
+    if now >= disabled_until:
+        _BRAPI_CIRCUIT["until"] = 0.0
+        _BRAPI_CIRCUIT["status_code"] = None
+        return False
+    return True
+
+
+def _brapi_open_circuit(status_code=None):
+    now = time.time()
+    cooldown_seconds = _brapi_cooldown_seconds()
+    was_open = _brapi_is_temporarily_unavailable()
+    _BRAPI_CIRCUIT["until"] = now + cooldown_seconds
+    _BRAPI_CIRCUIT["status_code"] = status_code
+    if not was_open:
+        _get_app_logger().warning(
+            "BRAPI temporariamente pausado por %ss apos falha HTTP status=%s.",
+            cooldown_seconds,
+            status_code if status_code is not None else "n/a",
+        )
+
+
+def _brapi_close_circuit():
+    _BRAPI_CIRCUIT["until"] = 0.0
+    _BRAPI_CIRCUIT["status_code"] = None
 
 
 def _normalize_brapi_modules(modules):
@@ -1476,7 +1886,7 @@ def _set_brapi_cached_quote_result(
 ):
     cache_key = _brapi_quote_cache_key(ticker, range_key=range_key, interval=interval, modules=modules)
     _BRAPI_QUOTE_RESULT_CACHE[cache_key] = {
-        "expires_at": time.time() + _BRAPI_QUOTE_CACHE_TTL_SECONDS,
+        "expires_at": time.time() + _brapi_quote_cache_ttl_seconds(),
         "result": result,
     }
     if len(_BRAPI_QUOTE_RESULT_CACHE) > 500:
@@ -1577,13 +1987,31 @@ def _fetch_brapi_quote_results_batch(tickers, range_key: str = None, interval: s
         else:
             pending.append(ticker)
 
+    if _brapi_is_temporarily_unavailable():
+        for ticker in pending:
+            result_map[ticker] = None
+            _set_brapi_cached_quote_result(
+                ticker,
+                None,
+                range_key=range_key,
+                interval=interval,
+                modules=normalized_modules,
+            )
+        return result_map
+
     for start in range(0, len(pending), _BRAPI_BATCH_LIMIT):
         chunk = pending[start : start + _BRAPI_BATCH_LIMIT]
-        payload = _http_get_json(
+        payload, status_code = _http_get_json_with_status(
             f"{_get_brapi_base_url()}/quote/{','.join(chunk)}{query}",
             headers=headers,
             timeout=12.0,
+            attempts=2,
         )
+        if payload is None:
+            if status_code is None or status_code in {401, 403, 408, 425, 429, 500, 502, 503, 504}:
+                _brapi_open_circuit(status_code)
+        else:
+            _brapi_close_circuit()
         if not payload:
             _log_brapi_empty_payload(chunk, query)
             for ticker in chunk:
@@ -2453,12 +2881,12 @@ def _default_market_data_providers(class_key: str):
     defaults = {
         "crypto": ["coingecko", "yahoo"],
         "us": ["twelve_data", "alpha_vantage", "yahoo"],
-        "br": ["brapi", "yahoo", "google"],
+        "br": ["market_scanner", "brapi", "yahoo", "google"],
     }
     return list(defaults.get(class_key, ["yahoo"]))
 
 
-def _market_data_providers_from_env(ticker: str = ""):
+def _market_data_providers_from_env(ticker: str = "", include_scanner_br: bool = True):
     configured = []
     class_key = _market_data_class_key(ticker)
 
@@ -2492,22 +2920,34 @@ def _market_data_providers_from_env(ticker: str = ""):
 
     if not order:
         order.extend(_default_market_data_providers(class_key))
+
+    use_scanner_br = (os.getenv("MARKET_DATA_USE_SCANNER_BR", "1") or "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if class_key == "br" and include_scanner_br and use_scanner_br and "market_scanner" not in order:
+        order.insert(0, "market_scanner")
     return order
 
 
-def _market_data_provider_order(capability: str, ticker: str = ""):
+def _market_data_provider_order(capability: str, ticker: str = "", include_scanner_br: bool = True):
     order = []
-    for provider in _market_data_providers_from_env(ticker):
+    for provider in _market_data_providers_from_env(ticker, include_scanner_br=include_scanner_br):
         capabilities = _MARKET_DATA_PROVIDER_CAPABILITIES.get(provider, set())
         if capability in capabilities and provider not in order:
             order.append(provider)
     return order
 
 
-def _market_data_provider_label(ticker: str = ""):
+def _market_data_provider_label(ticker: str = "", include_scanner_br: bool = True):
     from . import legacy_compat
 
-    return legacy_compat._market_data_provider_label(ticker)
+    return legacy_compat._market_data_provider_label(
+        ticker,
+        include_scanner_br=include_scanner_br,
+    )
 
 
 def _is_truthy_env(name: str, default: str = "0"):
@@ -2516,28 +2956,41 @@ def _is_truthy_env(name: str, default: str = "0"):
     return legacy_compat._is_truthy_env(name, default=default)
 
 
-def _fetch_market_profile(ticker: str):
+def _fetch_market_profile(ticker: str, include_scanner_br: bool = True):
     from . import legacy_compat
 
-    return legacy_compat._fetch_market_profile(ticker)
+    return legacy_compat._fetch_market_profile(
+        ticker,
+        include_scanner_br=include_scanner_br,
+    )
 
 
-def _fetch_market_metrics(ticker: str):
+def _fetch_market_metrics(ticker: str, include_scanner_br: bool = True):
     from . import legacy_compat
 
-    return legacy_compat._fetch_market_metrics(ticker)
+    return legacy_compat._fetch_market_metrics(
+        ticker,
+        include_scanner_br=include_scanner_br,
+    )
 
 
-def _fetch_market_history(ticker: str, range_key: str):
+def _fetch_market_history(ticker: str, range_key: str, include_scanner_br: bool = True):
     from . import legacy_compat
 
-    return legacy_compat._fetch_market_history(ticker, range_key)
+    return legacy_compat._fetch_market_history(
+        ticker,
+        range_key,
+        include_scanner_br=include_scanner_br,
+    )
 
 
-def refresh_asset_market_data(ticker: str):
+def refresh_asset_market_data(ticker: str, include_scanner_br: bool = True):
     from . import market_data as market_data_services
 
-    return market_data_services.refresh_asset_market_data(ticker)
+    return market_data_services.refresh_asset_market_data(
+        ticker,
+        include_scanner_br=include_scanner_br,
+    )
 
 
 def refresh_all_assets_market_data(attempts: int = 3):

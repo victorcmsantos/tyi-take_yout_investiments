@@ -54,13 +54,14 @@ from .services import (
     import_fixed_incomes_csv,
     import_transactions_csv,
     normalize_portfolio_ids,
-    refresh_all_assets_market_data,
+    refresh_assets_market_data,
     refresh_asset_market_data,
     resolve_portfolio_id,
     enrich_asset_with_openclaw,
     enrich_assets_with_openclaw_batch,
     update_metric_formula,
 )
+from .services import _legacy as legacy_market
 
 
 api_bp = Blueprint("api", __name__)
@@ -403,6 +404,108 @@ def _scanner_prepare_trade_payload(payload, user: dict, force_notes: bool = Fals
     return prepared
 
 
+def _scanner_brapi_symbol(value: str):
+    symbol = str(value or "").strip().upper()
+    if symbol.endswith(".SA"):
+        symbol = symbol[:-3]
+    if not symbol:
+        return ""
+    if not legacy_market._is_brazilian_market_ticker(symbol):
+        return ""
+    return symbol
+
+
+def _scanner_live_quote_overrides(symbols):
+    normalized = []
+    for item in symbols or []:
+        symbol = _scanner_brapi_symbol(item)
+        if symbol and symbol not in normalized:
+            normalized.append(symbol)
+    if not normalized:
+        return {}
+
+    result_map = legacy_market._fetch_brapi_quote_results_batch(normalized)
+    overrides = {}
+    for symbol in normalized:
+        row = result_map.get(symbol)
+        if not isinstance(row, dict):
+            continue
+        price_raw = row.get("regularMarketPrice")
+        try:
+            price_value = float(price_raw)
+        except (TypeError, ValueError):
+            continue
+
+        timestamp_value = None
+        raw_timestamp = row.get("regularMarketTime")
+        if isinstance(raw_timestamp, (int, float)):
+            try:
+                timestamp_value = datetime.fromtimestamp(
+                    float(raw_timestamp),
+                    tz=timezone.utc,
+                ).isoformat(timespec="seconds")
+            except Exception:
+                timestamp_value = None
+        elif isinstance(raw_timestamp, str):
+            timestamp_value = raw_timestamp.strip() or None
+
+        overrides[symbol] = {"price": price_value, "timestamp": timestamp_value}
+    return overrides
+
+
+def _scanner_apply_live_quote_overrides(rows):
+    if not isinstance(rows, list) or not rows:
+        return rows
+    overrides = _scanner_live_quote_overrides(
+        [(item or {}).get("ticker") for item in rows if isinstance(item, dict)]
+    )
+    if not overrides:
+        return rows
+
+    patched = []
+    for item in rows:
+        if not isinstance(item, dict):
+            patched.append(item)
+            continue
+        next_item = dict(item)
+        symbol = _scanner_brapi_symbol(next_item.get("ticker"))
+        override = overrides.get(symbol)
+        if override:
+            next_item["price"] = override["price"]
+            if override.get("timestamp"):
+                next_item["timestamp"] = override["timestamp"]
+        patched.append(next_item)
+    return patched
+
+
+def _scanner_apply_live_quote_overrides_to_ticker_payload(payload):
+    if not isinstance(payload, dict):
+        return payload
+    symbol = _scanner_brapi_symbol(
+        payload.get("ticker")
+        or ((payload.get("catalog") or {}).get("ticker") if isinstance(payload.get("catalog"), dict) else "")
+    )
+    if not symbol:
+        return payload
+    override = _scanner_live_quote_overrides([symbol]).get(symbol)
+    if not override:
+        return payload
+
+    next_payload = dict(payload)
+    next_payload["latest_price"] = override["price"]
+    if override.get("timestamp"):
+        next_payload["latest_price_timestamp"] = override["timestamp"]
+
+    latest_signal = next_payload.get("latest_signal")
+    if isinstance(latest_signal, dict):
+        next_signal = dict(latest_signal)
+        next_signal["price"] = override["price"]
+        if override.get("timestamp"):
+            next_signal["timestamp"] = override["timestamp"]
+        next_payload["latest_signal"] = next_signal
+    return next_payload
+
+
 def _market_scanner_base_url():
     return (os.getenv("MARKET_SCANNER_BASE_URL") or "http://market-scanner:8000").rstrip("/")
 
@@ -683,12 +786,25 @@ def scanner_health():
 
 @api_bp.route("/scanner/signals", methods=["GET"])
 def scanner_signals():
-    return _market_scanner_proxy_get("/signals")
+    ok, status, response_payload = _market_scanner_request("GET", "/signals")
+    if not ok:
+        return _market_scanner_result_to_api_response(ok, status, response_payload)
+    response_payload = _scanner_apply_live_quote_overrides(response_payload)
+    return _json_ok(response_payload, status=status)
 
 
 @api_bp.route("/scanner/signal-matrix", methods=["GET"])
 def scanner_signal_matrix():
-    return _market_scanner_proxy_get("/signal-matrix")
+    ok, status, response_payload = _market_scanner_request("GET", "/signal-matrix")
+    if not ok:
+        return _market_scanner_result_to_api_response(ok, status, response_payload)
+    if isinstance(response_payload, dict):
+        patched_payload = dict(response_payload)
+        patched_payload["rows"] = _scanner_apply_live_quote_overrides(
+            patched_payload.get("rows") or []
+        )
+        response_payload = patched_payload
+    return _json_ok(response_payload, status=status)
 
 
 @api_bp.route("/scanner/trades", methods=["GET"])
@@ -869,7 +985,11 @@ def scanner_close_trade(trade_id: int):
 @api_bp.route("/scanner/ticker/<symbol>", methods=["GET"])
 def scanner_ticker(symbol: str):
     safe_symbol = urlparse.quote(symbol.upper(), safe="")
-    return _market_scanner_proxy_get(f"/ticker/{safe_symbol}")
+    ok, status, response_payload = _market_scanner_request("GET", f"/ticker/{safe_symbol}")
+    if not ok:
+        return _market_scanner_result_to_api_response(ok, status, response_payload)
+    response_payload = _scanner_apply_live_quote_overrides_to_ticker_payload(response_payload)
+    return _json_ok(response_payload, status=status)
 
 
 @api_bp.route("/scanner/metrics/catalog", methods=["GET"])
@@ -1300,20 +1420,77 @@ def charts_dashboard():
 
 @api_bp.route("/sync/market-data", methods=["POST"])
 def sync_market_data_all():
+    request_payload = request.get_json(silent=True) or request.form.to_dict()
+    scope = str(request.args.get("scope") or request_payload.get("scope") or "all").strip().lower()
+    mode = str(request.args.get("mode") or request_payload.get("mode") or "full").strip().lower()
+    force_live = _as_bool(request.args.get("force_live")) or _as_bool(
+        request_payload.get("force_live")
+    )
+    stale_only = mode in {"stale", "stale_only", "incremental"} or _as_bool(
+        request.args.get("only_stale") or request_payload.get("only_stale")
+    )
     try:
-        failed = refresh_all_assets_market_data()
+        result = refresh_assets_market_data(
+            scope_key=scope,
+            stale_only=stale_only,
+            attempts=3,
+            include_scanner_br=not force_live,
+        )
+    except ValueError as exc:
+        return _json_error(str(exc), status=400)
     except Exception:
-        failed = ["erro"]
-    return _json_ok({"failed": failed, "failed_count": len(failed), "success": len(failed) == 0})
+        result = {
+            "scope": scope or "all",
+            "stale_only": stale_only,
+            "selected_count": 0,
+            "failed": ["erro"],
+        }
+    failed = result["failed"]
+    return _json_ok(
+        {
+            "scope": result["scope"],
+            "mode": "stale" if result["stale_only"] else "full",
+            "force_live": force_live,
+            "selected_count": result["selected_count"],
+            "failed": failed,
+            "failed_count": len(failed),
+            "success": len(failed) == 0,
+        }
+    )
 
 
 @api_bp.route("/sync/market-data/<ticker>", methods=["POST"])
 def sync_market_data_ticker(ticker):
+    request_payload = request.get_json(silent=True) or request.form.to_dict()
+    force_live = _as_bool(request.args.get("force_live")) or _as_bool(
+        request_payload.get("force_live")
+    )
     ok = False
     try:
-        ok = refresh_asset_market_data(ticker)
+        ok = refresh_asset_market_data(
+            ticker,
+            include_scanner_br=not force_live,
+        )
     except Exception:
         ok = False
     if not ok:
+        if force_live:
+            return _json_error(
+                "Nao foi possivel atualizar este ticker ao vivo agora.",
+                status=503,
+            )
         return _json_error("Nao foi possivel atualizar este ticker agora.", status=503)
-    return _json_ok({"ticker": ticker.upper(), "success": True})
+
+    asset_payload = get_asset(ticker)
+    market_data_payload = (
+        ((asset_payload or {}).get("asset") or {}).get("market_data") or {}
+    )
+    return _json_ok(
+        {
+            "ticker": ticker.upper(),
+            "success": True,
+            "force_live": force_live,
+            "source": market_data_payload.get("source"),
+            "updated_at": market_data_payload.get("updated_at"),
+        }
+    )

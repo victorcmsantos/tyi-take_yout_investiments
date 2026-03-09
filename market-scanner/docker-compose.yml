@@ -1,0 +1,14 @@
+services:
+  market-scanner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-scanner
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./data:/app/data
+    command: ["python", "main.py", "--mode", "all"]

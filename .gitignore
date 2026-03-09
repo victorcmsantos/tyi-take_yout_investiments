@@ -8,6 +8,9 @@ frontend/dist/
 
 # Local docker volumes/state (portable compose)
 app_vol/
+market-scanner/data/
+market-scanner/.venv/
+market-scanner/.env
 openclaw/config/
 openclaw/workspace/.openclaw/
 openclaw-local-ca.pem

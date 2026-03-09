@@ -4,24 +4,40 @@ from threading import Event, Thread
 
 from .observability import init_job_status, mark_job_finished, mark_job_started
 from .runtime_lock import should_run_background_jobs
-from .services import refresh_all_assets_market_data
+from .services import refresh_stale_assets_market_data
+
+
+def _as_bool(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _run_sync_once(app):
     with app.app_context():
         mark_job_started(app, "market_sync")
         try:
-            failed = refresh_all_assets_market_data(attempts=5)
+            scope_key = str(app.config.get("MARKET_SYNC_SCOPE", "all") or "all").strip().lower()
+            include_scanner_br = not bool(app.config.get("MARKET_SYNC_FORCE_LIVE_BR", False))
+            failed = refresh_stale_assets_market_data(
+                attempts=5,
+                scope_key=scope_key,
+                include_scanner_br=include_scanner_br,
+            )
             if failed:
                 app.logger.warning(
-                    "Atualizacao Yahoo com falha temporaria para %s ticker(s): %s. Nova tentativa no proximo ciclo.",
+                    "Atualizacao de mercado (scope=%s) com falha temporaria para %s ticker(s): %s. Nova tentativa no proximo ciclo.",
+                    scope_key,
                     len(failed),
                     ", ".join(failed[:10]),
                 )
             mark_job_finished(
                 app,
                 "market_sync",
-                result={"failed_tickers": len(failed), "sample": failed[:10]},
+                result={
+                    "scope": scope_key,
+                    "include_scanner_br": include_scanner_br,
+                    "failed_tickers": len(failed),
+                    "sample": failed[:10],
+                },
             )
         except Exception as exc:
             mark_job_finished(app, "market_sync", error=exc)
@@ -79,8 +95,22 @@ def trigger_market_sync_if_due(app, force: bool = False, blocking: bool = False)
 
 
 def start_market_sync(app):
-    app.config.setdefault("MARKET_SYNC_ENABLED", True)
-    app.config.setdefault("MARKET_SYNC_INTERVAL_SECONDS", 300)
+    enabled_default = str(os.getenv("MARKET_SYNC_ENABLED", "1")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    try:
+        interval_default = max(int(os.getenv("MARKET_SYNC_INTERVAL_SECONDS", "300")), 60)
+    except (TypeError, ValueError):
+        interval_default = 300
+    scope_default = str(os.getenv("MARKET_SYNC_SCOPE", "all") or "all").strip().lower()
+    force_live_br_default = _as_bool(os.getenv("MARKET_SYNC_FORCE_LIVE_BR", "0"))
+    app.config.setdefault("MARKET_SYNC_ENABLED", enabled_default)
+    app.config.setdefault("MARKET_SYNC_INTERVAL_SECONDS", interval_default)
+    app.config.setdefault("MARKET_SYNC_SCOPE", scope_default)
+    app.config.setdefault("MARKET_SYNC_FORCE_LIVE_BR", force_live_br_default)
     app.extensions.setdefault("market_sync_last_run", 0.0)
     app.extensions.setdefault("market_sync_manual_running", False)
     should_start = app.config["MARKET_SYNC_ENABLED"] and should_run_background_jobs(app)

@@ -5,8 +5,10 @@ from .market_data import (
     get_asset,
     get_asset_price_history,
     get_top_assets,
+    refresh_assets_market_data,
     refresh_all_assets_market_data,
     refresh_asset_market_data,
+    refresh_stale_assets_market_data,
 )
 from .openclaw import (
     enrich_asset_with_openclaw,
@@ -82,8 +84,10 @@ __all__ = [
     "normalize_portfolio_ids",
     "rebuild_chart_snapshots",
     "rebuild_fixed_income_snapshots",
+    "refresh_assets_market_data",
     "refresh_all_assets_market_data",
     "refresh_asset_market_data",
+    "refresh_stale_assets_market_data",
     "resolve_portfolio_id",
     "update_metric_formula",
 ]

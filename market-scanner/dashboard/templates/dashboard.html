@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Market Scanner Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v={{ style_version }}" />
+  </head>
+  <body>
+    <main class="page-shell" data-highlight-score="{{ highlight_score }}">
+      <nav class="page-nav">
+        <a class="page-nav__link page-nav__link--active" href="/dashboard">Dashboard</a>
+        <a class="page-nav__link" href="/operations">Operações</a>
+        <a class="page-nav__link" href="/metrics-lab">Métricas</a>
+      </nav>
+
+      <section class="hero">
+        <div>
+          <p class="eyebrow">B3 Quant Scanner</p>
+          <h1>Live buy signals</h1>
+          <p class="hero-copy">
+            Tiles are generated only for assets that passed the active buy rule stack.
+          </p>
+        </div>
+        <div class="hero-stats">
+          <div class="stat-card">
+            <span class="stat-label">Tracked signals</span>
+            <strong id="signal-count">{{ summary.signal_count }}</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Last update</span>
+            <strong id="last-update">{{ summary.latest_signal_time or 'No signals yet' }}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="matrix-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Signal Matrix</p>
+            <h2>Ticker x signal</h2>
+          </div>
+          <p class="hero-copy">
+            Assets with more triggered metrics rise to the top, making the strongest setups easier to spot.
+          </p>
+        </div>
+        <div class="matrix-shell" id="matrix-shell">
+          {% if matrix.rows %}
+          <table class="signal-matrix" id="signal-matrix">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Count</th>
+                <th>Score</th>
+                {% for column in matrix.columns %}
+                <th>{{ column }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in matrix.rows %}
+              <tr>
+                <td>{{ row.ticker }}</td>
+                <td>{{ row.triggered_count }}</td>
+                <td>{{ '%.2f'|format(row.score) }}</td>
+                {% for column in matrix.columns %}
+                <td class="{% if row.cells[column] %}matrix-hit{% else %}matrix-miss{% endif %}">
+                  {% if row.cells[column] %}●{% else %}&middot;{% endif %}
+                </td>
+                {% endfor %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% else %}
+          <div class="empty-state">
+            No matrix data yet. The table is populated when at least one active signal exists.
+          </div>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="card-filters">
+        <div class="filter-card">
+          <label class="label" for="ticker-filter">Filtrar ticker</label>
+          <input id="ticker-filter" class="filter-input" type="search" placeholder="Ex: PETR, VALE, WEGE" />
+        </div>
+        <div class="filter-card">
+          <label class="label" for="rr-filter">Faixa de Risco/Retorno</label>
+          <select id="rr-filter" class="filter-input">
+            <option value="all">Todos</option>
+            <option value="2">RR &gt; 2.0</option>
+            <option value="3">RR &gt; 3.0</option>
+            <option value="4">RR &gt; 4.0</option>
+          </select>
+        </div>
+        <div class="filter-card">
+          <label class="label" for="sort-filter">Ordenar por</label>
+          <select id="sort-filter" class="filter-input">
+            <option value="count_desc">Mais sinais</option>
+            <option value="score_desc">Maior score</option>
+            <option value="gain_pct_desc">Maior ganho %</option>
+            <option value="rr_desc">Maior RR</option>
+            <option value="ticker_asc">Ticker A-Z</option>
+          </select>
+        </div>
+        <div class="filter-card">
+          <label class="label" for="setup-filter">Setup</label>
+          <select id="setup-filter" class="filter-input">
+            <option value="all">Todos</option>
+            <option value="setup_1">Setup 1: Breakout + Volume + Trend</option>
+            <option value="setup_2">Setup 2: Momentum + Relative Strength + Volume</option>
+            <option value="setup_3">Setup 3: Volatility Compression + Breakout</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="signal-grid" id="signal-grid">
+        {% for signal in signals %}
+        <article
+          class="signal-tile {% if signal.score >= highlight_score %}signal-tile--highlight{% endif %}{% if signal.trade_levels.risk_reward_ratio is not none and signal.trade_levels.risk_reward_ratio > 4.0 %} signal-tile--rr-tier-4{% elif signal.trade_levels.risk_reward_ratio is not none and signal.trade_levels.risk_reward_ratio > 3.0 %} signal-tile--rr-tier-3{% elif signal.trade_levels.risk_reward_ratio is not none and signal.trade_levels.risk_reward_ratio > 2.0 %} signal-tile--rr-tier-2{% endif %}"
+        >
+          <header>
+            <span class="signal-ticker">{{ signal.ticker }}</span>
+            <span class="signal-badge-group">
+              <span class="signal-badge">BUY</span>
+              {% if signal.trade_levels.risk_reward_ratio is not none and signal.trade_levels.risk_reward_ratio > 4.0 %}
+              <span class="signal-badge signal-badge--rr signal-badge--rr4">RR &gt; 4.0</span>
+              {% elif signal.trade_levels.risk_reward_ratio is not none and signal.trade_levels.risk_reward_ratio > 3.0 %}
+              <span class="signal-badge signal-badge--rr signal-badge--rr3">RR &gt; 3.0</span>
+              {% elif signal.trade_levels.risk_reward_ratio is not none and signal.trade_levels.risk_reward_ratio > 2.0 %}
+              <span class="signal-badge signal-badge--rr signal-badge--rr2">RR &gt; 2.0</span>
+              {% endif %}
+            </span>
+          </header>
+          <div class="signal-value">
+            <span class="label">Price</span>
+            <strong>{{ '%.2f'|format(signal.price) }}</strong>
+          </div>
+          <div class="signal-value">
+            <span class="label">Score</span>
+            <strong>{{ '%.2f'|format(signal.score) }}</strong>
+          </div>
+          <div class="trade-plan">
+            <div class="trade-plan-row">
+              <span class="label">Região de Entrada</span>
+              <strong>
+                {{ '%.2f'|format(signal.trade_levels.entry_region.low) }}
+                -
+                {{ '%.2f'|format(signal.trade_levels.entry_region.high) }}
+              </strong>
+            </div>
+            <div class="trade-plan-row trade-plan-row--up">
+              <span class="label">
+                <span class="trade-arrow trade-arrow--up">↑</span>
+                Objetivo Sugerido
+              </span>
+              <strong>
+                {{ '%.2f'|format(signal.trade_levels.objective_price) }}
+                <span class="trade-pct">(+{{ '%.2f'|format(signal.trade_levels.potential_gain_pct) }}%)</span>
+              </strong>
+            </div>
+            <div class="trade-plan-row trade-plan-row--down">
+              <span class="label">
+                <span class="trade-arrow trade-arrow--down">↓</span>
+                Stop Sugerido
+              </span>
+              <strong>
+                {{ '%.2f'|format(signal.trade_levels.stop_price) }}
+                <span class="trade-pct">(-{{ '%.2f'|format(signal.trade_levels.risk_pct) }}%)</span>
+              </strong>
+            </div>
+            <div class="trade-plan-row trade-plan-row--ratio">
+              <span class="label">Risco/Retorno</span>
+              <strong>
+                {% if signal.trade_levels.risk_reward_ratio is not none %}
+                1:{{ '%.2f'|format(signal.trade_levels.risk_reward_ratio) }}
+                {% else %}
+                N/A
+                {% endif %}
+              </strong>
+            </div>
+          </div>
+          <div class="tile-actions">
+            <button
+              class="trade-select-button {% if signal.ticker in tracked_tickers %}trade-select-button--active{% endif %}"
+              type="button"
+              data-action="track-trade"
+              data-ticker="{{ signal.ticker }}"
+              {% if signal.ticker in tracked_tickers %}disabled{% endif %}
+            >
+              {% if signal.ticker in tracked_tickers %}Acompanhando{% else %}Comprei{% endif %}
+            </button>
+          </div>
+          <div class="metrics-block">
+            <span class="label">Metrics triggered</span>
+            <ul>
+              {% for metric in signal.metrics_triggered %}
+              <li>{{ metric }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+        </article>
+        {% endfor %}
+      </section>
+    </main>
+
+    <div class="trade-modal" id="trade-modal" hidden>
+      <div class="trade-modal__backdrop" data-action="close-trade-modal"></div>
+      <div class="trade-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="trade-modal-title">
+        <div class="trade-modal__header">
+          <div>
+            <p class="eyebrow">Selecionar Compra</p>
+            <h2 id="trade-modal-title">Registrar entrada</h2>
+          </div>
+          <button class="trade-modal__close" type="button" data-action="close-trade-modal" aria-label="Fechar">
+            ×
+          </button>
+        </div>
+        <form id="trade-modal-form" class="trade-modal__form">
+          <div class="trade-modal__grid">
+            <label class="trade-edit-field">
+              <span class="label">Ticker</span>
+              <input id="trade-modal-ticker" class="filter-input" name="ticker" type="text" readonly />
+            </label>
+            <label class="trade-edit-field">
+              <span class="label">Quantidade</span>
+              <input id="trade-modal-quantity" class="filter-input" name="quantity" type="number" min="0.000001" step="0.000001" required />
+            </label>
+            <label class="trade-edit-field">
+              <span class="label">Preco de execucao</span>
+              <input id="trade-modal-price" class="filter-input" name="execution_price" type="number" min="0.0001" step="0.0001" required />
+            </label>
+            <label class="trade-edit-field">
+              <span class="label">Valor investido</span>
+              <input id="trade-modal-invested" class="filter-input" name="invested_amount" type="number" min="0.01" step="0.01" required />
+            </label>
+          </div>
+          <p class="trade-modal__hint">
+            Altere <strong>preco</strong> para recalcular o valor investido. Altere <strong>valor investido</strong> para recalcular o preco.
+          </p>
+          <label class="trade-edit-field">
+            <span class="label">Observacoes</span>
+            <textarea id="trade-modal-notes" class="trade-notes-input" name="notes" rows="3" placeholder="Contexto da compra, parcial, risco, motivo..."></textarea>
+          </label>
+          <div class="trade-form-actions trade-form-actions--modal">
+            <button class="trade-modal__cancel" type="button" data-action="close-trade-modal">Cancelar</button>
+            <button class="trade-save-button" type="submit">Confirmar compra</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script id="initial-signals" type="application/json">{{ signals|tojson }}</script>
+    <script id="initial-tracked-tickers" type="application/json">{{ tracked_tickers|tojson }}</script>
+    <script src="{{ url_for('static', path='dashboard.js') }}?v={{ dashboard_js_version }}"></script>
+  </body>
+</html>

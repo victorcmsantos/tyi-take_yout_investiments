@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Market Scanner Metrics</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v={{ style_version }}" />
+  </head>
+  <body>
+    <main class="page-shell page-shell--metrics">
+      <nav class="page-nav">
+        <a class="page-nav__link" href="/dashboard">Dashboard</a>
+        <a class="page-nav__link" href="/operations">Operações</a>
+        <a class="page-nav__link page-nav__link--active" href="/metrics-lab">Métricas</a>
+      </nav>
+
+      <section class="metrics-page-header">
+        <p class="eyebrow">Metric Lab</p>
+        <h1>Editor de métricas</h1>
+        <p class="hero-copy">
+          Ajuste parâmetros, salve e recalcule para todos os tickers.
+        </p>
+      </section>
+
+      <section class="metrics-layout">
+        <aside class="metrics-sidebar">
+          <div class="metrics-sidebar__header">
+            <p class="eyebrow">Catálogo</p>
+            <h2>Lista de métricas</h2>
+            <p class="hero-copy">
+              Selecione uma métrica para ver fórmula, parâmetros e editar.
+            </p>
+          </div>
+          <label class="metric-search">
+            <span class="label">Buscar métrica</span>
+            <input
+              id="metric-search"
+              class="filter-input"
+              type="search"
+              placeholder="Ex: RSI, Bollinger, Momentum"
+            />
+          </label>
+          <div class="metric-menu-meta">
+            <span id="metric-count">0 métricas</span>
+          </div>
+          <div id="metric-menu" class="metric-menu"></div>
+        </aside>
+
+        <article class="metrics-detail" id="metric-detail">
+          <div class="empty-state">Selecione uma métrica no menu lateral.</div>
+        </article>
+      </section>
+    </main>
+
+    <script id="initial-metric-catalog" type="application/json">{{ metric_catalog|tojson }}</script>
+    <script src="{{ url_for('static', path='metrics.js') }}?v={{ metrics_js_version }}"></script>
+  </body>
+</html>

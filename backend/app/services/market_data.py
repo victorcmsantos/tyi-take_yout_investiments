@@ -161,13 +161,19 @@ def get_asset_price_history(ticker: str, range_key: str = "1y"):
     return history
 
 
-def refresh_asset_market_data(ticker: str):
+def refresh_asset_market_data(ticker: str, include_scanner_br: bool = True):
     asset = get_asset(ticker)
     if not asset:
         return False
 
-    profile, profile_source = legacy._fetch_market_profile(ticker)
-    metrics, metrics_source = legacy._fetch_market_metrics(ticker)
+    profile, profile_source = legacy._fetch_market_profile(
+        ticker,
+        include_scanner_br=include_scanner_br,
+    )
+    metrics, metrics_source = legacy._fetch_market_metrics(
+        ticker,
+        include_scanner_br=include_scanner_br,
+    )
     if not metrics and not profile:
         _mark_asset_market_data_failed(ticker, "Nenhum provider retornou dados de mercado.")
         return False
@@ -271,7 +277,10 @@ def refresh_asset_market_data(ticker: str):
         logger.info(
             "market_data_source ticker=%s providers=%s metrics_source=%s profile_source=%s price=%s dy=%s pl=%s pvp=%s variation_day=%s variation_7d=%s variation_30d=%s market_cap_bi=%s",
             ticker.upper(),
-            legacy._market_data_provider_label(ticker),
+            legacy._market_data_provider_label(
+                ticker,
+                include_scanner_br=include_scanner_br,
+            ),
             metrics_source or "none",
             profile_source or "none",
             applied_metrics.get("price"),
@@ -286,7 +295,11 @@ def refresh_asset_market_data(ticker: str):
     return has_market_metrics
 
 
-def refresh_market_data_for_tickers(tickers, attempts: int = 2):
+def refresh_market_data_for_tickers(
+    tickers,
+    attempts: int = 2,
+    include_scanner_br: bool = True,
+):
     unique_tickers = []
     for ticker in tickers:
         clean = (ticker or "").strip().upper()
@@ -302,7 +315,10 @@ def refresh_market_data_for_tickers(tickers, attempts: int = 2):
         legacy._prefetch_brapi_market_data_for_tickers(current_batch)
         for ticker in current_batch:
             try:
-                ok = refresh_asset_market_data(ticker)
+                ok = refresh_asset_market_data(
+                    ticker,
+                    include_scanner_br=include_scanner_br,
+                )
             except Exception as exc:
                 _mark_asset_market_data_failed(ticker, str(exc))
                 ok = False
@@ -315,19 +331,120 @@ def refresh_market_data_for_tickers(tickers, attempts: int = 2):
     return sorted(failed)
 
 
-def refresh_all_assets_market_data(attempts: int = 3):
+def _normalize_scope_key(scope_key: str):
+    key = str(scope_key or "all").strip().lower()
+    if key in {"", "all", "todos"}:
+        return "all"
+    if key in {"br", "b3", "brasil"}:
+        return "br"
+    if key in {"us", "usa", "eua"}:
+        return "us"
+    if key in {"crypto", "cripto"}:
+        return "crypto"
+    raise ValueError("Escopo invalido. Use: all, br, us, crypto.")
+
+
+def _ticker_matches_scope(ticker: str, scope_key: str):
+    if scope_key == "all":
+        return True
+    return legacy._market_data_class_key(ticker) == scope_key
+
+
+def refresh_assets_market_data(
+    scope_key: str = "all",
+    stale_only: bool = False,
+    attempts: int = 3,
+    include_scanner_br: bool = True,
+):
+    normalized_scope = _normalize_scope_key(scope_key)
+    failed = _refresh_assets_market_data_by_scope(
+        attempts=attempts,
+        stale_only=stale_only,
+        scope_key=normalized_scope,
+        include_scanner_br=include_scanner_br,
+    )
+    return {
+        "scope": normalized_scope,
+        "stale_only": bool(stale_only),
+        "selected_count": len(failed["selected"]),
+        "failed": list(failed["failed"]),
+    }
+
+
+def refresh_all_assets_market_data(
+    attempts: int = 3,
+    scope_key: str = "all",
+    include_scanner_br: bool = True,
+):
+    result = refresh_assets_market_data(
+        scope_key=scope_key,
+        stale_only=False,
+        attempts=attempts,
+        include_scanner_br=include_scanner_br,
+    )
+    return result["failed"]
+
+
+def refresh_stale_assets_market_data(
+    attempts: int = 3,
+    scope_key: str = "all",
+    include_scanner_br: bool = True,
+):
+    result = refresh_assets_market_data(
+        scope_key=scope_key,
+        stale_only=True,
+        attempts=attempts,
+        include_scanner_br=include_scanner_br,
+    )
+    return result["failed"]
+
+
+def _refresh_assets_market_data_by_scope(
+    attempts: int = 3,
+    stale_only: bool = False,
+    scope_key: str = "all",
+    include_scanner_br: bool = True,
+):
     db = get_db()
-    rows = db.execute("SELECT ticker FROM assets").fetchall()
-    tickers = [row["ticker"] for row in rows]
+    rows = db.execute(
+        """
+        SELECT
+            ticker,
+            market_data_status,
+            market_data_source,
+            market_data_updated_at,
+            market_data_last_attempt_at,
+            market_data_last_error
+        FROM assets
+        """
+    ).fetchall()
+    tickers = []
+    for row in rows:
+        item = dict(row)
+        ticker = str(item.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        if not _ticker_matches_scope(ticker, scope_key):
+            continue
+        if stale_only and not _market_data_meta_from_asset(item)["is_stale"]:
+            continue
+        tickers.append(ticker)
     if not tickers:
-        return []
-    return refresh_market_data_for_tickers(tickers, attempts=attempts)
+        return {"selected": [], "failed": []}
+    failed = refresh_market_data_for_tickers(
+        tickers,
+        attempts=attempts,
+        include_scanner_br=include_scanner_br,
+    )
+    return {"selected": tickers, "failed": failed}
 
 
 __all__ = [
     "get_asset",
     "get_asset_price_history",
     "get_top_assets",
+    "refresh_assets_market_data",
     "refresh_all_assets_market_data",
     "refresh_asset_market_data",
+    "refresh_stale_assets_market_data",
 ]

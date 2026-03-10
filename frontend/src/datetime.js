@@ -37,3 +37,17 @@ export function currentBrowserTimeZone() {
     return 'local'
   }
 }
+
+export function formatAgeFromNow(value, fallback = '-') {
+  const timestamp = parseApiDate(value)
+  if (timestamp === null) return fallback
+  const diffMs = Math.max(Date.now() - timestamp, 0)
+  const diffSeconds = Math.floor(diffMs / 1000)
+  if (diffSeconds < 60) return `${diffSeconds}s`
+  const diffMinutes = Math.floor(diffSeconds / 60)
+  if (diffMinutes < 60) return `${diffMinutes} min`
+  const diffHours = Math.floor(diffMinutes / 60)
+  if (diffHours < 24) return `${diffHours}h ${diffMinutes % 60}min`
+  const diffDays = Math.floor(diffHours / 24)
+  return `${diffDays}d ${diffHours % 24}h`
+}

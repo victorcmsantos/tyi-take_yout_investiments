@@ -3,12 +3,20 @@
 import os
 import random
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from math import isfinite
 
 from flask import current_app
 
 from ..db import get_db
 from . import _legacy as legacy
+
+try:
+    import yfinance as yf
+except ImportError:  # pragma: no cover
+    yf = None
+
+_UPCOMING_INCOME_CACHE = {}
 
 
 def _now_iso():
@@ -38,6 +46,454 @@ def _parse_iso_datetime(value):
         except Exception:
             return parsed.replace(tzinfo=None)
     return parsed
+
+
+def _upcoming_income_cache_ttl_seconds():
+    raw = (os.getenv("UPCOMING_INCOME_CACHE_TTL_SECONDS") or "1800").strip()
+    try:
+        return max(int(raw), 60)
+    except (TypeError, ValueError):
+        return 1800
+
+
+def _upcoming_income_db_cache_ttl_seconds():
+    raw = (
+        os.getenv("UPCOMING_INCOME_DB_CACHE_TTL_SECONDS")
+        or os.getenv("UPCOMING_INCOME_CACHE_TTL_SECONDS")
+        or "1800"
+    ).strip()
+    try:
+        return max(int(raw), 60)
+    except (TypeError, ValueError):
+        return 1800
+
+
+def _upcoming_income_cache_get(cache_key):
+    cached = _UPCOMING_INCOME_CACHE.get(cache_key)
+    if not cached:
+        return None
+    expires_at = float(cached.get("expires_at") or 0.0)
+    if expires_at <= time.time():
+        _UPCOMING_INCOME_CACHE.pop(cache_key, None)
+        return None
+    payload = cached.get("payload") or []
+    return [dict(item) for item in payload if isinstance(item, dict)]
+
+
+def _upcoming_income_cache_set(cache_key, payload):
+    _UPCOMING_INCOME_CACHE[cache_key] = {
+        "expires_at": time.time() + _upcoming_income_cache_ttl_seconds(),
+        "payload": [dict(item) for item in (payload or []) if isinstance(item, dict)],
+    }
+    if len(_UPCOMING_INCOME_CACHE) > 500:
+        now_ts = time.time()
+        expired_keys = [
+            key
+            for key, value in _UPCOMING_INCOME_CACHE.items()
+            if float((value or {}).get("expires_at") or 0.0) <= now_ts
+        ]
+        for key in expired_keys:
+            _UPCOMING_INCOME_CACHE.pop(key, None)
+
+
+def _coerce_date(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if hasattr(value, "to_pydatetime"):
+        try:
+            return value.to_pydatetime().date()
+        except Exception:
+            return None
+    if hasattr(value, "date") and callable(value.date):
+        try:
+            return value.date()
+        except Exception:
+            return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if " " in raw:
+        raw = raw.split(" ", 1)[0]
+    if "T" in raw:
+        raw = raw.split("T", 1)[0]
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _coerce_float(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not isfinite(number):
+        return None
+    return number
+
+
+def _upcoming_income_currency(symbol: str):
+    return "BRL" if str(symbol or "").strip().upper().endswith(".SA") else "USD"
+
+
+def _upcoming_income_db_cache_get(ticker: str, max_items: int):
+    db = get_db()
+    state_row = db.execute(
+        """
+        SELECT fetched_at, has_events
+        FROM upcoming_income_cache_state
+        WHERE ticker = ?
+        """,
+        (ticker,),
+    ).fetchone()
+    if not state_row:
+        return False, []
+
+    fetched_dt = _parse_iso_datetime(state_row["fetched_at"])
+    if fetched_dt is None:
+        return False, []
+    age_seconds = (datetime.utcnow() - fetched_dt).total_seconds()
+    if age_seconds > float(_upcoming_income_db_cache_ttl_seconds()):
+        return False, []
+
+    has_events = int(state_row["has_events"] or 0) > 0
+    if not has_events:
+        return True, []
+
+    rows = db.execute(
+        """
+        SELECT
+            ticker,
+            symbol,
+            income_type,
+            ex_date,
+            payment_date,
+            amount,
+            currency,
+            source
+        FROM upcoming_income_cache_events
+        WHERE ticker = ?
+        ORDER BY
+            COALESCE(ex_date, '9999-12-31') ASC,
+            COALESCE(payment_date, '9999-12-31') ASC
+        LIMIT ?
+        """,
+        (ticker, int(max_items)),
+    ).fetchall()
+    events = []
+    for row in rows:
+        amount = _coerce_float(row["amount"])
+        events.append(
+            {
+                "ticker": str(row["ticker"] or "").strip().upper(),
+                "symbol": str(row["symbol"] or "").strip().upper(),
+                "income_type": str(row["income_type"] or "dividendo").strip().lower(),
+                "ex_date": row["ex_date"],
+                "payment_date": row["payment_date"],
+                "amount": round(float(amount), 6) if amount is not None else None,
+                "currency": str(row["currency"] or "BRL").strip().upper() or "BRL",
+                "source": str(row["source"] or "").strip(),
+            }
+        )
+    return True, events
+
+
+def _upcoming_income_db_cache_set(ticker: str, events):
+    db = get_db()
+    now_iso = _now_iso()
+    normalized_ticker = str(ticker or "").strip().upper()
+    safe_events = [item for item in (events or []) if isinstance(item, dict)]
+
+    db.execute(
+        "DELETE FROM upcoming_income_cache_events WHERE ticker = ?",
+        (normalized_ticker,),
+    )
+    for event in safe_events:
+        amount = _coerce_float(event.get("amount"))
+        db.execute(
+            """
+            INSERT INTO upcoming_income_cache_events (
+                ticker,
+                symbol,
+                income_type,
+                ex_date,
+                payment_date,
+                amount,
+                currency,
+                source,
+                fetched_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_ticker,
+                str(event.get("symbol") or "").strip().upper(),
+                str(event.get("income_type") or "dividendo").strip().lower(),
+                event.get("ex_date"),
+                event.get("payment_date"),
+                float(amount) if amount is not None else None,
+                str(event.get("currency") or "BRL").strip().upper() or "BRL",
+                str(event.get("source") or "").strip(),
+                now_iso,
+            ),
+        )
+
+    db.execute(
+        """
+        INSERT INTO upcoming_income_cache_state (
+            ticker,
+            fetched_at,
+            has_events
+        )
+        VALUES (?, ?, ?)
+        ON CONFLICT(ticker) DO UPDATE SET
+            fetched_at = excluded.fetched_at,
+            has_events = excluded.has_events
+        """,
+        (normalized_ticker, now_iso, 1 if safe_events else 0),
+    )
+
+    if random.random() < 0.02:
+        cutoff_dt = datetime.utcnow() - timedelta(seconds=max(_upcoming_income_db_cache_ttl_seconds() * 6, 86400))
+        cutoff_iso = cutoff_dt.replace(microsecond=0).isoformat() + "Z"
+        db.execute(
+            """
+            DELETE FROM upcoming_income_cache_state
+            WHERE fetched_at < ?
+            """,
+            (cutoff_iso,),
+        )
+        db.execute(
+            """
+            DELETE FROM upcoming_income_cache_events
+            WHERE ticker NOT IN (
+                SELECT ticker FROM upcoming_income_cache_state
+            )
+            """
+        )
+    db.commit()
+
+
+def _upcoming_income_events_from_yfinance(symbol: str, ticker: str, max_items: int):
+    if yf is None:
+        return []
+
+    events = []
+    seen = set()
+    today = datetime.utcnow().date()
+    currency = _upcoming_income_currency(symbol)
+    normalized_ticker = str(ticker or "").strip().upper()
+    normalized_symbol = str(symbol or "").strip().upper()
+
+    try:
+        yf_ticker = yf.Ticker(normalized_symbol)
+    except Exception:
+        return []
+
+    # Declared future dividends with amount when available.
+    try:
+        actions = yf_ticker.actions
+    except Exception:
+        actions = None
+    if actions is not None and hasattr(actions, "iterrows"):
+        try:
+            iterator = actions.iterrows()
+        except Exception:
+            iterator = []
+        for index, row in iterator:
+            ex_date = _coerce_date(index)
+            if ex_date is None or ex_date < today:
+                continue
+            amount = _coerce_float(getattr(row, "get", lambda *_: None)("Dividends"))
+            if amount is None or amount <= 0:
+                continue
+            ex_iso = ex_date.isoformat()
+            key = (ex_iso, None, round(amount, 6))
+            if key in seen:
+                continue
+            seen.add(key)
+            events.append(
+                {
+                    "ticker": normalized_ticker,
+                    "symbol": normalized_symbol,
+                    "income_type": "dividendo",
+                    "ex_date": ex_iso,
+                    "payment_date": None,
+                    "amount": round(amount, 6),
+                    "currency": currency,
+                    "source": "yfinance_actions",
+                }
+            )
+
+    # Calendar usually provides the next expected ex-dividend date.
+    try:
+        calendar = yf_ticker.calendar
+    except Exception:
+        calendar = None
+    if calendar is None:
+        calendar = {}
+    if not isinstance(calendar, dict) and hasattr(calendar, "to_dict"):
+        try:
+            calendar = calendar.to_dict()
+        except Exception:
+            calendar = {}
+    if isinstance(calendar, dict):
+        ex_date = _coerce_date(calendar.get("Ex-Dividend Date"))
+        payment_date = _coerce_date(calendar.get("Dividend Date"))
+        if ex_date is not None and ex_date >= today:
+            ex_iso = ex_date.isoformat()
+            pay_iso = payment_date.isoformat() if payment_date is not None else None
+            existing = next((item for item in events if item.get("ex_date") == ex_iso), None)
+            if existing is not None:
+                if not existing.get("payment_date") and pay_iso:
+                    existing["payment_date"] = pay_iso
+            else:
+                key = (ex_iso, pay_iso, None)
+                if key not in seen:
+                    seen.add(key)
+                    events.append(
+                        {
+                            "ticker": normalized_ticker,
+                            "symbol": normalized_symbol,
+                            "income_type": "dividendo",
+                            "ex_date": ex_iso,
+                            "payment_date": pay_iso,
+                            "amount": None,
+                            "currency": currency,
+                            "source": "yfinance_calendar",
+                        }
+                    )
+
+    events.sort(key=lambda item: ((item.get("ex_date") or "9999-12-31"), (item.get("payment_date") or "9999-12-31")))
+    return events[:max_items]
+
+
+def get_asset_upcoming_incomes(
+    ticker: str,
+    max_items: int = 8,
+    allow_live_fetch: bool = True,
+    refresh_if_empty_cache: bool = True,
+):
+    normalized_ticker = str(ticker or "").strip().upper()
+    if not normalized_ticker:
+        return []
+    try:
+        max_count = max(1, min(int(max_items), 20))
+    except (TypeError, ValueError):
+        max_count = 8
+
+    cache_key = (normalized_ticker, max_count)
+    cached = _upcoming_income_cache_get(cache_key)
+    if cached is not None:
+        if cached or (not allow_live_fetch) or (not refresh_if_empty_cache):
+            return cached
+    try:
+        db_hit, db_cached = _upcoming_income_db_cache_get(normalized_ticker, max_count)
+    except Exception:
+        current_app.logger.exception(
+            "Falha ao ler cache compartilhado de proventos futuros para %s.",
+            normalized_ticker,
+        )
+        db_hit, db_cached = False, []
+    if db_hit:
+        _upcoming_income_cache_set(cache_key, db_cached)
+        if db_cached or (not allow_live_fetch) or (not refresh_if_empty_cache):
+            return db_cached
+    if not allow_live_fetch:
+        return []
+
+    symbols = list(legacy._candidate_yahoo_symbols(normalized_ticker))
+    if legacy._is_brazilian_market_ticker(normalized_ticker):
+        br_symbols = [symbol for symbol in symbols if str(symbol or "").strip().upper().endswith(".SA")]
+        if br_symbols:
+            symbols = br_symbols
+
+    events = []
+    for symbol in symbols:
+        events = _upcoming_income_events_from_yfinance(symbol, normalized_ticker, max_count)
+        if events:
+            break
+
+    try:
+        _upcoming_income_db_cache_set(normalized_ticker, events)
+    except Exception:
+        current_app.logger.exception(
+            "Falha ao atualizar cache compartilhado de proventos futuros para %s.",
+            normalized_ticker,
+        )
+    _upcoming_income_cache_set(cache_key, events)
+    return events
+
+
+def prefetch_upcoming_incomes_for_portfolios(
+    portfolio_ids=None,
+    max_items_per_ticker: int = 8,
+    limit_tickers: int | None = None,
+):
+    pids = legacy.normalize_portfolio_ids(portfolio_ids or [])
+    if not pids:
+        return {
+            "portfolio_ids": [],
+            "tickers_selected": 0,
+            "tickers_with_events": 0,
+            "events_found": 0,
+        }
+
+    placeholders = ",".join(["?"] * len(pids))
+    rows = get_db().execute(
+        """
+        SELECT
+            ticker,
+            SUM(CASE WHEN tx_type = 'buy' THEN shares ELSE -shares END) AS shares
+        FROM transactions
+        WHERE portfolio_id IN ("""
+        + placeholders
+        + """)
+        GROUP BY ticker
+        HAVING shares > 0
+        ORDER BY ticker ASC
+        """,
+        tuple(pids),
+    ).fetchall()
+
+    tickers = []
+    for row in rows:
+        ticker = str(row["ticker"] or "").strip().upper()
+        if not ticker:
+            continue
+        if not legacy._is_brazilian_market_ticker(ticker):
+            continue
+        tickers.append(ticker)
+
+    if limit_tickers is not None:
+        try:
+            safe_limit = int(limit_tickers)
+        except (TypeError, ValueError):
+            safe_limit = 0
+        if safe_limit > 0:
+            tickers = tickers[:safe_limit]
+
+    tickers_with_events = 0
+    events_found = 0
+    for ticker in tickers:
+        events = get_asset_upcoming_incomes(
+            ticker,
+            max_items=max_items_per_ticker,
+            allow_live_fetch=True,
+            refresh_if_empty_cache=True,
+        )
+        if events:
+            tickers_with_events += 1
+            events_found += len(events)
+
+    return {
+        "portfolio_ids": pids,
+        "tickers_selected": len(tickers),
+        "tickers_with_events": int(tickers_with_events),
+        "events_found": int(events_found),
+    }
 
 
 def _market_data_meta_from_asset(asset):
@@ -451,8 +907,10 @@ def _refresh_assets_market_data_by_scope(
 
 __all__ = [
     "get_asset",
+    "get_asset_upcoming_incomes",
     "get_asset_price_history",
     "get_top_assets",
+    "prefetch_upcoming_incomes_for_portfolios",
     "refresh_assets_market_data",
     "refresh_all_assets_market_data",
     "refresh_asset_market_data",

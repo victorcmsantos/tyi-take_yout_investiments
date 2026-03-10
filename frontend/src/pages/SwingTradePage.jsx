@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Paper, Typography } from '@mui/material'
 import { apiGet, apiPatch, apiPost } from '../api'
-import { currentBrowserTimeZone, formatDateTimeLocal } from '../datetime'
+import { currentBrowserTimeZone, formatAgeFromNow, formatDateTimeLocal } from '../datetime'
 
 function toNumberOrNull(value) {
   const num = Number(value)
@@ -13,12 +13,33 @@ function formatFloat(value, digits = 2) {
   return Number.isFinite(num) ? num.toFixed(digits) : '-'
 }
 
+function formatQuantity(value, maxDigits = 6) {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '-'
+  const fixed = num.toFixed(maxDigits)
+  const trimmed = fixed.replace(/\.?0+$/, '')
+  return trimmed === '-0' ? '0' : trimmed
+}
+
 function formatCurrency(value) {
   const num = Number(value || 0)
   return new Intl.NumberFormat('pt-BR', {
     style: 'currency',
     currency: 'BRL',
   }).format(Number.isFinite(num) ? num : 0)
+}
+
+function marketDataStampLabel(marketData) {
+  const source = (
+    String(marketData?.source || '')
+      .trim()
+      .toUpperCase()
+      .replaceAll('_', ' ')
+      || 'MARKET SCANNER'
+  )
+  const candle = formatDateTimeLocal(marketData?.updated_at, '-')
+  const age = formatAgeFromNow(marketData?.updated_at, '-')
+  return `${source} | ${candle} | ${age}`
 }
 
 function SwingTradePage({ readOnly = false }) {
@@ -187,9 +208,13 @@ function SwingTradePage({ readOnly = false }) {
 
                 <div className="scanner-open-trade-metrics">
                   <div><small>Entrada</small><strong>{formatFloat(trade.entry_price, 4)}</strong></div>
-                  <div><small>Quantidade</small><strong>{formatFloat(trade.quantity, 6)}</strong></div>
+                  <div><small>Quantidade</small><strong>{formatQuantity(trade.quantity, 6)}</strong></div>
                   <div><small>Investido</small><strong>{formatCurrency(trade.invested_amount)}</strong></div>
-                  <div><small>Último preço</small><strong>{trade.last_price == null ? 'N/A' : formatFloat(trade.last_price, 4)}</strong></div>
+                  <div>
+                    <small>Último preço</small>
+                    <strong>{trade.last_price == null ? 'N/A' : formatFloat(trade.last_price, 4)}</strong>
+                    <small className="scanner-market-data-stamp">{marketDataStampLabel(trade?.market_data)}</small>
+                  </div>
                   <div><small>Valor atual</small><strong>{formatCurrency(trade.current_market_value)}</strong></div>
                   <div><small>PnL %</small><strong className={Number(trade.current_pnl_pct || 0) >= 0 ? 'scanner-positive' : 'scanner-negative'}>{`${Number(trade.current_pnl_pct || 0) >= 0 ? '+' : ''}${formatFloat(Number(trade.current_pnl_pct || 0))}%`}</strong></div>
                   <div><small>PnL R$</small><strong className={Number(trade.current_pnl_amount || 0) >= 0 ? 'scanner-positive' : 'scanner-negative'}>{formatCurrency(trade.current_pnl_amount)}</strong></div>
@@ -268,6 +293,7 @@ function SwingTradePage({ readOnly = false }) {
                   <th>Saída</th>
                   <th>PnL %</th>
                   <th>PnL R$</th>
+                  <th>Fonte/candle</th>
                   <th>Motivo</th>
                   <th>Abertura</th>
                   <th>Fechamento</th>
@@ -282,7 +308,7 @@ function SwingTradePage({ readOnly = false }) {
                         {trade.status_label || trade.status || 'N/A'}
                       </span>
                     </td>
-                    <td>{formatFloat(trade.quantity, 6)}</td>
+                    <td>{formatQuantity(trade.quantity, 6)}</td>
                     <td>{formatCurrency(trade.invested_amount)}</td>
                     <td>{formatFloat(trade.entry_price, 4)}</td>
                     <td>{trade.exit_price == null ? 'N/A' : formatFloat(trade.exit_price, 4)}</td>
@@ -292,6 +318,7 @@ function SwingTradePage({ readOnly = false }) {
                     <td className={Number(trade.realized_pnl_amount || 0) >= 0 ? 'scanner-positive' : 'scanner-negative'}>
                       {formatCurrency(trade.realized_pnl_amount)}
                     </td>
+                    <td>{marketDataStampLabel(trade?.market_data)}</td>
                     <td>{trade.exit_reason || 'N/A'}</td>
                     <td>{formatDateTimeLocal(trade.opened_at)}</td>
                     <td>{formatDateTimeLocal(trade.closed_at)}</td>

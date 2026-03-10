@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
-from threading import Event, Lock, Thread
+from threading import Condition, Event, Lock, Thread
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
@@ -20,6 +20,7 @@ from collector.ticker_provider import B3ListedTicker, B3TickerProvider
 from config.settings import AppSettings
 from database.db import (
     has_backend_assets_table,
+    list_backend_br_asset_symbols,
     mark_missing_tickers_inactive,
     session_scope,
     touch_ticker_scan_status,
@@ -70,6 +71,14 @@ class MarketScannerDaemon:
         self.market_calendar = xcals.get_calendar("BVMF")
         self.scheduler = BackgroundScheduler(timezone=self.market_timezone)
         self._scan_lock = Lock()
+        self._scan_condition = Condition(Lock())
+        self._scan_running = False
+        self._scan_active_run_id = 0
+        self._scan_active_requested_symbols: list[str] | None = None
+        self._scan_active_force = False
+        self._scan_active_started_at: datetime | None = None
+        self._scan_last_summary = ScanSummary(0, 0, 0)
+        self._scan_last_finished_at: datetime | None = None
         self._stop_event = Event()
 
     def start(self) -> None:
@@ -124,8 +133,35 @@ class MarketScannerDaemon:
     def scan_market(self, force: bool = False) -> ScanSummary:
         """Fetch prices, compute metrics, evaluate signals, and persist results."""
 
-        with self._scan_lock:
-            return self._scan_market_internal(force=force, requested_symbols=None)
+        while True:
+            with self._scan_condition:
+                if self._scan_running:
+                    active_run_id = int(self._scan_active_run_id)
+                    active_symbols = self._scan_active_requested_symbols
+                    if active_symbols is None:
+                        logger.info(
+                            "Deduplicating full scan request while another full scan is running",
+                            active_run_id=active_run_id,
+                        )
+                        self._wait_for_scan_completion_locked(active_run_id)
+                        return self._scan_last_summary
+                    logger.info(
+                        "Queueing full scan request until active ticker scan completes",
+                        active_run_id=active_run_id,
+                        active_tickers=len(active_symbols),
+                    )
+                    self._wait_for_scan_completion_locked(active_run_id)
+                    continue
+                run_id = self._begin_scan_locked(requested_symbols=None, force=force)
+                break
+
+        summary = ScanSummary(0, 0, 0)
+        try:
+            with self._scan_lock:
+                summary = self._scan_market_internal(force=force, requested_symbols=None)
+            return summary
+        finally:
+            self._finish_scan_locked(run_id=run_id, summary=summary)
 
     def scan_ticker(self, symbol: str, force: bool = True) -> ScanSummary:
         """Run a manual scan for a single ticker."""
@@ -133,8 +169,96 @@ class MarketScannerDaemon:
         normalized = self._normalize_symbol(symbol)
         if not normalized:
             raise ValueError("Ticker invalido para scan manual.")
-        with self._scan_lock:
-            return self._scan_market_internal(force=force, requested_symbols=[normalized])
+        while True:
+            with self._scan_condition:
+                if self._scan_running:
+                    active_run_id = int(self._scan_active_run_id)
+                    active_symbols = self._scan_active_requested_symbols
+                    active_covers_symbol = active_symbols is None or normalized in set(active_symbols or [])
+                    if active_covers_symbol:
+                        logger.info(
+                            "Deduplicating ticker scan request while active scan already covers ticker",
+                            ticker=normalized,
+                            active_run_id=active_run_id,
+                            active_scope="full" if active_symbols is None else "ticker",
+                        )
+                        self._wait_for_scan_completion_locked(active_run_id)
+                        return self._scan_last_summary
+                    logger.info(
+                        "Queueing ticker scan request until active scan completes",
+                        ticker=normalized,
+                        active_run_id=active_run_id,
+                        active_tickers=len(active_symbols or []),
+                    )
+                    self._wait_for_scan_completion_locked(active_run_id)
+                    continue
+                run_id = self._begin_scan_locked(requested_symbols=[normalized], force=force)
+                break
+
+        summary = ScanSummary(0, 0, 0)
+        try:
+            with self._scan_lock:
+                summary = self._scan_market_internal(force=force, requested_symbols=[normalized])
+            return summary
+        finally:
+            self._finish_scan_locked(run_id=run_id, summary=summary)
+
+    def get_scan_status(self) -> dict[str, object]:
+        """Return runtime scan status for observability and dedup diagnostics."""
+
+        with self._scan_condition:
+            active_symbols = list(self._scan_active_requested_symbols or [])
+            active_started_at = (
+                self._scan_active_started_at.isoformat()
+                if self._scan_active_started_at is not None
+                else None
+            )
+            last_finished_at = (
+                self._scan_last_finished_at.isoformat()
+                if self._scan_last_finished_at is not None
+                else None
+            )
+            return {
+                "running": bool(self._scan_running),
+                "active_run_id": int(self._scan_active_run_id) if self._scan_running else None,
+                "active_scope": None
+                if not self._scan_running
+                else ("full" if self._scan_active_requested_symbols is None else "ticker"),
+                "active_requested_symbols": active_symbols if self._scan_running else [],
+                "active_requested_count": len(active_symbols) if self._scan_running else 0,
+                "active_force": bool(self._scan_active_force) if self._scan_running else False,
+                "active_started_at": active_started_at,
+                "last_summary": {
+                    "tickers_loaded": int(self._scan_last_summary.tickers_loaded),
+                    "tickers_processed": int(self._scan_last_summary.tickers_processed),
+                    "signals_triggered": int(self._scan_last_summary.signals_triggered),
+                },
+                "last_finished_at": last_finished_at,
+            }
+
+    def _begin_scan_locked(self, requested_symbols: list[str] | None, force: bool) -> int:
+        self._scan_active_run_id += 1
+        self._scan_running = True
+        self._scan_active_requested_symbols = None if requested_symbols is None else list(requested_symbols)
+        self._scan_active_force = bool(force)
+        self._scan_active_started_at = datetime.utcnow()
+        return int(self._scan_active_run_id)
+
+    def _finish_scan_locked(self, run_id: int, summary: ScanSummary) -> None:
+        with self._scan_condition:
+            if run_id != self._scan_active_run_id:
+                return
+            self._scan_last_summary = summary
+            self._scan_last_finished_at = datetime.utcnow()
+            self._scan_running = False
+            self._scan_active_requested_symbols = None
+            self._scan_active_force = False
+            self._scan_active_started_at = None
+            self._scan_condition.notify_all()
+
+    def _wait_for_scan_completion_locked(self, active_run_id: int) -> None:
+        while self._scan_running and self._scan_active_run_id == active_run_id:
+            self._scan_condition.wait(timeout=1.0)
 
     def _scan_market_internal(
         self,
@@ -149,7 +273,7 @@ class MarketScannerDaemon:
             )
             return ScanSummary(tickers_loaded=0, tickers_processed=0, signals_triggered=0)
 
-        full_catalog = self.ticker_provider.load_catalog()
+        full_catalog = self._merge_backend_assets_catalog(self.ticker_provider.load_catalog())
         catalog = self._catalog_for_requested_symbols(full_catalog, requested_symbols)
         tickers = [record.yahoo_symbol for record in catalog]
         if requested_symbols and not tickers:
@@ -327,6 +451,35 @@ class MarketScannerDaemon:
             tickers_processed=processed,
             signals_triggered=triggered,
         )
+
+    def _merge_backend_assets_catalog(self, catalog: list[B3ListedTicker]) -> list[B3ListedTicker]:
+        """Merge BR tickers already registered by backend assets into scanner universe."""
+
+        by_symbol = {record.yahoo_symbol.upper(): record for record in catalog}
+        now = datetime.utcnow()
+        with session_scope(self.session_factory) as session:
+            backend_symbols = list_backend_br_asset_symbols(session)
+
+        for yahoo_symbol in backend_symbols:
+            key = yahoo_symbol.upper()
+            if key in by_symbol:
+                continue
+            base = yahoo_symbol.removesuffix(".SA")
+            by_symbol[key] = B3ListedTicker(
+                ticker=base,
+                yahoo_symbol=yahoo_symbol,
+                issuer_code=base[:4],
+                issuer_name=base[:4],
+                trading_name=base[:4],
+                specification="BACKEND_ASSET",
+                isin="",
+                source="backend_assets",
+                is_active=True,
+                yahoo_supported=True,
+                discovered_at=now,
+                last_verified_at=now,
+            )
+        return sorted(by_symbol.values(), key=lambda record: record.yahoo_symbol)
 
     def _catalog_for_requested_symbols(
         self,

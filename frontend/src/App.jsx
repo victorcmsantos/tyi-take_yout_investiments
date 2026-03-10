@@ -458,11 +458,11 @@ function App({ themeMode, onToggleTheme }) {
             />
             <Route
               path="/nova"
-              element={(isAdminUser || isViewerUser) ? <Navigate to="/" replace /> : <NewTransactionPage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
+              element={(isAdminUser || isViewerUser) ? <Navigate to="/" replace /> : <NewTransactionPage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} assets={assetSuggestions} />}
             />
             <Route
               path="/novo"
-              element={(isAdminUser || isViewerUser) ? <Navigate to="/" replace /> : <NewIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
+              element={(isAdminUser || isViewerUser) ? <Navigate to="/" replace /> : <NewIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} assets={assetSuggestions} />}
             />
             <Route
               path="/carteiras"

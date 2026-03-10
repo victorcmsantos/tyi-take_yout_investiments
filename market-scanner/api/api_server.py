@@ -179,6 +179,10 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             },
         }
 
+    @app.get("/scan/status")
+    def scan_status() -> dict[str, object]:
+        return daemon.get_scan_status()
+
     @app.get("/metrics/history/{symbol}")
     def metrics_history(symbol: str) -> dict[str, list[dict[str, object]]]:
         with session_scope(session_factory) as session:

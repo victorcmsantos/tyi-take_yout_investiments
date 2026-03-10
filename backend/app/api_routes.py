@@ -1,9 +1,11 @@
 import json
+import math
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Thread
 from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
@@ -38,6 +40,7 @@ from .services import (
     get_asset_incomes,
     get_asset_position_summary,
     get_asset_price_history,
+    get_asset_upcoming_incomes,
     get_asset_transactions,
     get_benchmark_comparison,
     get_fixed_income_summary,
@@ -154,6 +157,216 @@ def _parse_datetime_like(value):
         return parsed.astimezone(timezone.utc)
     except Exception:
         return None
+
+
+def _safe_float(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _safe_date(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    base = raw.split("T", 1)[0].split(" ", 1)[0]
+    try:
+        return datetime.strptime(base, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _build_history_income_estimates(portfolio_ids):
+    pids = normalize_portfolio_ids(portfolio_ids or [])
+    if not pids:
+        return {}
+
+    placeholders = ",".join(["?"] * len(pids))
+    rows = get_db().execute(
+        """
+        SELECT ticker, income_type, amount, date
+        FROM incomes
+        WHERE portfolio_id IN ("""
+        + placeholders
+        + """)
+        ORDER BY ticker ASC, date ASC
+        """,
+        tuple(pids),
+    ).fetchall()
+
+    by_ticker = {}
+    for row in rows:
+        ticker = str(row["ticker"] or "").strip().upper()
+        if not ticker:
+            continue
+        if not legacy_market._is_brazilian_market_ticker(ticker):
+            continue
+        income_date = _safe_date(row["date"])
+        amount = _safe_float(row["amount"])
+        if income_date is None or amount is None or amount <= 0:
+            continue
+        by_ticker.setdefault(ticker, []).append(
+            {
+                "date": income_date,
+                "amount": round(float(amount), 2),
+                "income_type": str(row["income_type"] or "dividendo").strip().lower() or "dividendo",
+            }
+        )
+
+    today = datetime.now(timezone.utc).date()
+    estimates = {}
+    for ticker, records in by_ticker.items():
+        if len(records) < 2:
+            continue
+        unique_dates = sorted({item["date"] for item in records})
+        if len(unique_dates) < 2:
+            continue
+        intervals = []
+        for idx in range(1, len(unique_dates)):
+            delta_days = int((unique_dates[idx] - unique_dates[idx - 1]).days)
+            if delta_days > 0:
+                intervals.append(delta_days)
+        if not intervals:
+            continue
+        ordered = sorted(intervals)
+        middle = len(ordered) // 2
+        if len(ordered) % 2 == 0:
+            cadence_days = int(round((ordered[middle - 1] + ordered[middle]) / 2.0))
+        else:
+            cadence_days = int(ordered[middle])
+        if cadence_days < 20 or cadence_days > 130:
+            continue
+
+        projected = unique_dates[-1]
+        for _ in range(24):
+            projected = projected + timedelta(days=cadence_days)
+            if projected >= today:
+                break
+        if projected < today:
+            continue
+        if (projected - today).days > 180:
+            continue
+
+        recent = records[-3:] if len(records) >= 3 else records
+        amounts = [float(item["amount"]) for item in recent if float(item["amount"]) > 0]
+        if not amounts:
+            continue
+
+        estimates[ticker] = {
+            "income_type": recent[-1]["income_type"] if recent else "dividendo",
+            "ex_date": projected.isoformat(),
+            "payment_date": None,
+            "estimated_total": round(sum(amounts) / len(amounts), 2),
+            "source": "history_estimate",
+        }
+    return estimates
+
+
+def _build_upcoming_incomes_payload(portfolio_ids, limit: int = 30):
+    snapshot = get_portfolio_snapshot(portfolio_ids, sort_by="value", sort_dir="desc")
+    positions = [item for item in (snapshot or {}).get("positions", []) if isinstance(item, dict)]
+    include_history_estimates = _as_bool(os.getenv("UPCOMING_INCOME_HISTORY_ESTIMATE_ENABLED") or "1")
+    history_estimates = _build_history_income_estimates(portfolio_ids) if include_history_estimates else {}
+
+    all_items = []
+    tickers_with_events = set()
+    totals_by_currency = {}
+    unknown_amount_count = 0
+    history_estimated_count = 0
+
+    for position in positions:
+        ticker = str(position.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        if not legacy_market._is_brazilian_market_ticker(ticker):
+            continue
+        shares = _safe_float(position.get("shares")) or 0.0
+        events = get_asset_upcoming_incomes(ticker, allow_live_fetch=False)
+        if not events:
+            estimate = history_estimates.get(ticker)
+            if isinstance(estimate, dict):
+                estimated_total = _safe_float(estimate.get("estimated_total"))
+                if estimated_total is None:
+                    unknown_amount_count += 1
+                else:
+                    totals_by_currency["BRL"] = round(
+                        float(totals_by_currency.get("BRL") or 0.0) + estimated_total,
+                        2,
+                    )
+                tickers_with_events.add(ticker)
+                history_estimated_count += 1
+                all_items.append(
+                    {
+                        "ticker": ticker,
+                        "name": str(position.get("name") or "").strip(),
+                        "shares": round(float(shares), 6),
+                        "income_type": str(estimate.get("income_type") or "dividendo").strip().lower(),
+                        "ex_date": estimate.get("ex_date"),
+                        "payment_date": estimate.get("payment_date"),
+                        "amount_per_share": None,
+                        "currency": "BRL",
+                        "estimated_total": estimated_total,
+                        "source": str(estimate.get("source") or "history_estimate").strip(),
+                    }
+                )
+            continue
+        tickers_with_events.add(ticker)
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            amount = _safe_float(event.get("amount"))
+            currency = str(event.get("currency") or "BRL").strip().upper() or "BRL"
+            estimated_total = round(amount * shares, 2) if amount is not None and shares > 0 else None
+            if estimated_total is None:
+                unknown_amount_count += 1
+            else:
+                totals_by_currency[currency] = round(
+                    float(totals_by_currency.get(currency) or 0.0) + estimated_total,
+                    2,
+                )
+            all_items.append(
+                {
+                    "ticker": ticker,
+                    "name": str(position.get("name") or "").strip(),
+                    "shares": round(float(shares), 6),
+                    "income_type": str(event.get("income_type") or "dividendo").strip().lower(),
+                    "ex_date": event.get("ex_date"),
+                    "payment_date": event.get("payment_date"),
+                    "amount_per_share": round(float(amount), 6) if amount is not None else None,
+                    "currency": currency,
+                    "estimated_total": estimated_total,
+                    "source": str(event.get("source") or "").strip(),
+                }
+            )
+
+    all_items.sort(
+        key=lambda item: (
+            str(item.get("ex_date") or "9999-12-31"),
+            str(item.get("payment_date") or "9999-12-31"),
+            str(item.get("ticker") or ""),
+        )
+    )
+    limited_items = list(all_items[: max(1, min(int(limit or 30), 200))])
+    next_ex_date = limited_items[0].get("ex_date") if limited_items else None
+
+    return {
+        "generated_at": _now_iso_utc(),
+        "portfolio_ids": list(portfolio_ids or []),
+        "summary": {
+            "positions_count": len(positions),
+            "tickers_with_events": len(tickers_with_events),
+            "events_count": len(all_items),
+            "unknown_amount_count": int(unknown_amount_count),
+            "history_estimated_count": int(history_estimated_count),
+            "estimated_totals": totals_by_currency,
+            "next_ex_date": next_ex_date,
+        },
+        "items": limited_items,
+    }
 
 
 def _scanner_db_status_payload():
@@ -386,6 +599,8 @@ def _scanner_filter_trades_payload_for_user(payload, user: dict):
         for item in raw_history
         if isinstance(item, dict) and _scanner_trade_visible_for_user(item, user)
     ]
+    visible_active = _scanner_attach_market_data(visible_active)
+    visible_history = _scanner_attach_market_data(visible_history)
     return {
         "active": visible_active,
         "history": visible_history,
@@ -400,6 +615,57 @@ def _scanner_prepare_trade_payload(payload, user: dict, force_notes: bool = Fals
     if force_notes or "notes" in prepared:
         prepared["notes"] = _scanner_note_with_user(prepared.get("notes"), int(user["id"]))
     return prepared
+
+
+def _scanner_base_ticker(value):
+    ticker = str(value or "").strip().upper()
+    if not ticker:
+        return ""
+    return ticker.removesuffix(".SA")
+
+
+def _scanner_market_data_map_for_tickers(tickers):
+    base_tickers = sorted({_scanner_base_ticker(item) for item in (tickers or []) if _scanner_base_ticker(item)})
+    if not base_tickers:
+        return {}
+    placeholders = ",".join(["?"] * len(base_tickers))
+    rows = get_db().execute(
+        f"""
+        SELECT ticker, market_data_source, market_data_updated_at
+        FROM assets
+        WHERE ticker IN ({placeholders})
+        """,
+        tuple(base_tickers),
+    ).fetchall()
+    payload = {}
+    for row in rows:
+        base = _scanner_base_ticker(row["ticker"])
+        payload[base] = {
+            "source": str(row["market_data_source"] or "").strip() or "market_scanner",
+            "updated_at": row["market_data_updated_at"],
+        }
+    return payload
+
+
+def _scanner_attach_market_data(items):
+    source_items = [dict(item) for item in (items or []) if isinstance(item, dict)]
+    if not source_items:
+        return []
+    by_ticker = _scanner_market_data_map_for_tickers([item.get("ticker") for item in source_items])
+    output = []
+    for item in source_items:
+        base = _scanner_base_ticker(item.get("ticker"))
+        market_data = by_ticker.get(base, {})
+        output.append(
+            {
+                **item,
+                "market_data": {
+                    "source": str(market_data.get("source") or "").strip() or "market_scanner",
+                    "updated_at": market_data.get("updated_at"),
+                },
+            }
+        )
+    return output
 
 
 def _market_scanner_base_url():
@@ -427,12 +693,14 @@ def _market_scanner_get(path: str):
 
 
 def _market_scanner_request(method: str, path: str, payload=None, timeout_seconds=None):
-    user = get_current_user()
-    query_items = [
-        (key, value)
-        for key, value in request.args.items(multi=True)
-        if key not in {"user_id", "scanner_user_id"}
-    ]
+    user = get_current_user() if has_request_context() else None
+    query_items = []
+    if has_request_context():
+        query_items = [
+            (key, value)
+            for key, value in request.args.items(multi=True)
+            if key not in {"user_id", "scanner_user_id"}
+        ]
     if user and user.get("id") is not None:
         query_items.append(("user_id", str(int(user["id"]))))
     query = urlparse.urlencode(query_items, doseq=True)
@@ -503,6 +771,435 @@ def _market_scanner_error_message(payload, status: int):
     if status >= 500:
         return "Market Scanner indisponivel."
     return "Falha ao processar requisicao no Market Scanner."
+
+
+def _scanner_ticker_catalog_summary():
+    payload = {
+        "available": False,
+        "total_tickers": 0,
+        "active_tickers": 0,
+        "yahoo_supported_tickers": 0,
+        "last_scan_at": None,
+        "error": None,
+    }
+    db = get_db()
+    try:
+        row = db.execute(
+            """
+            SELECT
+              COUNT(*) AS total_tickers,
+              SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active_tickers,
+              SUM(CASE WHEN yahoo_supported = 1 THEN 1 ELSE 0 END) AS yahoo_supported_tickers,
+              MAX(last_scan_at) AS last_scan_at
+            FROM tickers
+            """
+        ).fetchone()
+    except Exception as exc:
+        payload["error"] = str(exc)
+        return payload
+
+    payload["available"] = True
+    payload["total_tickers"] = int((row["total_tickers"] if row else 0) or 0)
+    payload["active_tickers"] = int((row["active_tickers"] if row else 0) or 0)
+    payload["yahoo_supported_tickers"] = int((row["yahoo_supported_tickers"] if row else 0) or 0)
+    payload["last_scan_at"] = row["last_scan_at"] if row else None
+    return payload
+
+
+def _scanner_assets_sync_summary():
+    payload = {
+        "available": False,
+        "assets_total": 0,
+        "assets_market_scanner_source": 0,
+        "last_market_data_updated_at": None,
+        "error": None,
+    }
+    db = get_db()
+    try:
+        row = db.execute(
+            """
+            SELECT
+              COUNT(*) AS assets_total,
+              SUM(CASE WHEN market_data_source = 'market_scanner' THEN 1 ELSE 0 END) AS assets_market_scanner_source,
+              MAX(market_data_updated_at) AS last_market_data_updated_at
+            FROM assets
+            """
+        ).fetchone()
+    except Exception as exc:
+        payload["error"] = str(exc)
+        return payload
+
+    payload["available"] = True
+    payload["assets_total"] = int((row["assets_total"] if row else 0) or 0)
+    payload["assets_market_scanner_source"] = int(
+        (row["assets_market_scanner_source"] if row else 0) or 0
+    )
+    payload["last_market_data_updated_at"] = row["last_market_data_updated_at"] if row else None
+    return payload
+
+
+def _scanner_manual_scan_row_to_payload(row):
+    if not row:
+        return None
+    payload = dict(row)
+    payload["id"] = int(payload.get("id") or 0)
+    payload["total_tickers"] = int(payload.get("total_tickers") or 0)
+    payload["processed_tickers"] = int(payload.get("processed_tickers") or 0)
+    payload["triggered_signals"] = int(payload.get("triggered_signals") or 0)
+    payload["requested_by_user_id"] = (
+        int(payload["requested_by_user_id"]) if payload.get("requested_by_user_id") is not None else None
+    )
+    payload["upstream_status"] = int(payload["upstream_status"]) if payload.get("upstream_status") is not None else None
+    started_dt = _parse_datetime_like(payload.get("started_at"))
+    finished_dt = _parse_datetime_like(payload.get("finished_at"))
+    payload["duration_ms"] = (
+        round((finished_dt - started_dt).total_seconds() * 1000.0, 2)
+        if started_dt is not None and finished_dt is not None and finished_dt >= started_dt
+        else None
+    )
+    return payload
+
+
+def _scanner_manual_scan_live_progress(started_at, planned_total: int):
+    output = {
+        "processed_tickers_live": 0,
+        "progress_percent": None,
+    }
+    started_dt = _parse_datetime_like(started_at)
+    if started_dt is None:
+        return output
+
+    db = get_db()
+    try:
+        rows = db.execute("SELECT last_scan_at FROM tickers WHERE last_scan_at IS NOT NULL").fetchall()
+    except Exception:
+        return output
+
+    processed = 0
+    for row in rows:
+        dt = _parse_datetime_like(row["last_scan_at"])
+        if dt is not None and dt >= started_dt:
+            processed += 1
+
+    total = int(planned_total or 0)
+    if total <= 0:
+        total = len(rows)
+
+    output["processed_tickers_live"] = int(processed)
+    if total > 0:
+        output["progress_percent"] = round(max(0.0, min((processed / total) * 100.0, 100.0)), 2)
+    return output
+
+
+def _scanner_upstream_scan_status_payload():
+    ok, status, response_payload = _market_scanner_request("GET", "/scan/status")
+    if not ok:
+        return {
+            "available": False,
+            "running": False,
+            "upstream_status": int(status or 0),
+            "error": _market_scanner_error_message(response_payload, status),
+        }
+
+    payload = response_payload if isinstance(response_payload, dict) else {}
+    return {
+        "available": True,
+        "upstream_status": int(status or 0),
+        "running": bool(payload.get("running")),
+        "active_run_id": payload.get("active_run_id"),
+        "active_scope": payload.get("active_scope"),
+        "active_requested_symbols": payload.get("active_requested_symbols") or [],
+        "active_requested_count": int(payload.get("active_requested_count") or 0),
+        "active_force": bool(payload.get("active_force")),
+        "active_started_at": payload.get("active_started_at"),
+        "last_summary": payload.get("last_summary") if isinstance(payload.get("last_summary"), dict) else {},
+        "last_finished_at": payload.get("last_finished_at"),
+        "error": None,
+    }
+
+
+def _scanner_manual_scan_status_payload():
+    db = get_db()
+    try:
+        rows = db.execute(
+            """
+            SELECT
+              id,
+              status,
+              requested_by_user_id,
+              requested_by_username,
+              started_at,
+              finished_at,
+              total_tickers,
+              processed_tickers,
+              triggered_signals,
+              upstream_status,
+              error_message
+            FROM scanner_manual_scan_runs
+            ORDER BY id DESC
+            LIMIT 8
+            """
+        ).fetchall()
+    except Exception as exc:
+        return {
+            "scanner_db": _scanner_db_status_payload(),
+            "catalog": _scanner_ticker_catalog_summary(),
+            "assets_sync": _scanner_assets_sync_summary(),
+            "current_run": None,
+            "last_run": None,
+            "history": [],
+            "error": str(exc),
+        }
+    items = [_scanner_manual_scan_row_to_payload(row) for row in rows]
+    current_run = next((item for item in items if (item or {}).get("status") == "running"), None)
+    last_run = next((item for item in items if (item or {}).get("status") != "running"), None)
+
+    if current_run:
+        live = _scanner_manual_scan_live_progress(
+            current_run.get("started_at"),
+            int(current_run.get("total_tickers") or 0),
+        )
+        current_run = {
+            **current_run,
+            **live,
+            "processed_tickers": max(
+                int(current_run.get("processed_tickers") or 0),
+                int(live.get("processed_tickers_live") or 0),
+            ),
+        }
+
+    if last_run:
+        total = int(last_run.get("total_tickers") or 0)
+        done = int(last_run.get("processed_tickers") or 0)
+        last_run = dict(last_run)
+        last_run["progress_percent"] = (
+            round(max(0.0, min((done / total) * 100.0, 100.0)), 2) if total > 0 else None
+        )
+
+    return {
+        "scanner_db": _scanner_db_status_payload(),
+        "catalog": _scanner_ticker_catalog_summary(),
+        "assets_sync": _scanner_assets_sync_summary(),
+        "upstream_scan": _scanner_upstream_scan_status_payload(),
+        "current_run": current_run,
+        "last_run": last_run,
+        "history": items[:5],
+    }
+
+
+def _scanner_manual_scan_worker(app, run_id: int):
+    with app.app_context():
+        ok = False
+        status = 503
+        response_payload = None
+        error_message = ""
+        try:
+            ok, status, response_payload = _market_scanner_request(
+                "POST",
+                "/scan",
+                payload={},
+                timeout_seconds=_market_scanner_scan_timeout_seconds(),
+            )
+            if not ok:
+                error_message = _market_scanner_error_message(response_payload, status)
+        except Exception as exc:
+            ok = False
+            status = 503
+            response_payload = str(exc)
+            error_message = str(exc)
+
+        summary = {}
+        if isinstance(response_payload, dict) and isinstance(response_payload.get("scan_summary"), dict):
+            summary = dict(response_payload.get("scan_summary") or {})
+        processed_tickers = int(
+            summary.get("tickers_processed")
+            or summary.get("tickers_loaded")
+            or 0
+        )
+        triggered_signals = int(summary.get("signals_triggered") or 0)
+
+        finished_at = _now_iso_utc()
+        try:
+            timeout_seconds = float(current_app.config.get("SQLITE_TIMEOUT_SECONDS", 30))
+            connection = sqlite3.connect(current_app.config["DATABASE"], timeout=timeout_seconds)
+            try:
+                connection.row_factory = sqlite3.Row
+                connection.execute(f"PRAGMA busy_timeout = {int(timeout_seconds * 1000)}")
+                connection.execute(
+                    """
+                    UPDATE scanner_manual_scan_runs
+                    SET
+                      status = ?,
+                      finished_at = ?,
+                      processed_tickers = CASE
+                        WHEN ? > processed_tickers THEN ?
+                        ELSE processed_tickers
+                      END,
+                      triggered_signals = ?,
+                      upstream_status = ?,
+                      error_message = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        "success" if ok else "failed",
+                        finished_at,
+                        processed_tickers,
+                        processed_tickers,
+                        triggered_signals,
+                        int(status or 0),
+                        "" if ok else str(error_message or "Falha ao executar scan manual."),
+                        int(run_id),
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+        except Exception:
+            current_app.logger.exception(
+                "Falha ao persistir resultado do scan manual do scanner (run_id=%s).",
+                int(run_id),
+            )
+
+
+def _start_scanner_manual_scan(user: dict):
+    db = get_db()
+    running_row = db.execute(
+        """
+        SELECT
+          id,
+          status,
+          requested_by_user_id,
+          requested_by_username,
+          started_at,
+          finished_at,
+          total_tickers,
+          processed_tickers,
+          triggered_signals,
+          upstream_status,
+          error_message
+        FROM scanner_manual_scan_runs
+        WHERE status = 'running'
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if running_row is not None:
+        started_dt = _parse_datetime_like(running_row["started_at"])
+        timeout_seconds = _market_scanner_scan_timeout_seconds()
+        timed_out = (
+            started_dt is not None
+            and (datetime.now(timezone.utc) - started_dt).total_seconds() > (timeout_seconds + 120.0)
+        )
+        if timed_out:
+            db.execute(
+                """
+                UPDATE scanner_manual_scan_runs
+                SET
+                  status = 'failed',
+                  finished_at = ?,
+                  upstream_status = 504,
+                  error_message = ?
+                WHERE id = ?
+                """,
+                (
+                    _now_iso_utc(),
+                    "Execucao manual marcada como timeout por exceder o limite.",
+                    int(running_row["id"]),
+                ),
+            )
+            db.commit()
+            running_row = None
+    if running_row is not None:
+        return {
+            "started": False,
+            "run": _scanner_manual_scan_row_to_payload(running_row),
+        }
+
+    catalog = _scanner_ticker_catalog_summary()
+    planned_total = int(catalog.get("active_tickers") or 0) or int(catalog.get("total_tickers") or 0)
+    started_at = _now_iso_utc()
+    try:
+        db.execute(
+            """
+            INSERT INTO scanner_manual_scan_runs (
+              status,
+              requested_by_user_id,
+              requested_by_username,
+              started_at,
+              total_tickers,
+              processed_tickers,
+              triggered_signals,
+              error_message
+            )
+            VALUES (?, ?, ?, ?, ?, 0, 0, '')
+            """,
+            (
+                "running",
+                int(user.get("id")) if user and user.get("id") is not None else None,
+                str((user or {}).get("username") or ""),
+                started_at,
+                planned_total,
+            ),
+        )
+    except sqlite3.IntegrityError:
+        running_row = db.execute(
+            """
+            SELECT
+              id,
+              status,
+              requested_by_user_id,
+              requested_by_username,
+              started_at,
+              finished_at,
+              total_tickers,
+              processed_tickers,
+              triggered_signals,
+              upstream_status,
+              error_message
+            FROM scanner_manual_scan_runs
+            WHERE status = 'running'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return {
+            "started": False,
+            "run": _scanner_manual_scan_row_to_payload(running_row),
+        }
+    run_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    db.commit()
+
+    app_obj = current_app._get_current_object()
+    Thread(
+        target=_scanner_manual_scan_worker,
+        args=(app_obj, run_id),
+        daemon=True,
+        name=f"scanner-manual-scan-{run_id}",
+    ).start()
+
+    run_row = db.execute(
+        """
+        SELECT
+          id,
+          status,
+          requested_by_user_id,
+          requested_by_username,
+          started_at,
+          finished_at,
+          total_tickers,
+          processed_tickers,
+          triggered_signals,
+          upstream_status,
+          error_message
+        FROM scanner_manual_scan_runs
+        WHERE id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+    return {
+        "started": True,
+        "run": _scanner_manual_scan_row_to_payload(run_row),
+    }
 
 
 def _build_charts_core_payload(portfolio_ids):
@@ -692,7 +1389,10 @@ def scanner_health():
 @api_bp.route("/scanner/signals", methods=["GET"])
 def scanner_signals():
     ok, status, response_payload = _market_scanner_request("GET", "/signals")
-    return _market_scanner_result_to_api_response(ok, status, response_payload)
+    if not ok:
+        return _market_scanner_result_to_api_response(ok, status, response_payload)
+    payload = response_payload if isinstance(response_payload, list) else []
+    return _json_ok(_scanner_attach_market_data(payload), status=status)
 
 
 @api_bp.route("/scanner/signal-matrix", methods=["GET"])
@@ -881,6 +1581,26 @@ def scanner_ticker(symbol: str):
     safe_symbol = urlparse.quote(symbol.upper(), safe="")
     ok, status, response_payload = _market_scanner_request("GET", f"/ticker/{safe_symbol}")
     return _market_scanner_result_to_api_response(ok, status, response_payload)
+
+
+@api_bp.route("/scanner/scan/status", methods=["GET"])
+def scanner_manual_scan_status():
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+    return _json_ok(_scanner_manual_scan_status_payload())
+
+
+@api_bp.route("/scanner/scan/start", methods=["POST"])
+def scanner_manual_scan_start():
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+    if not can_user_write(user):
+        return _json_error("Perfil viewer possui acesso somente leitura.", status=403)
+    payload = _start_scanner_manual_scan(user)
+    status = 202 if payload.get("started") else 200
+    return _json_ok(payload, status=status)
 
 
 @api_bp.route("/scanner/scan", methods=["POST"])
@@ -1149,6 +1869,7 @@ def asset_detail(ticker):
         "position": get_asset_position_summary(ticker, portfolio_ids),
         "transactions": get_asset_transactions(ticker, portfolio_ids),
         "incomes": get_asset_incomes(ticker, portfolio_ids),
+        "upcoming_incomes": get_asset_upcoming_incomes(ticker),
     }
     return _json_ok(payload)
 
@@ -1236,6 +1957,17 @@ def incomes():
     if removed <= 0:
         return _json_error("Nenhum provento removido.", status=400)
     return _json_ok({"removed": removed})
+
+
+@api_bp.route("/incomes/upcoming", methods=["GET"])
+def incomes_upcoming():
+    portfolio_ids = _selected_portfolio_ids_from_request()
+    raw_limit = request.args.get("limit")
+    try:
+        limit = max(1, min(int(raw_limit or 30), 200))
+    except (TypeError, ValueError):
+        limit = 30
+    return _json_ok(_build_upcoming_incomes_payload(portfolio_ids, limit=limit))
 
 
 @api_bp.route("/fixed-incomes", methods=["GET", "POST", "DELETE"])

@@ -4,6 +4,25 @@ import { apiGet } from '../api'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const pct = (value) => `${Number(value || 0).toFixed(2)}%`
+const money = (value, currency = 'BRL') => {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '-'
+  const code = String(currency || 'BRL').trim().toUpperCase() || 'BRL'
+  try {
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: code }).format(num)
+  } catch (_) {
+    return `${code} ${num.toFixed(6)}`
+  }
+}
+const dateBr = (value) => {
+  const text = String(value || '').trim()
+  if (!text) return '-'
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const [y, m, d] = text.split('-')
+    return `${d}/${m}/${y}`
+  }
+  return text
+}
 const formatSyncLabel = (asset) => {
   const marketData = asset?.market_data || {}
   if (marketData.is_stale) {
@@ -20,6 +39,7 @@ function HomePage({ selectedPortfolioIds }) {
   const [sectors, setSectors] = useState([])
   const [incomesByTicker, setIncomesByTicker] = useState({})
   const [incomesTotal, setIncomesTotal] = useState(0)
+  const [upcomingIncomes, setUpcomingIncomes] = useState({ items: [], summary: { estimated_totals: {} } })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [sortBy, setSortBy] = useState('name')
@@ -43,6 +63,7 @@ function HomePage({ selectedPortfolioIds }) {
     let active = true
     setLoading(true)
     setError('')
+    setUpcomingIncomes({ items: [], summary: { estimated_totals: {} } })
     ;(async () => {
       try {
         const [assetsData, sectorsData, incomesData] = await Promise.all([
@@ -61,11 +82,20 @@ function HomePage({ selectedPortfolioIds }) {
         setSectors(sectorsData)
         setIncomesByTicker(byTicker)
         setIncomesTotal(Object.values(byTicker).reduce((acc, value) => acc + Number(value || 0), 0))
+        setLoading(false)
+
+        try {
+          const upcomingData = await apiGet('/api/incomes/upcoming', { portfolio_id: selectedPortfolioIds, limit: 24 })
+          if (!active) return
+          setUpcomingIncomes(upcomingData || { items: [], summary: { estimated_totals: {} } })
+        } catch (_) {
+          if (!active) return
+          setUpcomingIncomes({ items: [], summary: { estimated_totals: {} } })
+        }
       } catch (err) {
         if (!active) return
         setError(err.message)
-      } finally {
-        if (active) setLoading(false)
+        setLoading(false)
       }
     })()
     return () => {
@@ -113,6 +143,9 @@ function HomePage({ selectedPortfolioIds }) {
     () => assets.filter((asset) => asset?.market_data?.is_stale).length,
     [assets],
   )
+  const upcomingItems = Array.isArray(upcomingIncomes?.items) ? upcomingIncomes.items : []
+  const upcomingSummary = upcomingIncomes?.summary || {}
+  const upcomingEstimatedBrl = Number(upcomingSummary?.estimated_totals?.BRL || 0)
 
   if (loading) return <p>Carregando...</p>
   if (error) return <p className="error">{error}</p>
@@ -147,6 +180,15 @@ function HomePage({ selectedPortfolioIds }) {
             <h3>Proventos totais</h3>
             <p>{brl(incomesTotal)}</p>
             <small>Carteiras selecionadas</small>
+          </article>
+          <article className="card">
+            <h3>Proventos futuros</h3>
+            <p>{upcomingItems.length}</p>
+            <small>
+              {upcomingEstimatedBrl > 0
+                ? `Estimado BRL: ${brl(upcomingEstimatedBrl)}`
+                : 'Sem valor estimado no momento'}
+            </small>
           </article>
         </div>
       )}
@@ -229,6 +271,41 @@ function HomePage({ selectedPortfolioIds }) {
             {sectors.length === 0 && (
               <tr>
                 <td colSpan={4}>Sem dados de setores disponiveis.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <h2 style={{ marginTop: 24 }}>Agenda de proventos futuros</h2>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Data com (ex)</th>
+              <th>Pagamento</th>
+              <th>Valor por cota</th>
+              <th>Qtd em carteira</th>
+              <th>Estimado</th>
+              <th>Fonte</th>
+            </tr>
+          </thead>
+          <tbody>
+            {upcomingItems.map((item, idx) => (
+              <tr key={`upcoming-home-${item.ticker}-${item.ex_date}-${idx}`}>
+                <td><Link to={`/ativo/${item.ticker}`}>{item.ticker}</Link></td>
+                <td>{dateBr(item.ex_date)}</td>
+                <td>{dateBr(item.payment_date)}</td>
+                <td>{money(item.amount_per_share, item.currency)}</td>
+                <td>{Number(item.shares || 0).toFixed(4)}</td>
+                <td>{money(item.estimated_total, item.currency)}</td>
+                <td>{String(item.source || '').trim() || '-'}</td>
+              </tr>
+            ))}
+            {upcomingItems.length === 0 && (
+              <tr>
+                <td colSpan={7}>Sem eventos futuros de proventos encontrados para os ativos em carteira.</td>
               </tr>
             )}
           </tbody>

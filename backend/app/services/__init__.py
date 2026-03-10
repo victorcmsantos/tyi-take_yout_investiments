@@ -3,8 +3,10 @@
 from . import _legacy as _legacy
 from .market_data import (
     get_asset,
+    get_asset_upcoming_incomes,
     get_asset_price_history,
     get_top_assets,
+    prefetch_upcoming_incomes_for_portfolios,
     refresh_assets_market_data,
     refresh_all_assets_market_data,
     refresh_asset_market_data,
@@ -60,6 +62,7 @@ __all__ = [
     "enrich_asset_with_openclaw",
     "enrich_assets_with_openclaw_batch",
     "get_asset",
+    "get_asset_upcoming_incomes",
     "get_asset_enrichment",
     "get_asset_enrichment_history",
     "get_asset_incomes",
@@ -82,6 +85,7 @@ __all__ = [
     "import_fixed_incomes_csv",
     "import_transactions_csv",
     "normalize_portfolio_ids",
+    "prefetch_upcoming_incomes_for_portfolios",
     "rebuild_chart_snapshots",
     "rebuild_fixed_income_snapshots",
     "refresh_assets_market_data",

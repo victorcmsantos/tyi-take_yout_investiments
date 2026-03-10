@@ -41,6 +41,28 @@ ON scanner_trade_audit (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_scanner_trade_audit_user_id
 ON scanner_trade_audit (user_id);
 
+CREATE TABLE IF NOT EXISTS scanner_manual_scan_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  status TEXT NOT NULL CHECK(status IN ('running', 'success', 'failed')),
+  requested_by_user_id INTEGER,
+  requested_by_username TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at TEXT,
+  total_tickers INTEGER NOT NULL DEFAULT 0,
+  processed_tickers INTEGER NOT NULL DEFAULT 0,
+  triggered_signals INTEGER NOT NULL DEFAULT 0,
+  upstream_status INTEGER,
+  error_message TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY (requested_by_user_id) REFERENCES users (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scanner_manual_scan_runs_started_at
+ON scanner_manual_scan_runs (started_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scanner_manual_scan_single_running
+ON scanner_manual_scan_runs (status)
+WHERE status = 'running';
+
 CREATE TABLE IF NOT EXISTS assets (
   ticker TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -80,6 +102,30 @@ CREATE TABLE IF NOT EXISTS asset_metric_baselines (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (ticker) REFERENCES assets (ticker)
 );
+
+CREATE TABLE IF NOT EXISTS upcoming_income_cache_state (
+  ticker TEXT PRIMARY KEY,
+  fetched_at TEXT NOT NULL,
+  has_events INTEGER NOT NULL DEFAULT 0 CHECK(has_events IN (0, 1)),
+  FOREIGN KEY (ticker) REFERENCES assets (ticker)
+);
+
+CREATE TABLE IF NOT EXISTS upcoming_income_cache_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticker TEXT NOT NULL,
+  symbol TEXT NOT NULL DEFAULT '',
+  income_type TEXT NOT NULL DEFAULT 'dividendo',
+  ex_date TEXT,
+  payment_date TEXT,
+  amount REAL,
+  currency TEXT NOT NULL DEFAULT 'BRL',
+  source TEXT NOT NULL DEFAULT '',
+  fetched_at TEXT NOT NULL,
+  FOREIGN KEY (ticker) REFERENCES assets (ticker)
+);
+
+CREATE INDEX IF NOT EXISTS idx_upcoming_income_cache_events_ticker_ex_date
+ON upcoming_income_cache_events (ticker, ex_date, payment_date);
 
 CREATE TABLE IF NOT EXISTS asset_enrichments (
   ticker TEXT PRIMARY KEY,

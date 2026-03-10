@@ -389,6 +389,37 @@ def ensure_schema_upgrades():
         ON scanner_trade_audit (user_id)
         """
     )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scanner_manual_scan_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          status TEXT NOT NULL CHECK(status IN ('running', 'success', 'failed')),
+          requested_by_user_id INTEGER,
+          requested_by_username TEXT NOT NULL DEFAULT '',
+          started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          finished_at TEXT,
+          total_tickers INTEGER NOT NULL DEFAULT 0,
+          processed_tickers INTEGER NOT NULL DEFAULT 0,
+          triggered_signals INTEGER NOT NULL DEFAULT 0,
+          upstream_status INTEGER,
+          error_message TEXT NOT NULL DEFAULT '',
+          FOREIGN KEY (requested_by_user_id) REFERENCES users (id)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_scanner_manual_scan_runs_started_at
+        ON scanner_manual_scan_runs (started_at DESC)
+        """
+    )
+    db.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_scanner_manual_scan_single_running
+        ON scanner_manual_scan_runs (status)
+        WHERE status = 'running'
+        """
+    )
 
     db.execute(
         """
@@ -509,6 +540,39 @@ def ensure_schema_upgrades():
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (ticker) REFERENCES assets (ticker)
         )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS upcoming_income_cache_state (
+          ticker TEXT PRIMARY KEY,
+          fetched_at TEXT NOT NULL,
+          has_events INTEGER NOT NULL DEFAULT 0 CHECK(has_events IN (0, 1)),
+          FOREIGN KEY (ticker) REFERENCES assets (ticker)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS upcoming_income_cache_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ticker TEXT NOT NULL,
+          symbol TEXT NOT NULL DEFAULT '',
+          income_type TEXT NOT NULL DEFAULT 'dividendo',
+          ex_date TEXT,
+          payment_date TEXT,
+          amount REAL,
+          currency TEXT NOT NULL DEFAULT 'BRL',
+          source TEXT NOT NULL DEFAULT '',
+          fetched_at TEXT NOT NULL,
+          FOREIGN KEY (ticker) REFERENCES assets (ticker)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_upcoming_income_cache_events_ticker_ex_date
+        ON upcoming_income_cache_events (ticker, ex_date, payment_date)
         """
     )
 
@@ -724,6 +788,18 @@ def ensure_schema_upgrades():
     db.execute(
         """
         DELETE FROM asset_metric_baselines
+        WHERE ticker NOT IN (SELECT ticker FROM assets)
+        """
+    )
+    db.execute(
+        """
+        DELETE FROM upcoming_income_cache_state
+        WHERE ticker NOT IN (SELECT ticker FROM assets)
+        """
+    )
+    db.execute(
+        """
+        DELETE FROM upcoming_income_cache_events
         WHERE ticker NOT IN (SELECT ticker FROM assets)
         """
     )

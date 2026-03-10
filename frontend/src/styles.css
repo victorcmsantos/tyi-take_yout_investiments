@@ -1911,6 +1911,10 @@ html[data-theme='dark'] option {
   gap: 8px;
 }
 
+.scanner-open-trade-metrics > div {
+  min-width: 0;
+}
+
 .scanner-open-trade-metrics small {
   display: block;
   color: #6a7b8a;
@@ -1919,6 +1923,13 @@ html[data-theme='dark'] option {
 .scanner-open-trade-metrics strong {
   display: block;
   margin-top: 2px;
+}
+
+.scanner-market-data-stamp {
+  margin-top: 4px;
+  font-size: 0.74rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .scanner-trade-meta {

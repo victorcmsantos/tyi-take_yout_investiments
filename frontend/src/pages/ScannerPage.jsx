@@ -12,7 +12,7 @@ import {
   Typography,
 } from '@mui/material'
 import { apiGet, apiPost } from '../api'
-import { currentBrowserTimeZone, formatDateTimeLocal } from '../datetime'
+import { currentBrowserTimeZone, formatAgeFromNow, formatDateTimeLocal } from '../datetime'
 
 function toNumberOrNull(value) {
   const num = Number(value)
@@ -32,6 +32,24 @@ function formatPercent(value, digits = 2) {
 function formatDecimal(value, digits = 2) {
   const num = Number(value)
   return Number.isFinite(num) ? num.toFixed(digits) : ''
+}
+
+function formatDurationMs(value) {
+  const num = Number(value)
+  if (!Number.isFinite(num) || num <= 0) return '-'
+  if (num < 1000) return `${Math.round(num)} ms`
+  const seconds = num / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)} s`
+  const minutes = Math.floor(seconds / 60)
+  const remSeconds = Math.round(seconds % 60)
+  return `${minutes}m ${remSeconds}s`
+}
+
+function scannerMarketDataLabel(marketData) {
+  const source = String(marketData?.source || '').trim().toUpperCase() || 'MARKET_SCANNER'
+  const candle = formatDateTimeLocal(marketData?.updated_at, '-')
+  const age = formatAgeFromNow(marketData?.updated_at, '-')
+  return `Fonte ${source} | Candle ${candle} | Idade ${age}`
 }
 
 function getRiskRewardRatio(signal) {
@@ -131,6 +149,7 @@ function ScannerPage({ readOnly = false }) {
   const [signals, setSignals] = useState([])
   const [signalMatrix, setSignalMatrix] = useState({ columns: [], rows: [] })
   const [trades, setTrades] = useState({ active: [], history: [], summary: {} })
+  const [scanStatus, setScanStatus] = useState(null)
   const [tickerLookup, setTickerLookup] = useState('')
   const [tickerDetails, setTickerDetails] = useState(null)
   const [lookupLoading, setLookupLoading] = useState(false)
@@ -166,14 +185,16 @@ function ScannerPage({ readOnly = false }) {
     else setLoading(true)
     setError('')
     try {
-      const [signalsPayload, matrixPayload, tradesPayload] = await Promise.all([
+      const [signalsPayload, matrixPayload, tradesPayload, scanStatusPayload] = await Promise.all([
         apiGet('/api/scanner/signals'),
         apiGet('/api/scanner/signal-matrix'),
         apiGet('/api/scanner/trades'),
+        apiGet('/api/scanner/scan/status'),
       ])
       setSignals(Array.isArray(signalsPayload) ? signalsPayload : [])
       setSignalMatrix(matrixPayload || { columns: [], rows: [] })
       setTrades(tradesPayload || { active: [], history: [], summary: {} })
+      setScanStatus(scanStatusPayload || null)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -186,6 +207,31 @@ function ScannerPage({ readOnly = false }) {
     loadScanner(false)
   }, [])
 
+  useEffect(() => {
+    const isRunning = (
+      String(scanStatus?.current_run?.status || '') === 'running'
+      || Boolean(scanStatus?.upstream_scan?.running)
+    )
+    if (!isRunning) return undefined
+    const timer = window.setInterval(async () => {
+      try {
+        const payload = await apiGet('/api/scanner/scan/status')
+        setScanStatus(payload || null)
+        const stillRunning = (
+          String(payload?.current_run?.status || '') === 'running'
+          || Boolean(payload?.upstream_scan?.running)
+        )
+        if (!stillRunning) {
+          window.clearInterval(timer)
+          await loadScanner(true)
+        }
+      } catch (_err) {
+        // evita interromper polling por erro transitório.
+      }
+    }, 2500)
+    return () => window.clearInterval(timer)
+  }, [scanStatus?.current_run?.id, scanStatus?.current_run?.status, scanStatus?.upstream_scan?.running, scanStatus?.upstream_scan?.active_run_id])
+
   const summary = useMemo(() => ({
     activeSignals: Array.isArray(signals) ? signals.length : 0,
     matrixTickers: Array.isArray(signalMatrix?.rows) ? signalMatrix.rows.length : 0,
@@ -195,6 +241,39 @@ function ScannerPage({ readOnly = false }) {
     manualClosedTrades:
       Number(trades?.summary?.closed_profit || 0) + Number(trades?.summary?.closed_loss || 0),
   }), [signals, signalMatrix, trades])
+
+  const scanRunStatus = useMemo(() => {
+    const currentRun = scanStatus?.current_run || null
+    const lastRun = scanStatus?.last_run || null
+    const isRunning = String(currentRun?.status || '') === 'running'
+    const planned = Number(currentRun?.total_tickers || 0)
+    const processed = Number(currentRun?.processed_tickers || 0)
+    const progressPercent = Number(currentRun?.progress_percent)
+    return {
+      currentRun,
+      lastRun,
+      isRunning,
+      planned,
+      processed,
+      progressPercent: Number.isFinite(progressPercent) ? progressPercent : null,
+    }
+  }, [scanStatus])
+
+  const upstreamScanStatus = useMemo(() => {
+    const payload = scanStatus?.upstream_scan || {}
+    const lastSummary = payload?.last_summary || {}
+    return {
+      available: Boolean(payload?.available),
+      running: Boolean(payload?.running),
+      runId: payload?.active_run_id,
+      scope: String(payload?.active_scope || ''),
+      requestedCount: Number(payload?.active_requested_count || 0),
+      startedAt: payload?.active_started_at || null,
+      lastFinishedAt: payload?.last_finished_at || null,
+      lastProcessed: Number(lastSummary?.tickers_processed || 0),
+      error: payload?.error ? String(payload.error) : '',
+    }
+  }, [scanStatus])
 
   const trackedTickerSet = useMemo(() => (
     new Set((Array.isArray(trades?.tracked_tickers) ? trades.tracked_tickers : []).map((item) => String(item || '').toUpperCase()))
@@ -369,12 +448,15 @@ function ScannerPage({ readOnly = false }) {
     setError('')
     setMessage('')
     try {
-      const payload = await apiPost('/api/scanner/scan', {})
-      const summary = payload?.scan_summary || {}
-      const processed = Number(summary?.tickers_processed || 0)
-      const triggered = Number(summary?.signals_triggered || 0)
-      setMessage(`Leitura manual concluida: ${processed} ticker(s), ${triggered} sinal(is).`)
-      await loadScanner(true)
+      const payload = await apiPost('/api/scanner/scan/start', {})
+      const run = payload?.run || {}
+      if (payload?.started) {
+        setMessage(`Scan geral iniciado (execucao #${Number(run?.id || 0)}).`)
+      } else {
+        setMessage(`Ja existe scan em andamento (execucao #${Number(run?.id || 0)}).`)
+      }
+      const statusPayload = await apiGet('/api/scanner/scan/status')
+      setScanStatus(statusPayload || null)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -429,9 +511,13 @@ function ScannerPage({ readOnly = false }) {
             variant="contained"
             color="secondary"
             onClick={onScanAllTickers}
-            disabled={readOnly || scanningAll || refreshing}
+            disabled={readOnly || scanningAll || refreshing || scanRunStatus.isRunning}
           >
-            {scanningAll ? 'Lendo tickers...' : 'Ler todos os tickers'}
+            {scanRunStatus.isRunning
+              ? `Scan em andamento (${scanRunStatus.processed}/${scanRunStatus.planned || '-'})`
+              : scanningAll
+                ? 'Iniciando scan...'
+                : 'Ler todos os tickers'}
           </Button>
           <Button variant="contained" onClick={() => loadScanner(true)} disabled={refreshing}>
             {refreshing ? 'Recarregando...' : 'Recarregar painel'}
@@ -466,6 +552,44 @@ function ScannerPage({ readOnly = false }) {
           <h3>Matriz</h3>
           <p>{summary.matrixTickers}</p>
           <small>Tickers na matriz de métricas.</small>
+        </article>
+        <article className="card">
+          <h3>Saude scanner</h3>
+          <p>{scanStatus?.scanner_db?.db_accessible ? 'Online' : 'Offline'}</p>
+          <small>
+            Ativos no catalogo: {Number(scanStatus?.catalog?.active_tickers || 0)}.
+            Ultimo scan: {scanStatus?.catalog?.last_scan_at ? formatDateTimeLocal(scanStatus.catalog.last_scan_at) : '-'}.
+          </small>
+        </article>
+        <article className="card">
+          <h3>Sync manual</h3>
+          <p>
+            {scanRunStatus.isRunning
+              ? `${scanRunStatus.processed}/${scanRunStatus.planned || '-'}`
+              : (scanRunStatus.lastRun?.status || 'idle').toUpperCase()}
+          </p>
+          <small>
+            {scanRunStatus.isRunning
+              ? `Progresso ${scanRunStatus.progressPercent != null ? `${scanRunStatus.progressPercent.toFixed(1)}%` : '-'}`
+              : `Ultima duracao: ${formatDurationMs(scanRunStatus.lastRun?.duration_ms)} | sinais: ${Number(scanRunStatus.lastRun?.triggered_signals || 0)}`}
+          </small>
+        </article>
+        <article className="card">
+          <h3>Fila scanner</h3>
+          <p>
+            {!upstreamScanStatus.available
+              ? 'Indisponivel'
+              : upstreamScanStatus.running
+                ? `RUN #${Number(upstreamScanStatus.runId || 0)}`
+                : 'Livre'}
+          </p>
+          <small>
+            {!upstreamScanStatus.available
+              ? (upstreamScanStatus.error || 'Sem comunicacao com o scanner.')
+              : upstreamScanStatus.running
+                ? `${upstreamScanStatus.scope === 'full' ? 'Scan geral' : 'Scan por ticker'} | ${upstreamScanStatus.requestedCount || 0} ticker(s) | inicio ${formatDateTimeLocal(upstreamScanStatus.startedAt, '-')}`
+                : `Ultimo fim: ${formatDateTimeLocal(upstreamScanStatus.lastFinishedAt, '-')} | processados: ${upstreamScanStatus.lastProcessed}`}
+          </small>
         </article>
       </div>
 
@@ -593,6 +717,7 @@ function ScannerPage({ readOnly = false }) {
                     <strong>{formatFloat(signal.score)}</strong>
                   </div>
                 </div>
+                <p className="subtitle">{scannerMarketDataLabel(signal?.market_data)}</p>
                 <div className="scanner-trade-plan">
                   <p>
                     <span>Entrada:</span> {formatFloat(entryLow)} - {formatFloat(entryHigh)}

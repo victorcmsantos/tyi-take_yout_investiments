@@ -273,6 +273,30 @@ def has_backend_assets_table(session: Session) -> bool:
     return row is not None
 
 
+def list_backend_br_asset_symbols(session: Session) -> list[str]:
+    """Return BR symbols from backend assets normalized as Yahoo `.SA` symbols."""
+
+    if not has_backend_assets_table(session):
+        return []
+
+    rows = session.execute(text("SELECT ticker FROM assets")).fetchall()
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        raw = str(row[0] or "").strip().upper()
+        if not raw:
+            continue
+        base = raw.removesuffix(".SA")
+        if not re.fullmatch(r"[A-Z]{4}\d{1,2}[A-Z]?", base):
+            continue
+        yahoo_symbol = f"{base}.SA"
+        if yahoo_symbol in seen:
+            continue
+        seen.add(yahoo_symbol)
+        symbols.append(yahoo_symbol)
+    return sorted(symbols)
+
+
 def update_backend_asset_market_snapshot(
     session: Session,
     *,

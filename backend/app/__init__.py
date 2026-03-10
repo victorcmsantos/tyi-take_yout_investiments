@@ -7,6 +7,7 @@ from .db import init_app as init_db_app
 from .fixed_income_sync import start_fixed_income_sync
 from .market_sync import start_market_sync
 from .observability import configure_observability
+from .upcoming_income_sync import start_upcoming_income_sync
 
 
 def create_app() -> Flask:
@@ -18,6 +19,7 @@ def create_app() -> Flask:
     start_market_sync(app)
     start_fixed_income_sync(app)
     start_chart_sync(app)
+    start_upcoming_income_sync(app)
 
     @app.before_request
     def _ensure_options():

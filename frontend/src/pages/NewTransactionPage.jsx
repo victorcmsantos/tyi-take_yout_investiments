@@ -13,7 +13,7 @@ function dateBr(value) {
   return text
 }
 
-function NewTransactionPage({ selectedPortfolioIds, portfolios }) {
+function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedTxIds, setSelectedTxIds] = useState([])
@@ -58,6 +58,27 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios }) {
     () => selectedPortfolioIds?.[0] || portfolios?.[0]?.id || '',
     [selectedPortfolioIds, portfolios],
   )
+  const tickerSuggestions = useMemo(
+    () => (
+      (Array.isArray(assets) ? assets : [])
+        .map((asset) => ({
+          ticker: String(asset?.ticker || '').toUpperCase().trim(),
+          name: String(asset?.name || '').trim(),
+          sector: String(asset?.sector || '').trim(),
+        }))
+        .filter((item) => item.ticker)
+        .filter((item, idx, arr) => arr.findIndex((other) => other.ticker === item.ticker) === idx)
+    ),
+    [assets],
+  )
+  const tickerSuggestionMap = useMemo(
+    () => tickerSuggestions.reduce((acc, item) => {
+      acc[item.ticker] = item
+      return acc
+    }, {}),
+    [tickerSuggestions],
+  )
+  const shouldShowTickerSuggestions = String(form.ticker || '').trim().length >= 1
 
   const loadTransactions = async () => {
     setLoading(true)
@@ -114,7 +135,20 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios }) {
 
   const onChange = (event) => {
     const { name, value } = event.target
-    setForm((current) => ({ ...current, [name]: value }))
+    setForm((current) => {
+      if (name !== 'ticker') return { ...current, [name]: value }
+
+      const normalizedTicker = String(value || '').toUpperCase()
+      const tickerKey = normalizedTicker.replace(/\.SA$/i, '')
+      const suggestion = tickerSuggestionMap[normalizedTicker] || tickerSuggestionMap[tickerKey]
+
+      return {
+        ...current,
+        ticker: normalizedTicker,
+        name: String(current.name || '').trim() ? current.name : (suggestion?.name || ''),
+        sector: String(current.sector || '').trim() ? current.sector : (suggestion?.sector || ''),
+      }
+    })
   }
 
   const onSubmit = async (event) => {
@@ -242,7 +276,21 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios }) {
           </div>
           <div>
             <label htmlFor="ticker">Ticker</label>
-            <input id="ticker" name="ticker" type="text" value={form.ticker} onChange={onChange} placeholder="Ex: BBAS3" required />
+            <input
+              id="ticker"
+              name="ticker"
+              type="text"
+              value={form.ticker}
+              onChange={onChange}
+              placeholder="Ex: BBAS3"
+              list={shouldShowTickerSuggestions ? 'transaction-ticker-suggestions' : undefined}
+              required
+            />
+            <datalist id="transaction-ticker-suggestions">
+              {tickerSuggestions.map((item) => (
+                <option key={item.ticker} value={item.ticker}>{item.name}</option>
+              ))}
+            </datalist>
           </div>
           <div>
             <label htmlFor="shares">Quantidade</label>

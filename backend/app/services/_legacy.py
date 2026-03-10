@@ -130,6 +130,18 @@ def _now_iso():
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 
+def _snapshot_now():
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _snapshot_age_seconds(iso_text: str):
+    try:
+        created = datetime.fromisoformat((iso_text or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return max((datetime.now() - created).total_seconds(), 0.0)
+
+
 def _normalize_metric_formula_value(value, fallback=0.0):
     numeric = _to_number(value)
     if numeric is None:
@@ -2879,7 +2891,8 @@ def _providers_from_csv(raw_value: str):
 
 def _default_market_data_providers(class_key: str):
     defaults = {
-        "crypto": ["coingecko", "yahoo"],
+        # Yahoo primeiro para reduzir burst/rate-limit no CoinGecko.
+        "crypto": ["yahoo", "coingecko"],
         "us": ["twelve_data", "alpha_vantage", "yahoo"],
         "br": ["market_scanner"],
     }

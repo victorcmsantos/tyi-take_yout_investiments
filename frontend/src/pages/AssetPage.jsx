@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import 'chart.js/auto'
 import { Line } from 'react-chartjs-2'
 import { apiGet, apiPost } from '../api'
-import { formatDateTimeLocal, parseApiDate } from '../datetime'
+import { formatAgeFromNow, formatDateTimeLocal, parseApiDate } from '../datetime'
 
 const CHART_RANGES = [
   { key: '1d', label: '1 DIA' },
@@ -22,6 +22,16 @@ const ENRICHMENT_STALE_AFTER_MS = enrichmentStaleDays * 24 * 60 * 60 * 1000
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const pct = (value) => `${Number(value || 0).toFixed(2)}%`
 const signedPct = (value) => `${Number(value || 0) >= 0 ? '+' : ''}${Number(value || 0).toFixed(2)}%`
+const money = (value, currency = 'BRL') => {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '-'
+  const code = String(currency || 'BRL').trim().toUpperCase() || 'BRL'
+  try {
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: code }).format(num)
+  } catch (_) {
+    return `${code} ${num.toFixed(6)}`
+  }
+}
 const shortText = (value, limit = 140) => {
   const text = String(value || '').trim()
   if (!text) return ''
@@ -32,14 +42,15 @@ const marketDataSummary = (marketData) => {
   if (!marketData) return ''
   const source = marketData.source ? String(marketData.source).toUpperCase() : 'provider'
   const updatedAtLabel = formatDateTimeLocal(marketData.updated_at)
+  const ageLabel = formatAgeFromNow(marketData.updated_at, '-')
   if (marketData.is_stale) {
     if (updatedAtLabel) {
-      return `Cotacao possivelmente antiga. Ultimo sucesso via ${source} em ${updatedAtLabel}.`
+      return `Cotacao possivelmente antiga. Ultimo sucesso via ${source}. Candle: ${updatedAtLabel}. Idade: ${ageLabel}.`
     }
     return 'Cotacao sem sincronizacao recente confirmada.'
   }
   if (updatedAtLabel) {
-    return `Ultima atualizacao confirmada via ${source} em ${updatedAtLabel}.`
+    return `Ultima atualizacao confirmada via ${source}. Candle: ${updatedAtLabel}. Idade: ${ageLabel}.`
   }
   return ''
 }
@@ -437,6 +448,7 @@ function AssetPage({ selectedPortfolioIds }) {
   const position = payload?.position || {}
   const transactions = payload?.transactions || []
   const incomes = payload?.incomes || []
+  const upcomingIncomes = Array.isArray(payload?.upcoming_incomes) ? payload.upcoming_incomes : []
   const enrichmentHistory = Array.isArray(payload?.enrichment_history) ? payload.enrichment_history : []
   const marketData = asset.market_data || {}
   const enrichmentPayload = enrichment?.payload && typeof enrichment.payload === 'object' ? enrichment.payload : null
@@ -631,6 +643,16 @@ function AssetPage({ selectedPortfolioIds }) {
         <h3>Resumo</h3>
         <p>Variacao no dia (provider): <strong className={Number(asset.variation_day || 0) >= 0 ? 'up' : 'down'}>{pct(asset.variation_day)}</strong></p>
         <p>Valor de mercado: R$ {Number(asset.market_cap_bi || 0).toFixed(2)} bi</p>
+        <p>
+          Fonte/candle: {' '}
+          <strong>
+            {(String(marketData?.source || '').trim().toUpperCase() || 'MARKET_SCANNER')}
+            {' | '}
+            {formatDateTimeLocal(marketData?.updated_at, '-')}
+            {' | '}
+            {formatAgeFromNow(marketData?.updated_at, '-')}
+          </strong>
+        </p>
       </article>
 
       <article className="card detail-card tactical-card">
@@ -863,6 +885,39 @@ function AssetPage({ selectedPortfolioIds }) {
           </div>
         ) : (
           <p className="subtitle">Sem historico salvo ainda. Ele passa a ser criado nas proximas atualizacoes do OpenClaw.</p>
+        )}
+      </article>
+
+      <article className="card detail-card">
+        <h3>Proventos futuros (estimativa)</h3>
+        <p className="subtitle">Fonte: Yahoo Finance (yfinance). Datas e valores podem mudar até a data com.</p>
+        {upcomingIncomes.length > 0 ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Data com (ex)</th>
+                  <th>Pagamento</th>
+                  <th>Valor por cota</th>
+                  <th>Moeda</th>
+                  <th>Fonte</th>
+                </tr>
+              </thead>
+              <tbody>
+                {upcomingIncomes.map((item, idx) => (
+                  <tr key={`upcoming-income-${item.ex_date || 'na'}-${item.payment_date || 'na'}-${idx}`}>
+                    <td>{dateBr(item.ex_date)}</td>
+                    <td>{dateBr(item.payment_date)}</td>
+                    <td>{money(item.amount, item.currency)}</td>
+                    <td>{String(item.currency || '').trim().toUpperCase() || '-'}</td>
+                    <td>{String(item.source || '').trim() || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="subtitle">Nenhum provento futuro encontrado para este ativo neste momento.</p>
         )}
       </article>
 

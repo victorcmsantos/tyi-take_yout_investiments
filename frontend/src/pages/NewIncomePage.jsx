@@ -13,7 +13,7 @@ function dateBr(value) {
   return text
 }
 
-function NewIncomePage({ selectedPortfolioIds, portfolios }) {
+function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedIncomeIds, setSelectedIncomeIds] = useState([])
@@ -35,6 +35,19 @@ function NewIncomePage({ selectedPortfolioIds, portfolios }) {
     () => selectedPortfolioIds?.[0] || portfolios?.[0]?.id || '',
     [selectedPortfolioIds, portfolios],
   )
+  const tickerSuggestions = useMemo(
+    () => (
+      (Array.isArray(assets) ? assets : [])
+        .map((asset) => ({
+          ticker: String(asset?.ticker || '').toUpperCase().trim(),
+          name: String(asset?.name || '').trim(),
+        }))
+        .filter((item) => item.ticker)
+        .filter((item, idx, arr) => arr.findIndex((other) => other.ticker === item.ticker) === idx)
+    ),
+    [assets],
+  )
+  const shouldShowTickerSuggestions = String(form.ticker || '').trim().length >= 1
 
   const loadIncomes = async () => {
     setLoading(true)
@@ -90,7 +103,8 @@ function NewIncomePage({ selectedPortfolioIds, portfolios }) {
 
   const onChange = (event) => {
     const { name, value } = event.target
-    setForm((current) => ({ ...current, [name]: value }))
+    const normalizedValue = name === 'ticker' ? String(value || '').toUpperCase() : value
+    setForm((current) => ({ ...current, [name]: normalizedValue }))
   }
 
   const onSubmit = async (event) => {
@@ -153,7 +167,21 @@ function NewIncomePage({ selectedPortfolioIds, portfolios }) {
           </div>
           <div>
             <label htmlFor="ticker">Ticker</label>
-            <input id="ticker" name="ticker" type="text" value={form.ticker} onChange={onChange} placeholder="Ex: ITUB4" required />
+            <input
+              id="ticker"
+              name="ticker"
+              type="text"
+              value={form.ticker}
+              onChange={onChange}
+              placeholder="Ex: ITUB4"
+              list={shouldShowTickerSuggestions ? 'income-ticker-suggestions' : undefined}
+              required
+            />
+            <datalist id="income-ticker-suggestions">
+              {tickerSuggestions.map((item) => (
+                <option key={item.ticker} value={item.ticker}>{item.name}</option>
+              ))}
+            </datalist>
           </div>
           <div>
             <label htmlFor="income_type">Tipo</label>

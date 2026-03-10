@@ -77,6 +77,9 @@ class ScannerAdminObservabilityTest(unittest.TestCase):
             "BACKGROUND_JOBS_LOCK_FILE": os.environ.get("BACKGROUND_JOBS_LOCK_FILE"),
             "DATABASE_STARTUP_LOCK_FILE": os.environ.get("DATABASE_STARTUP_LOCK_FILE"),
             "MARKET_SCANNER_DATABASE_PATH": os.environ.get("MARKET_SCANNER_DATABASE_PATH"),
+            "TELEGRAM_ENABLED": os.environ.get("TELEGRAM_ENABLED"),
+            "TELEGRAM_BOT_TOKEN": os.environ.get("TELEGRAM_BOT_TOKEN"),
+            "TELEGRAM_CHAT_ID": os.environ.get("TELEGRAM_CHAT_ID"),
         }
         os.environ["DATABASE"] = str(self.db_path)
         os.environ["DATABASE_BACKUP_DIR"] = str(self.backup_dir)
@@ -85,6 +88,9 @@ class ScannerAdminObservabilityTest(unittest.TestCase):
         os.environ["BACKGROUND_JOBS_LOCK_FILE"] = str(self.bg_lock)
         os.environ["DATABASE_STARTUP_LOCK_FILE"] = str(self.startup_lock)
         os.environ["MARKET_SCANNER_DATABASE_PATH"] = str(self.scanner_db_path)
+        os.environ["TELEGRAM_ENABLED"] = "0"
+        os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+        os.environ.pop("TELEGRAM_CHAT_ID", None)
 
         self.app = create_app()
         with self.app.app_context():
@@ -143,6 +149,25 @@ class ScannerAdminObservabilityTest(unittest.TestCase):
             items = payload.get("items") or []
             self.assertGreaterEqual(len(items), 1)
             self.assertEqual(items[0].get("action"), "create")
+
+    def test_admin_telegram_endpoints(self):
+        with self.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess["user_id"] = 1  # admin bootstrap
+
+            status_response = client.get("/api/admin/telegram/status")
+            self.assertEqual(status_response.status_code, 200)
+            status_payload = status_response.get_json(silent=True) or {}
+            data = status_payload.get("data") or {}
+            self.assertFalse(bool(data.get("enabled")))
+            self.assertFalse(bool(data.get("configured")))
+            self.assertIn("swing_trade_opened", data.get("notify_events") or [])
+            self.assertIn("swing_trade_closed", data.get("notify_events") or [])
+
+            test_response = client.post("/api/admin/telegram/test", json={})
+            self.assertEqual(test_response.status_code, 503)
+            test_payload = test_response.get_json(silent=True) or {}
+            self.assertFalse(bool(test_payload.get("ok")))
 
 
 if __name__ == "__main__":

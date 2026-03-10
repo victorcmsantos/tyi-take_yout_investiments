@@ -10,10 +10,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from flask import current_app, has_request_context
+from flask import current_app, has_app_context, has_request_context
 
 from ..auth import get_current_user
 from ..db import get_db
+from ..notifications import notify_event
 
 try:
     import yfinance as yf
@@ -40,6 +41,8 @@ _BRAPI_BATCH_LIMIT = 10
 _BRAPI_QUOTE_CACHE_TTL_DEFAULT_SECONDS = 120.0
 _BRAPI_QUOTE_RESULT_CACHE = {}
 _BRAPI_CIRCUIT = {"until": 0.0, "status_code": None}
+_PROVIDER_CIRCUIT_CACHE = {}
+_PROVIDER_USAGE_CACHE = {}
 _MARKET_DATA_PROVIDER_CAPABILITIES = {
     "alpha_vantage": {"metrics", "profile", "history"},
     "brapi": {"metrics", "profile", "history"},
@@ -140,6 +143,321 @@ def _snapshot_age_seconds(iso_text: str):
     except (TypeError, ValueError):
         return None
     return max((datetime.now() - created).total_seconds(), 0.0)
+
+
+def _provider_circuit_row(provider: str):
+    if not has_app_context():
+        return None
+    normalized = str(provider or "").strip().lower()
+    if not normalized:
+        return None
+    try:
+        row = get_db().execute(
+            """
+            SELECT provider, disabled_until, status_code, updated_at
+            FROM api_provider_circuit_state
+            WHERE provider = ?
+            """,
+            (normalized,),
+        ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    return {
+        "provider": str(row["provider"] or "").strip().lower(),
+        "disabled_until": float(row["disabled_until"] or 0.0),
+        "status_code": row["status_code"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _provider_circuit_upsert(provider: str, disabled_until: float, status_code=None):
+    if not has_app_context():
+        return
+    normalized = str(provider or "").strip().lower()
+    if not normalized:
+        return
+    until_value = max(float(disabled_until or 0.0), 0.0)
+    now_iso = _now_iso()
+    try:
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO api_provider_circuit_state (
+                provider,
+                disabled_until,
+                status_code,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(provider) DO UPDATE SET
+                disabled_until = excluded.disabled_until,
+                status_code = excluded.status_code,
+                updated_at = excluded.updated_at
+            """,
+            (normalized, until_value, status_code, now_iso),
+        )
+        db.commit()
+    except Exception:
+        return
+    _PROVIDER_CIRCUIT_CACHE[normalized] = {
+        "provider": normalized,
+        "disabled_until": until_value,
+        "status_code": status_code,
+        "updated_at": now_iso,
+        "fetched_at": time.time(),
+    }
+
+
+def _provider_circuit_current(provider: str):
+    normalized = str(provider or "").strip().lower()
+    if not normalized:
+        return {
+            "provider": "",
+            "disabled_until": 0.0,
+            "status_code": None,
+            "updated_at": None,
+            "fetched_at": 0.0,
+        }
+    state = _PROVIDER_CIRCUIT_CACHE.get(normalized)
+    if not state:
+        state = {
+            "provider": normalized,
+            "disabled_until": 0.0,
+            "status_code": None,
+            "updated_at": None,
+            "fetched_at": 0.0,
+        }
+    if (time.time() - float(state.get("fetched_at") or 0.0)) > 2.0:
+        row = _provider_circuit_row(normalized)
+        if row:
+            state = {
+                "provider": normalized,
+                "disabled_until": float(row.get("disabled_until") or 0.0),
+                "status_code": row.get("status_code"),
+                "updated_at": row.get("updated_at"),
+                "fetched_at": time.time(),
+            }
+        else:
+            state["fetched_at"] = time.time()
+        _PROVIDER_CIRCUIT_CACHE[normalized] = state
+    return state
+
+
+def _provider_circuit_is_open(provider: str, memory_state: dict):
+    current = _provider_circuit_current(provider)
+    until_value = max(
+        float(memory_state.get("until") or 0.0),
+        float(current.get("disabled_until") or 0.0),
+    )
+    status_code = memory_state.get("status_code")
+    if status_code is None:
+        status_code = current.get("status_code")
+
+    now = time.time()
+    if until_value > 0 and now >= until_value:
+        memory_state["until"] = 0.0
+        memory_state["status_code"] = None
+        _provider_circuit_upsert(provider, 0.0, None)
+        return False
+
+    memory_state["until"] = until_value
+    memory_state["status_code"] = status_code
+    return until_value > 0
+
+
+def _provider_usage_bucket(window: str, now_dt: datetime | None = None):
+    dt = now_dt or datetime.utcnow()
+    normalized = str(window or "").strip().lower()
+    if normalized == "minute":
+        return dt.strftime("%Y%m%d%H%M")
+    if normalized == "hour":
+        return dt.strftime("%Y%m%d%H")
+    return dt.strftime("%Y%m%d")
+
+
+def _provider_window_seconds(window: str):
+    normalized = str(window or "").strip().lower()
+    if normalized == "minute":
+        return 60
+    if normalized == "hour":
+        return 3600
+    return 86400
+
+
+def _provider_budget_limit(provider: str, window: str):
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_window = str(window or "").strip().lower()
+    if not normalized_provider or normalized_window not in {"minute", "hour", "day"}:
+        return 0
+    env_name = f"{normalized_provider.upper()}_CALL_BUDGET_PER_{normalized_window.upper()}"
+    raw = (os.getenv(env_name) or "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _provider_usage_row(provider: str, window: str, bucket: str):
+    if not has_app_context():
+        return None
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_window = str(window or "").strip().lower()
+    normalized_bucket = str(bucket or "").strip()
+    if not normalized_provider or not normalized_window or not normalized_bucket:
+        return None
+    try:
+        row = get_db().execute(
+            """
+            SELECT
+                provider,
+                window,
+                bucket,
+                request_count,
+                success_count,
+                error_count,
+                status_429_count,
+                updated_at
+            FROM api_provider_usage_window
+            WHERE provider = ? AND window = ? AND bucket = ?
+            """,
+            (normalized_provider, normalized_window, normalized_bucket),
+        ).fetchone()
+    except Exception:
+        return None
+    return dict(row) if row else None
+
+
+def _provider_usage_get(provider: str, window: str, bucket: str):
+    cache_key = (
+        str(provider or "").strip().lower(),
+        str(window or "").strip().lower(),
+        str(bucket or "").strip(),
+    )
+    cached = _PROVIDER_USAGE_CACHE.get(cache_key)
+    if cached and (time.time() - float(cached.get("fetched_at") or 0.0)) <= 2.0:
+        return dict(cached.get("value") or {})
+    row = _provider_usage_row(*cache_key)
+    value = row or {
+        "provider": cache_key[0],
+        "window": cache_key[1],
+        "bucket": cache_key[2],
+        "request_count": 0,
+        "success_count": 0,
+        "error_count": 0,
+        "status_429_count": 0,
+        "updated_at": None,
+    }
+    _PROVIDER_USAGE_CACHE[cache_key] = {"value": dict(value), "fetched_at": time.time()}
+    return value
+
+
+def _provider_usage_record(provider: str, status_code):
+    if not has_app_context():
+        return
+    normalized_provider = str(provider or "").strip().lower()
+    if not normalized_provider:
+        return
+    now_dt = datetime.utcnow()
+    now_iso = _now_iso()
+    is_success = bool(status_code is not None and int(status_code) < 400)
+    is_429 = bool(status_code is not None and int(status_code) == 429)
+    try:
+        db = get_db()
+        for window in ("minute", "hour", "day"):
+            bucket = _provider_usage_bucket(window, now_dt=now_dt)
+            db.execute(
+                """
+                INSERT INTO api_provider_usage_window (
+                    provider,
+                    window,
+                    bucket,
+                    request_count,
+                    success_count,
+                    error_count,
+                    status_429_count,
+                    updated_at
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+                ON CONFLICT(provider, window, bucket) DO UPDATE SET
+                    request_count = api_provider_usage_window.request_count + 1,
+                    success_count = api_provider_usage_window.success_count + excluded.success_count,
+                    error_count = api_provider_usage_window.error_count + excluded.error_count,
+                    status_429_count = api_provider_usage_window.status_429_count + excluded.status_429_count,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_provider,
+                    window,
+                    bucket,
+                    1 if is_success else 0,
+                    0 if is_success else 1,
+                    1 if is_429 else 0,
+                    now_iso,
+                ),
+            )
+            cache_key = (normalized_provider, window, bucket)
+            _PROVIDER_USAGE_CACHE.pop(cache_key, None)
+        db.commit()
+    except Exception:
+        return
+
+
+def _provider_budget_allows_request(provider: str):
+    normalized_provider = str(provider or "").strip().lower()
+    if not normalized_provider:
+        return True
+    for window in ("minute", "hour", "day"):
+        limit = _provider_budget_limit(normalized_provider, window)
+        if limit <= 0:
+            continue
+        bucket = _provider_usage_bucket(window)
+        current = int(_provider_usage_get(normalized_provider, window, bucket).get("request_count") or 0)
+        if current >= limit:
+            notify_event(
+                "provider_budget_exhausted",
+                f"Orcamento esgotado: {normalized_provider.upper()}",
+                details={
+                    "provider": normalized_provider,
+                    "window": window,
+                    "bucket": bucket,
+                    "limit": int(limit),
+                    "request_count": int(current),
+                },
+                dedupe_key=f"provider:budget:{normalized_provider}:{window}:{bucket}",
+                min_interval_seconds=max(int(_provider_window_seconds(window) / 2), 30),
+            )
+            return False
+    return True
+
+
+def _provider_usage_status(provider: str):
+    normalized_provider = str(provider or "").strip().lower()
+    if not normalized_provider:
+        return {"provider": "", "windows": {}}
+    windows = {}
+    for window in ("minute", "hour", "day"):
+        bucket = _provider_usage_bucket(window)
+        usage = _provider_usage_get(normalized_provider, window, bucket)
+        limit = _provider_budget_limit(normalized_provider, window)
+        count = int(usage.get("request_count") or 0)
+        remaining = max(limit - count, 0) if limit > 0 else None
+        usage_pct = round((count / limit) * 100.0, 2) if limit > 0 else None
+        windows[window] = {
+            "bucket": bucket,
+            "limit": limit,
+            "request_count": count,
+            "success_count": int(usage.get("success_count") or 0),
+            "error_count": int(usage.get("error_count") or 0),
+            "status_429_count": int(usage.get("status_429_count") or 0),
+            "remaining": remaining,
+            "usage_pct": usage_pct,
+            "updated_at": usage.get("updated_at"),
+        }
+    return {"provider": normalized_provider, "windows": windows}
 
 
 def _normalize_metric_formula_value(value, fallback=0.0):
@@ -946,23 +1264,19 @@ def _coingecko_cooldown_seconds():
 
 
 def _coingecko_is_temporarily_unavailable():
-    now = time.time()
-    disabled_until = float(_COINGECKO_CIRCUIT.get("until", 0.0) or 0.0)
-    if disabled_until <= 0:
-        return False
-    if now >= disabled_until:
-        _COINGECKO_CIRCUIT["until"] = 0.0
-        _COINGECKO_CIRCUIT["status_code"] = None
-        return False
-    return True
+    return _provider_circuit_is_open("coingecko", _COINGECKO_CIRCUIT)
 
 
 def _coingecko_open_circuit(status_code=None):
     now = time.time()
     cooldown_seconds = _coingecko_cooldown_seconds()
     was_open = _coingecko_is_temporarily_unavailable()
-    _COINGECKO_CIRCUIT["until"] = now + cooldown_seconds
+    _COINGECKO_CIRCUIT["until"] = max(
+        float(_COINGECKO_CIRCUIT.get("until") or 0.0),
+        now + cooldown_seconds,
+    )
     _COINGECKO_CIRCUIT["status_code"] = status_code
+    _provider_circuit_upsert("coingecko", float(_COINGECKO_CIRCUIT["until"]), status_code)
     if not was_open:
         logger = _get_app_logger()
         logger.warning(
@@ -970,15 +1284,40 @@ def _coingecko_open_circuit(status_code=None):
             cooldown_seconds,
             status_code if status_code is not None else "n/a",
         )
+        notify_event(
+            "provider_circuit_open",
+            "Circuito aberto: CoinGecko",
+            details={
+                "provider": "coingecko",
+                "status_code": status_code,
+                "cooldown_seconds": cooldown_seconds,
+            },
+            dedupe_key="provider:circuit:open:coingecko",
+            min_interval_seconds=max(int(cooldown_seconds / 2), 30),
+        )
 
 
 def _coingecko_close_circuit():
+    was_open = _coingecko_is_temporarily_unavailable()
     _COINGECKO_CIRCUIT["until"] = 0.0
     _COINGECKO_CIRCUIT["status_code"] = None
+    _provider_circuit_upsert("coingecko", 0.0, None)
+    if was_open:
+        notify_event(
+            "provider_circuit_closed",
+            "Circuito fechado: CoinGecko",
+            details={"provider": "coingecko"},
+            dedupe_key="provider:circuit:close:coingecko",
+            min_interval_seconds=60,
+        )
 
 
 def _coingecko_get_json(url: str, timeout: float = 12.0):
     if _coingecko_is_temporarily_unavailable():
+        return None
+    if not _provider_budget_allows_request("coingecko"):
+        _provider_usage_record("coingecko", 429)
+        _coingecko_open_circuit(429)
         return None
 
     payload, status_code = _http_get_json_with_status(
@@ -987,6 +1326,7 @@ def _coingecko_get_json(url: str, timeout: float = 12.0):
         timeout=timeout,
         attempts=2,
     )
+    _provider_usage_record("coingecko", status_code)
     if payload is None:
         if status_code is None or status_code in {401, 403, 408, 425, 429, 500, 502, 503, 504}:
             _coingecko_open_circuit(status_code)
@@ -1820,34 +2160,51 @@ def _brapi_cooldown_seconds():
 
 
 def _brapi_is_temporarily_unavailable():
-    now = time.time()
-    disabled_until = float(_BRAPI_CIRCUIT.get("until", 0.0) or 0.0)
-    if disabled_until <= 0:
-        return False
-    if now >= disabled_until:
-        _BRAPI_CIRCUIT["until"] = 0.0
-        _BRAPI_CIRCUIT["status_code"] = None
-        return False
-    return True
+    return _provider_circuit_is_open("brapi", _BRAPI_CIRCUIT)
 
 
 def _brapi_open_circuit(status_code=None):
     now = time.time()
     cooldown_seconds = _brapi_cooldown_seconds()
     was_open = _brapi_is_temporarily_unavailable()
-    _BRAPI_CIRCUIT["until"] = now + cooldown_seconds
+    _BRAPI_CIRCUIT["until"] = max(
+        float(_BRAPI_CIRCUIT.get("until") or 0.0),
+        now + cooldown_seconds,
+    )
     _BRAPI_CIRCUIT["status_code"] = status_code
+    _provider_circuit_upsert("brapi", float(_BRAPI_CIRCUIT["until"]), status_code)
     if not was_open:
         _get_app_logger().warning(
             "BRAPI temporariamente pausado por %ss apos falha HTTP status=%s.",
             cooldown_seconds,
             status_code if status_code is not None else "n/a",
         )
+        notify_event(
+            "provider_circuit_open",
+            "Circuito aberto: BRAPI",
+            details={
+                "provider": "brapi",
+                "status_code": status_code,
+                "cooldown_seconds": cooldown_seconds,
+            },
+            dedupe_key="provider:circuit:open:brapi",
+            min_interval_seconds=max(int(cooldown_seconds / 2), 30),
+        )
 
 
 def _brapi_close_circuit():
+    was_open = _brapi_is_temporarily_unavailable()
     _BRAPI_CIRCUIT["until"] = 0.0
     _BRAPI_CIRCUIT["status_code"] = None
+    _provider_circuit_upsert("brapi", 0.0, None)
+    if was_open:
+        notify_event(
+            "provider_circuit_closed",
+            "Circuito fechado: BRAPI",
+            details={"provider": "brapi"},
+            dedupe_key="provider:circuit:close:brapi",
+            min_interval_seconds=60,
+        )
 
 
 def _normalize_brapi_modules(modules):
@@ -2013,12 +2370,26 @@ def _fetch_brapi_quote_results_batch(tickers, range_key: str = None, interval: s
 
     for start in range(0, len(pending), _BRAPI_BATCH_LIMIT):
         chunk = pending[start : start + _BRAPI_BATCH_LIMIT]
+        if not _provider_budget_allows_request("brapi"):
+            _provider_usage_record("brapi", 429)
+            _brapi_open_circuit(429)
+            for ticker in chunk:
+                result_map[ticker] = None
+                _set_brapi_cached_quote_result(
+                    ticker,
+                    None,
+                    range_key=range_key,
+                    interval=interval,
+                    modules=normalized_modules,
+                )
+            continue
         payload, status_code = _http_get_json_with_status(
             f"{_get_brapi_base_url()}/quote/{','.join(chunk)}{query}",
             headers=headers,
             timeout=12.0,
             attempts=2,
         )
+        _provider_usage_record("brapi", status_code)
         if payload is None:
             if status_code is None or status_code in {401, 403, 408, 425, 429, 500, 502, 503, 504}:
                 _brapi_open_circuit(status_code)

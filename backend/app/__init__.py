@@ -6,6 +6,7 @@ from .chart_sync import start_chart_sync
 from .db import init_app as init_db_app
 from .fixed_income_sync import start_fixed_income_sync
 from .market_sync import start_market_sync
+from .notifications import notify_event
 from .observability import configure_observability
 from .upcoming_income_sync import start_upcoming_income_sync
 
@@ -20,6 +21,18 @@ def create_app() -> Flask:
     start_fixed_income_sync(app)
     start_chart_sync(app)
     start_upcoming_income_sync(app)
+    notify_event(
+        "startup",
+        "Backend iniciado",
+        details={
+            "market_sync_enabled": bool(app.config.get("MARKET_SYNC_ENABLED")),
+            "chart_snapshot_enabled": bool(app.config.get("CHART_SNAPSHOT_ENABLED")),
+            "fixed_income_snapshot_enabled": bool(app.config.get("FIXED_INCOME_SNAPSHOT_ENABLED")),
+            "upcoming_income_sync_enabled": bool(app.config.get("UPCOMING_INCOME_SYNC_ENABLED")),
+        },
+        dedupe_key="app:startup",
+        min_interval_seconds=300,
+    )
 
     @app.before_request
     def _ensure_options():

@@ -24,6 +24,7 @@ from .auth import (
     set_user_active_state,
 )
 from .db import create_database_backups, get_db, list_database_backups, resolve_database_backup_path
+from .notifications import notify_event, send_telegram_text, telegram_status_payload
 from .observability import build_health_payload, get_route_metrics
 from .services import (
     add_fixed_income,
@@ -127,6 +128,93 @@ def _json_compact(payload, limit: int = 4000):
     if len(text) <= limit:
         return text
     return f"{text[: max(limit - 3, 0)]}..."
+
+
+def _notify_sync_event(
+    event_key: str,
+    title: str,
+    *,
+    details: dict | None = None,
+    dedupe_key: str | None = None,
+    min_interval_seconds: int | None = None,
+):
+    try:
+        notify_event(
+            event_key,
+            title,
+            details=details,
+            dedupe_key=dedupe_key,
+            min_interval_seconds=min_interval_seconds,
+        )
+    except Exception:
+        current_app.logger.exception("Falha ao enviar notificacao de sync (event=%s).", event_key)
+
+
+def _trade_field_from_sources(field: str, *sources):
+    for source in sources:
+        if isinstance(source, dict) and source.get(field) is not None:
+            return source.get(field)
+    return None
+
+
+def _notify_swing_trade_event(
+    *,
+    event_key: str,
+    title: str,
+    user: dict | None,
+    trade_id=None,
+    ticker: str | None = None,
+    payload: dict | None = None,
+    target: dict | None = None,
+    response_payload: dict | None = None,
+    upstream_status: int | None = None,
+    error_message: str | None = None,
+):
+    normalized_ticker = str(
+        ticker
+        or _trade_field_from_sources("ticker", payload, target, response_payload)
+        or ""
+    ).strip().upper()
+    details = {
+        "requested_by": str((user or {}).get("username") or ""),
+        "trade_id": int(trade_id) if trade_id is not None else (
+            int(response_payload.get("id")) if isinstance(response_payload, dict) and response_payload.get("id") is not None else None
+        ),
+        "ticker": normalized_ticker or None,
+        "quantity": _safe_float(_trade_field_from_sources("quantity", payload, target, response_payload)),
+        "entry_price": _safe_float(_trade_field_from_sources("entry_price", payload, target, response_payload)),
+        "target_price": _safe_float(_trade_field_from_sources("target_price", payload, target, response_payload)),
+        "stop_price": _safe_float(_trade_field_from_sources("stop_price", payload, target, response_payload)),
+        "last_price": _safe_float(_trade_field_from_sources("last_price", payload, target, response_payload)),
+        "exit_price": _safe_float(_trade_field_from_sources("exit_price", payload, target, response_payload)),
+        "invested_amount": _safe_float(_trade_field_from_sources("invested_amount", payload, target, response_payload)),
+        "pnl_pct": _safe_float(
+            _trade_field_from_sources(
+                "current_pnl_pct",
+                response_payload,
+                target,
+            )
+        ),
+        "pnl_amount": _safe_float(
+            _trade_field_from_sources(
+                "current_pnl_amount",
+                response_payload,
+                target,
+            )
+        ),
+        "status": str(_trade_field_from_sources("status", response_payload, target) or "").strip().upper() or None,
+        "upstream_status": int(upstream_status) if upstream_status is not None else None,
+        "error": str(error_message or "").strip() or None,
+    }
+    clean_details = {key: value for key, value in details.items() if value is not None and value != ""}
+    dedupe_identity = str(clean_details.get("trade_id") or clean_details.get("ticker") or "na")
+    _notify_sync_event(
+        event_key,
+        title,
+        details=clean_details,
+        dedupe_key=f"swing:{event_key}:{dedupe_identity}",
+        min_interval_seconds=10 if event_key != "swing_trade_failed" else 60,
+    )
 
 
 def _parse_datetime_like(value):
@@ -609,6 +697,134 @@ def _scanner_filter_trades_payload_for_user(payload, user: dict):
     }
 
 
+def _log_trade_pnl_reconciliation_audit(
+    *,
+    trade_id: int,
+    ticker: str,
+    trade_status: str,
+    divergence_pct: float,
+    divergence_amount: float,
+    payload: dict,
+):
+    try:
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO trade_pnl_reconciliation_audit (
+                trade_id,
+                ticker,
+                trade_status,
+                divergence_pct,
+                divergence_amount,
+                payload_json,
+                detected_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(trade_id),
+                str(ticker or "").strip().upper(),
+                str(trade_status or "").strip().upper(),
+                float(divergence_pct or 0.0),
+                float(divergence_amount or 0.0),
+                _json_compact(payload, limit=2000),
+                _now_iso_utc(),
+            ),
+        )
+        db.commit()
+    except Exception:
+        current_app.logger.exception("Falha ao registrar auditoria de reconciliacao de PnL.")
+
+
+def _scanner_reconcile_trade_item(trade: dict):
+    item = dict(trade or {})
+    quantity = _safe_float(item.get("quantity")) or 0.0
+    invested_amount = _safe_float(item.get("invested_amount")) or 0.0
+    entry_price = _safe_float(item.get("entry_price")) or 0.0
+    last_price = _safe_float(item.get("last_price"))
+    exit_price = _safe_float(item.get("exit_price"))
+    status = str(item.get("status") or "").strip().upper()
+    is_open = status == "OPEN"
+
+    if quantity <= 0:
+        quantity = 0.0
+    if invested_amount <= 0 and quantity > 0 and entry_price > 0:
+        invested_amount = quantity * entry_price
+
+    reference_price = last_price if is_open else (exit_price if exit_price is not None else last_price)
+    if reference_price is None:
+        reference_price = entry_price if entry_price > 0 else 0.0
+
+    market_value = float(reference_price) * quantity if quantity > 0 else 0.0
+    pnl_amount = market_value - invested_amount
+    pnl_pct = ((market_value / invested_amount) - 1.0) * 100.0 if invested_amount > 0 else 0.0
+
+    provided_amount = _safe_float(item.get("current_pnl_amount" if is_open else "realized_pnl_amount"))
+    provided_pct = _safe_float(item.get("current_pnl_pct" if is_open else "realized_pnl_pct"))
+    delta_amount = 0.0 if provided_amount is None else (pnl_amount - provided_amount)
+    delta_pct = 0.0 if provided_pct is None else (pnl_pct - provided_pct)
+    divergence = bool(abs(delta_pct) >= 0.5 or abs(delta_amount) >= 0.01)
+
+    item["current_market_value"] = round(float(market_value), 2)
+    if is_open:
+        item["current_pnl_amount"] = round(float(pnl_amount), 2)
+        item["current_pnl_pct"] = round(float(pnl_pct), 2)
+    else:
+        item["realized_pnl_amount"] = round(float(pnl_amount), 2)
+        item["realized_pnl_pct"] = round(float(pnl_pct), 2)
+
+    item["pnl_reconciliation"] = {
+        "checked_at": _now_iso_utc(),
+        "divergence": divergence,
+        "delta_pct": round(float(delta_pct), 4),
+        "delta_amount": round(float(delta_amount), 4),
+        "reference_price": round(float(reference_price), 6),
+        "source_value_kind": "last_price" if is_open else ("exit_price" if exit_price is not None else "last_price"),
+    }
+    return item
+
+
+def _scanner_reconcile_trades_payload(payload: dict):
+    source = payload if isinstance(payload, dict) else {}
+    active_rows = [item for item in (source.get("active") or []) if isinstance(item, dict)]
+    history_rows = [item for item in (source.get("history") or []) if isinstance(item, dict)]
+
+    active = []
+    history = []
+    for item in active_rows:
+        reconciled = _scanner_reconcile_trade_item(item)
+        if reconciled.get("pnl_reconciliation", {}).get("divergence"):
+            _log_trade_pnl_reconciliation_audit(
+                trade_id=int(reconciled.get("id") or 0),
+                ticker=str(reconciled.get("ticker") or ""),
+                trade_status=str(reconciled.get("status") or ""),
+                divergence_pct=float((reconciled.get("pnl_reconciliation") or {}).get("delta_pct") or 0.0),
+                divergence_amount=float((reconciled.get("pnl_reconciliation") or {}).get("delta_amount") or 0.0),
+                payload=reconciled,
+            )
+        active.append(reconciled)
+
+    for item in history_rows:
+        reconciled = _scanner_reconcile_trade_item(item)
+        if reconciled.get("pnl_reconciliation", {}).get("divergence"):
+            _log_trade_pnl_reconciliation_audit(
+                trade_id=int(reconciled.get("id") or 0),
+                ticker=str(reconciled.get("ticker") or ""),
+                trade_status=str(reconciled.get("status") or ""),
+                divergence_pct=float((reconciled.get("pnl_reconciliation") or {}).get("delta_pct") or 0.0),
+                divergence_amount=float((reconciled.get("pnl_reconciliation") or {}).get("delta_amount") or 0.0),
+                payload=reconciled,
+            )
+        history.append(reconciled)
+
+    return {
+        **source,
+        "active": active,
+        "history": history,
+        "summary": _scanner_summary_from_trades(active, history),
+    }
+
+
 def _scanner_prepare_trade_payload(payload, user: dict, force_notes: bool = False):
     prepared = dict(payload or {})
     prepared["user_id"] = int(user["id"])
@@ -629,14 +845,17 @@ def _scanner_market_data_map_for_tickers(tickers):
     if not base_tickers:
         return {}
     placeholders = ",".join(["?"] * len(base_tickers))
-    rows = get_db().execute(
-        f"""
-        SELECT ticker, market_data_source, market_data_updated_at
-        FROM assets
-        WHERE ticker IN ({placeholders})
-        """,
-        tuple(base_tickers),
-    ).fetchall()
+    try:
+        rows = get_db().execute(
+            f"""
+            SELECT ticker, market_data_source, market_data_updated_at
+            FROM assets
+            WHERE ticker IN ({placeholders})
+            """,
+            tuple(base_tickers),
+        ).fetchall()
+    except Exception:
+        return {}
     payload = {}
     for row in rows:
         base = _scanner_base_ticker(row["ticker"])
@@ -1059,6 +1278,33 @@ def _scanner_manual_scan_worker(app, run_id: int):
                 "Falha ao persistir resultado do scan manual do scanner (run_id=%s).",
                 int(run_id),
             )
+        if ok:
+            _notify_sync_event(
+                "manual_scan_success",
+                "Scan manual finalizado com sucesso",
+                details={
+                    "run_id": int(run_id),
+                    "upstream_status": int(status or 0),
+                    "processed_tickers": int(processed_tickers),
+                    "triggered_signals": int(triggered_signals),
+                },
+                dedupe_key=f"scan:manual:success:{int(run_id)}",
+                min_interval_seconds=5,
+            )
+        else:
+            _notify_sync_event(
+                "manual_scan_failed",
+                "Falha no scan manual",
+                details={
+                    "run_id": int(run_id),
+                    "upstream_status": int(status or 0),
+                    "processed_tickers": int(processed_tickers),
+                    "triggered_signals": int(triggered_signals),
+                    "error": str(error_message or "Falha ao executar scan manual."),
+                },
+                dedupe_key=f"scan:manual:failed:{int(run_id)}",
+                min_interval_seconds=5,
+            )
 
 
 def _start_scanner_manual_scan(user: dict):
@@ -1176,6 +1422,17 @@ def _start_scanner_manual_scan(user: dict):
         daemon=True,
         name=f"scanner-manual-scan-{run_id}",
     ).start()
+    _notify_sync_event(
+        "manual_scan_started",
+        "Scan manual iniciado",
+        details={
+            "run_id": int(run_id),
+            "requested_by": str((user or {}).get("username") or ""),
+            "planned_total": int(planned_total),
+        },
+        dedupe_key=f"scan:manual:started:{int(run_id)}",
+        min_interval_seconds=5,
+    )
 
     run_row = db.execute(
         """
@@ -1410,7 +1667,9 @@ def scanner_trades():
     if not ok:
         message = _market_scanner_error_message(response_payload, status)
         return _json_error(message, status=status, details={"upstream": response_payload})
-    return _json_ok(_scanner_filter_trades_payload_for_user(response_payload, user), status=status)
+    filtered = _scanner_filter_trades_payload_for_user(response_payload, user)
+    reconciled = _scanner_reconcile_trades_payload(filtered)
+    return _json_ok(reconciled, status=status)
 
 
 @api_bp.route("/scanner/trades", methods=["POST"])
@@ -1433,6 +1692,28 @@ def scanner_create_trade():
         upstream_status=status,
         error_message=error_message,
     )
+    if ok:
+        _notify_swing_trade_event(
+            event_key="swing_trade_opened",
+            title="Swing trade aberta",
+            user=user,
+            trade_id=(response_payload or {}).get("id") if isinstance(response_payload, dict) else None,
+            ticker=payload.get("ticker"),
+            payload=payload,
+            response_payload=response_payload if isinstance(response_payload, dict) else None,
+            upstream_status=status,
+        )
+    else:
+        _notify_swing_trade_event(
+            event_key="swing_trade_failed",
+            title="Falha ao abrir swing trade",
+            user=user,
+            ticker=payload.get("ticker"),
+            payload=payload,
+            response_payload=response_payload if isinstance(response_payload, dict) else None,
+            upstream_status=status,
+            error_message=error_message,
+        )
     return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
@@ -1455,6 +1736,14 @@ def scanner_update_trade(trade_id: int):
             upstream_status=status,
             error_message=message,
         )
+        _notify_swing_trade_event(
+            event_key="swing_trade_failed",
+            title="Falha ao ajustar swing trade",
+            user=user,
+            trade_id=trade_id,
+            upstream_status=status,
+            error_message=message,
+        )
         return _json_error(message, status=status, details={"upstream": trades_payload})
 
     all_trades = []
@@ -1473,6 +1762,14 @@ def scanner_update_trade(trade_id: int):
             upstream_status=404,
             error_message="Trade nao encontrado.",
         )
+        _notify_swing_trade_event(
+            event_key="swing_trade_failed",
+            title="Falha ao ajustar swing trade",
+            user=user,
+            trade_id=trade_id,
+            upstream_status=404,
+            error_message="Trade nao encontrado.",
+        )
         return _json_error("Trade nao encontrado.", status=404)
     if not _scanner_trade_visible_for_user(target, user):
         _log_scanner_trade_audit(
@@ -1483,6 +1780,16 @@ def scanner_update_trade(trade_id: int):
             request_payload=None,
             response_payload=None,
             success=False,
+            upstream_status=403,
+            error_message="Trade nao pertence ao usuario atual.",
+        )
+        _notify_swing_trade_event(
+            event_key="swing_trade_failed",
+            title="Falha ao ajustar swing trade",
+            user=user,
+            trade_id=trade_id,
+            ticker=target.get("ticker"),
+            target=target,
             upstream_status=403,
             error_message="Trade nao pertence ao usuario atual.",
         )
@@ -1503,6 +1810,31 @@ def scanner_update_trade(trade_id: int):
         upstream_status=status,
         error_message=error_message,
     )
+    if ok:
+        _notify_swing_trade_event(
+            event_key="swing_trade_updated",
+            title="Swing trade ajustada",
+            user=user,
+            trade_id=trade_id,
+            ticker=target.get("ticker"),
+            payload=payload,
+            target=target,
+            response_payload=response_payload if isinstance(response_payload, dict) else None,
+            upstream_status=status,
+        )
+    else:
+        _notify_swing_trade_event(
+            event_key="swing_trade_failed",
+            title="Falha ao ajustar swing trade",
+            user=user,
+            trade_id=trade_id,
+            ticker=target.get("ticker"),
+            payload=payload,
+            target=target,
+            response_payload=response_payload if isinstance(response_payload, dict) else None,
+            upstream_status=status,
+            error_message=error_message,
+        )
     return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
@@ -1525,6 +1857,14 @@ def scanner_close_trade(trade_id: int):
             upstream_status=status,
             error_message=message,
         )
+        _notify_swing_trade_event(
+            event_key="swing_trade_failed",
+            title="Falha ao encerrar swing trade",
+            user=user,
+            trade_id=trade_id,
+            upstream_status=status,
+            error_message=message,
+        )
         return _json_error(message, status=status, details={"upstream": trades_payload})
 
     all_trades = []
@@ -1543,6 +1883,14 @@ def scanner_close_trade(trade_id: int):
             upstream_status=404,
             error_message="Trade nao encontrado.",
         )
+        _notify_swing_trade_event(
+            event_key="swing_trade_failed",
+            title="Falha ao encerrar swing trade",
+            user=user,
+            trade_id=trade_id,
+            upstream_status=404,
+            error_message="Trade nao encontrado.",
+        )
         return _json_error("Trade nao encontrado.", status=404)
     if not _scanner_trade_visible_for_user(target, user):
         _log_scanner_trade_audit(
@@ -1553,6 +1901,16 @@ def scanner_close_trade(trade_id: int):
             request_payload=None,
             response_payload=None,
             success=False,
+            upstream_status=403,
+            error_message="Trade nao pertence ao usuario atual.",
+        )
+        _notify_swing_trade_event(
+            event_key="swing_trade_failed",
+            title="Falha ao encerrar swing trade",
+            user=user,
+            trade_id=trade_id,
+            ticker=target.get("ticker"),
+            target=target,
             upstream_status=403,
             error_message="Trade nao pertence ao usuario atual.",
         )
@@ -1573,6 +1931,31 @@ def scanner_close_trade(trade_id: int):
         upstream_status=status,
         error_message=error_message,
     )
+    if ok:
+        _notify_swing_trade_event(
+            event_key="swing_trade_closed",
+            title="Swing trade encerrada",
+            user=user,
+            trade_id=trade_id,
+            ticker=target.get("ticker"),
+            payload=payload,
+            target=target,
+            response_payload=response_payload if isinstance(response_payload, dict) else None,
+            upstream_status=status,
+        )
+    else:
+        _notify_swing_trade_event(
+            event_key="swing_trade_failed",
+            title="Falha ao encerrar swing trade",
+            user=user,
+            trade_id=trade_id,
+            ticker=target.get("ticker"),
+            payload=payload,
+            target=target,
+            response_payload=response_payload if isinstance(response_payload, dict) else None,
+            upstream_status=status,
+            error_message=error_message,
+        )
     return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
@@ -1599,6 +1982,18 @@ def scanner_manual_scan_start():
     if not can_user_write(user):
         return _json_error("Perfil viewer possui acesso somente leitura.", status=403)
     payload = _start_scanner_manual_scan(user)
+    if not payload.get("started"):
+        run = payload.get("run") or {}
+        _notify_sync_event(
+            "manual_scan_started",
+            "Scan manual deduplicado (ja em andamento)",
+            details={
+                "requested_by": str((user or {}).get("username") or ""),
+                "running_run_id": run.get("id"),
+            },
+            dedupe_key="scan:manual:already-running",
+            min_interval_seconds=60,
+        )
     status = 202 if payload.get("started") else 200
     return _json_ok(payload, status=status)
 
@@ -1610,12 +2005,59 @@ def scanner_manual_scan():
         return _json_error("Nao autenticado.", status=401)
     if not can_user_write(user):
         return _json_error("Perfil viewer possui acesso somente leitura.", status=403)
+    upstream_scan = _scanner_upstream_scan_status_payload()
+    if bool(upstream_scan.get("running")):
+        _notify_sync_event(
+            "manual_scan_started",
+            "Scan manual deduplicado (upstream em execucao)",
+            details={
+                "requested_by": str((user or {}).get("username") or ""),
+                "active_run_id": upstream_scan.get("active_run_id"),
+            },
+            dedupe_key="scanner:scan:already-running",
+            min_interval_seconds=60,
+        )
+        return _json_ok(
+            {
+                "started": False,
+                "deduplicated": True,
+                "message": "Ja existe scan ativo no scanner.",
+                "upstream_scan": upstream_scan,
+            },
+            status=202,
+        )
     ok, status, response_payload = _market_scanner_request(
         "POST",
         "/scan",
         payload={},
         timeout_seconds=_market_scanner_scan_timeout_seconds(),
     )
+    if ok:
+        summary = response_payload.get("scan_summary") if isinstance(response_payload, dict) else {}
+        _notify_sync_event(
+            "manual_scan_success",
+            "Scan manual acionado via API",
+            details={
+                "requested_by": str((user or {}).get("username") or ""),
+                "upstream_status": int(status or 0),
+                "tickers_processed": int((summary or {}).get("tickers_processed") or (summary or {}).get("tickers_loaded") or 0),
+                "signals_triggered": int((summary or {}).get("signals_triggered") or 0),
+            },
+            dedupe_key="scanner:scan:success",
+            min_interval_seconds=15,
+        )
+    else:
+        _notify_sync_event(
+            "manual_scan_failed",
+            "Falha no scan manual via API",
+            details={
+                "requested_by": str((user or {}).get("username") or ""),
+                "upstream_status": int(status or 0),
+                "error": _market_scanner_error_message(response_payload, status),
+            },
+            dedupe_key=f"scanner:scan:failed:{int(status or 0)}",
+            min_interval_seconds=120,
+        )
     return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
@@ -1626,6 +2068,30 @@ def scanner_manual_scan_ticker(symbol: str):
         return _json_error("Nao autenticado.", status=401)
     if not can_user_write(user):
         return _json_error("Perfil viewer possui acesso somente leitura.", status=403)
+    normalized_symbol = str(symbol or "").strip().upper()
+    upstream_scan = _scanner_upstream_scan_status_payload()
+    if bool(upstream_scan.get("running")):
+        if _scanner_upstream_covers_ticker(upstream_scan, normalized_symbol):
+            return _json_ok(
+                {
+                    "ticker": normalized_symbol,
+                    "started": False,
+                    "deduplicated": True,
+                    "message": "Ticker ja coberto pelo scan ativo.",
+                    "upstream_scan": upstream_scan,
+                },
+                status=202,
+            )
+        return _json_ok(
+            {
+                "ticker": normalized_symbol,
+                "started": False,
+                "deduplicated": False,
+                "message": "Existe scan ativo. Aguarde concluir para iniciar outro ticker.",
+                "upstream_scan": upstream_scan,
+            },
+            status=202,
+        )
     safe_symbol = urlparse.quote(str(symbol or "").strip().upper(), safe="")
     ok, status, response_payload = _market_scanner_request(
         "POST",
@@ -1633,6 +2099,31 @@ def scanner_manual_scan_ticker(symbol: str):
         payload={},
         timeout_seconds=_market_scanner_scan_timeout_seconds(),
     )
+    if ok:
+        _notify_sync_event(
+            "sync_ticker_success",
+            "Scan manual por ticker acionado",
+            details={
+                "ticker": normalized_symbol,
+                "requested_by": str((user or {}).get("username") or ""),
+                "upstream_status": int(status or 0),
+            },
+            dedupe_key=f"scanner:scan:ticker:success:{normalized_symbol}",
+            min_interval_seconds=30,
+        )
+    else:
+        _notify_sync_event(
+            "sync_ticker_failed",
+            "Falha no scan manual por ticker",
+            details={
+                "ticker": normalized_symbol,
+                "requested_by": str((user or {}).get("username") or ""),
+                "upstream_status": int(status or 0),
+                "error": _market_scanner_error_message(response_payload, status),
+            },
+            dedupe_key=f"scanner:scan:ticker:failed:{normalized_symbol}:{int(status or 0)}",
+            min_interval_seconds=120,
+        )
     return _market_scanner_result_to_api_response(ok, status, response_payload)
 
 
@@ -1753,6 +2244,40 @@ def admin_scanner_audit():
     ).fetchall()
     items = [dict(row) for row in rows]
     return _json_ok({"items": items, "limit": limit})
+
+
+@api_bp.route("/admin/telegram/status", methods=["GET"])
+def admin_telegram_status():
+    require_admin_user()
+    return _json_ok(telegram_status_payload())
+
+
+@api_bp.route("/admin/telegram/test", methods=["POST"])
+def admin_telegram_test():
+    admin = require_admin_user()
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    custom_text = str(payload.get("message") or "").strip()
+    test_message = custom_text or (
+        f"[TYI] Teste de notificacao Telegram\n"
+        f"Evento: admin_test\n"
+        f"Quando: {_now_iso_utc()}\n"
+        f"Usuario: {str(admin.get('username') or '')}"
+    )
+    result = send_telegram_text(
+        test_message,
+        event_key="admin_test",
+        dedupe_key=None,
+        min_interval_seconds=0,
+        asynchronous=False,
+        force=True,
+    )
+    if result.get("sent"):
+        return _json_ok({"message": "Mensagem de teste enviada.", "result": result})
+    return _json_error(
+        "Nao foi possivel enviar a mensagem de teste no Telegram.",
+        status=503,
+        details=result,
+    )
 
 
 @api_bp.route("/admin/openclaw/enrich-assets", methods=["POST"])
@@ -2074,6 +2599,73 @@ def charts_dashboard():
     return _json_ok(payload)
 
 
+def _scanner_upstream_covers_ticker(upstream_scan: dict, ticker: str):
+    if not isinstance(upstream_scan, dict):
+        return False
+    if not bool(upstream_scan.get("running")):
+        return False
+    scope = str(upstream_scan.get("active_scope") or "").strip().lower()
+    if scope == "full":
+        return True
+    requested = upstream_scan.get("active_requested_symbols") or []
+    normalized_ticker = str(ticker or "").strip().upper()
+    normalized_symbol = f"{normalized_ticker.removesuffix('.SA')}.SA" if normalized_ticker else ""
+    requested_upper = {str(item or "").strip().upper() for item in requested}
+    return normalized_ticker in requested_upper or normalized_symbol in requested_upper
+
+
+def _sync_status_payload():
+    health_payload = build_health_payload()
+    scanner_status_payload = _scanner_manual_scan_status_payload()
+    stale_row = get_db().execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM assets
+        WHERE market_data_status IN ('stale', 'failed', 'unknown')
+        """
+    ).fetchone()
+    stale_assets_total = int((stale_row["total"] if stale_row else 0) or 0)
+    return {
+        "generated_at": _now_iso_utc(),
+        "health": health_payload,
+        "scanner": scanner_status_payload,
+        "stale_assets_total": stale_assets_total,
+    }
+
+
+def _sync_queue_payload(limit: int = 20):
+    safe_limit = max(1, min(int(limit or 20), 200))
+    rows = get_db().execute(
+        """
+        SELECT
+          id,
+          status,
+          requested_by_user_id,
+          requested_by_username,
+          started_at,
+          finished_at,
+          total_tickers,
+          processed_tickers,
+          triggered_signals,
+          upstream_status,
+          error_message
+        FROM scanner_manual_scan_runs
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (safe_limit,),
+    ).fetchall()
+    items = [_scanner_manual_scan_row_to_payload(row) for row in rows]
+    return {
+        "generated_at": _now_iso_utc(),
+        "upstream_scan": _scanner_upstream_scan_status_payload(),
+        "items": items,
+        "running_count": sum(1 for item in items if str(item.get("status")) == "running"),
+        "failed_count": sum(1 for item in items if str(item.get("status")) == "failed"),
+        "success_count": sum(1 for item in items if str(item.get("status")) == "success"),
+    }
+
+
 @api_bp.route("/sync/market-data", methods=["POST"])
 def sync_market_data_all():
     user = get_current_user()
@@ -2082,6 +2674,29 @@ def sync_market_data_all():
     if not can_user_write(user):
         return _json_error("Perfil viewer possui acesso somente leitura.", status=403)
 
+    upstream_scan = _scanner_upstream_scan_status_payload()
+    if bool(upstream_scan.get("running")):
+        _notify_sync_event(
+            "manual_scan_started",
+            "Sync geral deduplicado (scan ja em andamento)",
+            details={
+                "requested_by": str((user or {}).get("username") or ""),
+                "active_run_id": upstream_scan.get("active_run_id"),
+            },
+            dedupe_key="sync:full:already-running",
+            min_interval_seconds=60,
+        )
+        return _json_ok(
+            {
+                "mode": "manual_full_scan",
+                "source": "market_scanner",
+                "started": False,
+                "deduplicated": True,
+                "upstream_scan": upstream_scan,
+            },
+            status=202,
+        )
+
     ok, status, response_payload = _market_scanner_request(
         "POST",
         "/scan",
@@ -2089,15 +2704,41 @@ def sync_market_data_all():
         timeout_seconds=_market_scanner_scan_timeout_seconds(),
     )
     if not ok:
+        _notify_sync_event(
+            "manual_scan_failed",
+            "Falha no sync geral manual",
+            details={
+                "requested_by": str((user or {}).get("username") or ""),
+                "upstream_status": int(status or 0),
+                "error": _market_scanner_error_message(response_payload, status),
+            },
+            dedupe_key=f"sync:full:failed:{int(status or 0)}",
+            min_interval_seconds=120,
+        )
         return _market_scanner_result_to_api_response(ok, status, response_payload)
 
     summary = {}
     if isinstance(response_payload, dict) and isinstance(response_payload.get("scan_summary"), dict):
         summary = dict(response_payload.get("scan_summary") or {})
+    _notify_sync_event(
+        "manual_scan_success",
+        "Sync geral manual concluido",
+        details={
+            "requested_by": str((user or {}).get("username") or ""),
+            "upstream_status": int(status or 0),
+            "tickers_processed": int(summary.get("tickers_processed") or summary.get("tickers_loaded") or 0),
+            "signals_triggered": int(summary.get("signals_triggered") or 0),
+        },
+        dedupe_key="sync:full:success",
+        min_interval_seconds=15,
+    )
     return _json_ok(
         {
             "mode": "manual_full_scan",
             "source": "market_scanner",
+            "started": True,
+            "deduplicated": False,
+            "upstream_scan": _scanner_upstream_scan_status_payload(),
             "scan_summary": summary,
         },
         status=status,
@@ -2119,6 +2760,31 @@ def sync_market_data_ticker(ticker):
     scan_payload = None
     use_scanner = legacy_market._is_brazilian_market_ticker(normalized_ticker)
     if use_scanner:
+        upstream_scan = _scanner_upstream_scan_status_payload()
+        if bool(upstream_scan.get("running")):
+            if _scanner_upstream_covers_ticker(upstream_scan, normalized_ticker):
+                return _json_ok(
+                    {
+                        "ticker": normalized_ticker,
+                        "success": True,
+                        "started": False,
+                        "deduplicated": True,
+                        "upstream_scan": upstream_scan,
+                    },
+                    status=202,
+                )
+            return _json_ok(
+                {
+                    "ticker": normalized_ticker,
+                    "success": False,
+                    "started": False,
+                    "deduplicated": False,
+                    "queued": False,
+                    "message": "Ja existe scan ativo no scanner. Aguarde concluir para evitar concorrencia.",
+                    "upstream_scan": upstream_scan,
+                },
+                status=202,
+            )
         safe_symbol = urlparse.quote(normalized_ticker, safe="")
         scan_ok, scan_status, scan_payload = _market_scanner_request(
             "POST",
@@ -2127,6 +2793,18 @@ def sync_market_data_ticker(ticker):
             timeout_seconds=_market_scanner_scan_timeout_seconds(),
         )
         if not scan_ok:
+            _notify_sync_event(
+                "sync_ticker_failed",
+                "Falha no sync por ticker",
+                details={
+                    "ticker": normalized_ticker,
+                    "requested_by": str((user or {}).get("username") or ""),
+                    "upstream_status": int(scan_status or 0),
+                    "error": _market_scanner_error_message(scan_payload, scan_status),
+                },
+                dedupe_key=f"sync:ticker:failed:{normalized_ticker}:{int(scan_status or 0)}",
+                min_interval_seconds=120,
+            )
             return _market_scanner_result_to_api_response(scan_ok, scan_status, scan_payload)
     else:
         ok = False
@@ -2139,19 +2817,228 @@ def sync_market_data_ticker(ticker):
         except Exception:
             ok = False
         if not ok:
+            _notify_sync_event(
+                "sync_ticker_failed",
+                "Falha no sync por ticker",
+                details={
+                    "ticker": normalized_ticker,
+                    "requested_by": str((user or {}).get("username") or ""),
+                    "source": "backend_live_fetch",
+                },
+                dedupe_key=f"sync:ticker:failed:{normalized_ticker}:backend",
+                min_interval_seconds=120,
+            )
             return _json_error("Nao foi possivel atualizar este ticker agora.", status=503)
 
     asset_payload = get_asset(normalized_ticker)
     market_data_payload = ((asset_payload or {}).get("market_data") or {})
+    _notify_sync_event(
+        "sync_ticker_success",
+        "Sync por ticker concluido",
+        details={
+            "ticker": normalized_ticker,
+            "requested_by": str((user or {}).get("username") or ""),
+            "source": market_data_payload.get("source"),
+            "updated_at": market_data_payload.get("updated_at"),
+        },
+        dedupe_key=f"sync:ticker:success:{normalized_ticker}",
+        min_interval_seconds=30,
+    )
     return _json_ok(
         {
             "ticker": normalized_ticker,
             "success": True,
+            "started": True,
+            "deduplicated": False,
             "force_live": False,
             "source": market_data_payload.get("source"),
             "updated_at": market_data_payload.get("updated_at"),
             "scan_summary": (scan_payload or {}).get("scan_summary")
             if isinstance(scan_payload, dict)
             else None,
+        }
+    )
+
+
+@api_bp.route("/sync/status", methods=["GET"])
+def sync_status():
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+    return _json_ok(_sync_status_payload())
+
+
+@api_bp.route("/sync/queue", methods=["GET"])
+def sync_queue():
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+    limit = request.args.get("limit", 20)
+    return _json_ok(_sync_queue_payload(limit=limit))
+
+
+@api_bp.route("/sync/cancel/<int:run_id>", methods=["POST"])
+def sync_cancel(run_id: int):
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+    if not can_user_write(user):
+        return _json_error("Perfil viewer possui acesso somente leitura.", status=403)
+
+    db = get_db()
+    row = db.execute(
+        """
+        SELECT
+          id,
+          status,
+          requested_by_user_id,
+          requested_by_username,
+          started_at,
+          finished_at,
+          total_tickers,
+          processed_tickers,
+          triggered_signals,
+          upstream_status,
+          error_message
+        FROM scanner_manual_scan_runs
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (int(run_id),),
+    ).fetchone()
+    if not row:
+        return _json_error("Execucao nao encontrada.", status=404)
+
+    status_text = str(row["status"] or "").strip().lower()
+    if status_text != "running":
+        return _json_ok(
+            {
+                "id": int(run_id),
+                "canceled": False,
+                "effective_cancel": False,
+                "message": "Execucao nao esta em andamento.",
+                "run": _scanner_manual_scan_row_to_payload(row),
+            }
+        )
+
+    db.execute(
+        """
+        UPDATE scanner_manual_scan_runs
+        SET
+          status = 'failed',
+          finished_at = ?,
+          upstream_status = 499,
+          error_message = ?
+        WHERE id = ? AND status = 'running'
+        """,
+        (_now_iso_utc(), "Cancelado manualmente via API.", int(run_id)),
+    )
+    db.commit()
+    _notify_sync_event(
+        "manual_scan_failed",
+        "Run manual marcado como cancelado",
+        details={
+            "run_id": int(run_id),
+            "requested_by": str((user or {}).get("username") or ""),
+        },
+        dedupe_key=f"sync:cancel:{int(run_id)}",
+        min_interval_seconds=10,
+    )
+    updated = db.execute(
+        """
+        SELECT
+          id,
+          status,
+          requested_by_user_id,
+          requested_by_username,
+          started_at,
+          finished_at,
+          total_tickers,
+          processed_tickers,
+          triggered_signals,
+          upstream_status,
+          error_message
+        FROM scanner_manual_scan_runs
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (int(run_id),),
+    ).fetchone()
+    return _json_ok(
+        {
+            "id": int(run_id),
+            "canceled": True,
+            "effective_cancel": False,
+            "message": "Run local marcado como cancelado. Se o scanner upstream ja iniciou, ele pode concluir em paralelo.",
+            "run": _scanner_manual_scan_row_to_payload(updated),
+            "upstream_scan": _scanner_upstream_scan_status_payload(),
+        }
+    )
+
+
+@api_bp.route("/sync/audit", methods=["GET"])
+def sync_audit():
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+
+    ticker = str(request.args.get("ticker") or "").strip().upper()
+    limit_raw = request.args.get("limit", 100)
+    try:
+        limit = max(1, min(int(limit_raw), 500))
+    except (TypeError, ValueError):
+        limit = 100
+
+    params = []
+    where = ""
+    if ticker:
+        where = "WHERE ticker = ?"
+        params.append(ticker)
+    rows = get_db().execute(
+        f"""
+        SELECT
+          id,
+          ticker,
+          attempted_at,
+          success,
+          scope,
+          providers_tried,
+          metrics_source,
+          profile_source,
+          fallback_used,
+          market_data_status,
+          error_message,
+          price
+        FROM market_data_sync_audit
+        {where}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        tuple(params + [limit]),
+    ).fetchall()
+    items = []
+    for row in rows:
+        items.append(
+            {
+                "id": int(row["id"]),
+                "ticker": str(row["ticker"] or "").strip().upper(),
+                "attempted_at": row["attempted_at"],
+                "success": bool(int(row["success"] or 0)),
+                "scope": str(row["scope"] or "").strip().lower(),
+                "providers_tried": [item.strip() for item in str(row["providers_tried"] or "").split(",") if item.strip()],
+                "metrics_source": str(row["metrics_source"] or "").strip(),
+                "profile_source": str(row["profile_source"] or "").strip(),
+                "fallback_used": bool(int(row["fallback_used"] or 0)),
+                "market_data_status": str(row["market_data_status"] or "").strip().lower(),
+                "error_message": str(row["error_message"] or "").strip(),
+                "price": _safe_float(row["price"]),
+            }
+        )
+    return _json_ok(
+        {
+            "generated_at": _now_iso_utc(),
+            "ticker": ticker or None,
+            "count": len(items),
+            "items": items,
         }
     )

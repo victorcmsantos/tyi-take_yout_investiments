@@ -11,7 +11,7 @@ import {
   Paper,
   Typography,
 } from '@mui/material'
-import { apiGet, apiPost } from '../api'
+import { apiGet, apiGetCached, apiPost } from '../api'
 import { currentBrowserTimeZone, formatAgeFromNow, formatDateTimeLocal } from '../datetime'
 
 function toNumberOrNull(value) {
@@ -185,11 +185,12 @@ function ScannerPage({ readOnly = false }) {
     else setLoading(true)
     setError('')
     try {
+      const getFn = background ? apiGet : apiGetCached
       const [signalsPayload, matrixPayload, tradesPayload, scanStatusPayload] = await Promise.all([
-        apiGet('/api/scanner/signals'),
-        apiGet('/api/scanner/signal-matrix'),
-        apiGet('/api/scanner/trades'),
-        apiGet('/api/scanner/scan/status'),
+        getFn('/api/scanner/signals', {}, { ttlMs: 12000, staleWhileRevalidate: true }),
+        getFn('/api/scanner/signal-matrix', {}, { ttlMs: 12000, staleWhileRevalidate: true }),
+        getFn('/api/scanner/trades', {}, { ttlMs: 8000, staleWhileRevalidate: true }),
+        getFn('/api/scanner/scan/status', {}, { ttlMs: 5000, staleWhileRevalidate: true }),
       ])
       setSignals(Array.isArray(signalsPayload) ? signalsPayload : [])
       setSignalMatrix(matrixPayload || { columns: [], rows: [] })

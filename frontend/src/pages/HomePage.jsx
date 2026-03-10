@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { apiGet } from '../api'
+import { apiGetCached } from '../api'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const pct = (value) => `${Number(value || 0).toFixed(2)}%`
@@ -23,6 +23,22 @@ const dateBr = (value) => {
   }
   return text
 }
+const dateTimeBr = (value) => {
+  const text = String(value || '').trim()
+  if (!text) return '-'
+  const iso = text.endsWith('Z') ? text : `${text}Z`
+  const dt = new Date(iso)
+  if (Number.isNaN(dt.getTime())) return text
+  return dt.toLocaleString('pt-BR', { hour12: false })
+}
+const secondsLabel = (value) => {
+  const total = Math.max(Number(value || 0), 0)
+  if (!Number.isFinite(total) || total <= 0) return '0s'
+  const minutes = Math.floor(total / 60)
+  const seconds = Math.floor(total % 60)
+  if (minutes <= 0) return `${seconds}s`
+  return `${minutes}m ${seconds}s`
+}
 const formatSyncLabel = (asset) => {
   const marketData = asset?.market_data || {}
   if (marketData.is_stale) {
@@ -40,6 +56,9 @@ function HomePage({ selectedPortfolioIds }) {
   const [incomesByTicker, setIncomesByTicker] = useState({})
   const [incomesTotal, setIncomesTotal] = useState(0)
   const [upcomingIncomes, setUpcomingIncomes] = useState({ items: [], summary: { estimated_totals: {} } })
+  const [syncHealth, setSyncHealth] = useState(null)
+  const [syncHealthError, setSyncHealthError] = useState('')
+  const [showHealthModal, setShowHealthModal] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [sortBy, setSortBy] = useState('name')
@@ -63,13 +82,15 @@ function HomePage({ selectedPortfolioIds }) {
     let active = true
     setLoading(true)
     setError('')
+    setSyncHealth(null)
+    setSyncHealthError('')
     setUpcomingIncomes({ items: [], summary: { estimated_totals: {} } })
     ;(async () => {
       try {
         const [assetsData, sectorsData, incomesData] = await Promise.all([
-          apiGet('/api/assets'),
-          apiGet('/api/sectors'),
-          apiGet('/api/incomes', { portfolio_id: selectedPortfolioIds }),
+          apiGetCached('/api/assets', {}, { ttlMs: 15000, staleWhileRevalidate: true }),
+          apiGetCached('/api/sectors', {}, { ttlMs: 20000, staleWhileRevalidate: true }),
+          apiGetCached('/api/incomes', { portfolio_id: selectedPortfolioIds }, { ttlMs: 12000, staleWhileRevalidate: true }),
         ])
         if (!active) return
         const byTicker = incomesData.reduce((acc, income) => {
@@ -85,12 +106,33 @@ function HomePage({ selectedPortfolioIds }) {
         setLoading(false)
 
         try {
-          const upcomingData = await apiGet('/api/incomes/upcoming', { portfolio_id: selectedPortfolioIds, limit: 24 })
+          const upcomingData = await apiGetCached(
+            '/api/incomes/upcoming',
+            { portfolio_id: selectedPortfolioIds, limit: 24 },
+            { ttlMs: 30000, staleWhileRevalidate: true },
+          )
           if (!active) return
           setUpcomingIncomes(upcomingData || { items: [], summary: { estimated_totals: {} } })
         } catch (_) {
           if (!active) return
           setUpcomingIncomes({ items: [], summary: { estimated_totals: {} } })
+        }
+
+        try {
+          const response = await fetch('/api/health', { credentials: 'same-origin' })
+          const payload = await response.json().catch(() => ({}))
+          if (!active) return
+          if (payload?.ok && payload?.data) {
+            setSyncHealth(payload.data)
+            setSyncHealthError('')
+          } else {
+            setSyncHealth(null)
+            setSyncHealthError('Saude indisponivel')
+          }
+        } catch (_) {
+          if (!active) return
+          setSyncHealth(null)
+          setSyncHealthError('Saude indisponivel')
         }
       } catch (err) {
         if (!active) return
@@ -146,6 +188,19 @@ function HomePage({ selectedPortfolioIds }) {
   const upcomingItems = Array.isArray(upcomingIncomes?.items) ? upcomingIncomes.items : []
   const upcomingSummary = upcomingIncomes?.summary || {}
   const upcomingEstimatedBrl = Number(upcomingSummary?.estimated_totals?.BRL || 0)
+  const syncJobs = Array.isArray(syncHealth?.jobs) ? syncHealth.jobs : []
+  const marketSyncJob = syncJobs.find((item) => item?.name === 'market_sync') || null
+  const failedJobsCount = syncJobs.filter((item) => Number(item?.consecutive_failures || 0) > 0).length
+  const providerCircuits = Array.isArray(syncHealth?.provider_circuits) ? syncHealth.provider_circuits : []
+  const providerUsage = Array.isArray(syncHealth?.provider_usage) ? syncHealth.provider_usage : []
+  const activeCircuits = providerCircuits.filter((item) => item?.active)
+  const circuitLabel = activeCircuits.length > 0
+    ? activeCircuits
+      .map((item) => `${String(item.provider || '').toUpperCase()} (${secondsLabel(item.remaining_seconds)})`)
+      .join(', ')
+    : 'nenhum'
+  const healthStatusLabel = syncHealth?.status === 'ok' ? 'OK' : 'ATENCAO'
+  const healthTimeLabel = syncHealth?.time ? dateTimeBr(syncHealth.time) : '-'
 
   if (loading) return <p>Carregando...</p>
   if (error) return <p className="error">{error}</p>
@@ -190,6 +245,161 @@ function HomePage({ selectedPortfolioIds }) {
                 : 'Sem valor estimado no momento'}
             </small>
           </article>
+          <article className="card">
+            <h3>Saude de sync</h3>
+            <p>{healthStatusLabel}</p>
+            <div className="card-health-lines">
+              <small>Stale: {staleAssetsCount} | Falhas de jobs: {failedJobsCount}</small>
+              <small>
+                Ultimo sync mercado: {marketSyncJob?.last_success_at ? dateTimeBr(marketSyncJob.last_success_at) : '-'}
+              </small>
+              <small>Cooldown APIs: {circuitLabel}</small>
+              {!!syncHealthError && <small>{syncHealthError}</small>}
+              <button type="button" className="btn-primary health-details-trigger" onClick={() => setShowHealthModal(true)}>
+                Ver detalhes
+              </button>
+            </div>
+          </article>
+        </div>
+      )}
+
+      {showHealthModal && (
+        <div className="health-modal-backdrop" role="presentation" onClick={() => setShowHealthModal(false)}>
+          <div
+            className="health-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Detalhes da saude de sync"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="health-modal-header">
+              <h3>Detalhes da saude de sync</h3>
+              <button type="button" className="btn-danger" onClick={() => setShowHealthModal(false)}>
+                Fechar
+              </button>
+            </div>
+            <div className="health-modal-summary">
+              <div><strong>Status:</strong> {healthStatusLabel}</div>
+              <div><strong>Horario:</strong> {healthTimeLabel}</div>
+              <div><strong>Ativos stale:</strong> {staleAssetsCount}</div>
+              <div><strong>Jobs com falha:</strong> {failedJobsCount}</div>
+              <div><strong>Cooldowns ativos:</strong> {activeCircuits.length}</div>
+            </div>
+            {!!syncHealthError && <p className="notice-warn">{syncHealthError}</p>}
+
+            <h4>Jobs</h4>
+            <div className="table-wrap health-modal-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Job</th>
+                    <th>Enabled</th>
+                    <th>Running</th>
+                    <th>Stale</th>
+                    <th>Falhas</th>
+                    <th>Ultimo sucesso</th>
+                    <th>Ultimo erro</th>
+                    <th>Duracao (ms)</th>
+                    <th>Intervalo (s)</th>
+                    <th>Max age (s)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {syncJobs.map((job) => (
+                    <tr key={`job-${job.name}`}>
+                      <td>{job.name}</td>
+                      <td>{job.enabled ? 'sim' : 'nao'}</td>
+                      <td>{job.running ? 'sim' : 'nao'}</td>
+                      <td>{job.stale ? 'sim' : 'nao'}</td>
+                      <td>{Number(job.consecutive_failures || 0)}</td>
+                      <td>{job.last_success_at ? dateTimeBr(job.last_success_at) : '-'}</td>
+                      <td>{job.last_error_at ? dateTimeBr(job.last_error_at) : '-'}</td>
+                      <td>{job.last_duration_ms != null ? Number(job.last_duration_ms).toFixed(2) : '-'}</td>
+                      <td>{Number(job.interval_seconds || 0)}</td>
+                      <td>{Number(job.max_age_seconds || 0)}</td>
+                    </tr>
+                  ))}
+                  {syncJobs.length === 0 && (
+                    <tr>
+                      <td colSpan={10}>Nenhum job reportado pelo health.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <h4>Circuitos de API</h4>
+            <div className="table-wrap health-modal-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th>Ativo</th>
+                    <th>Cooldown</th>
+                    <th>Status code</th>
+                    <th>Updated at</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {providerCircuits.map((item) => (
+                    <tr key={`circuit-${item.provider}`}>
+                      <td>{String(item.provider || '').toUpperCase()}</td>
+                      <td>{item.active ? 'sim' : 'nao'}</td>
+                      <td>{secondsLabel(item.remaining_seconds)}</td>
+                      <td>{item.status_code ?? '-'}</td>
+                      <td>{item.updated_at ? dateTimeBr(item.updated_at) : '-'}</td>
+                    </tr>
+                  ))}
+                  {providerCircuits.length === 0 && (
+                    <tr>
+                      <td colSpan={5}>Nenhum circuito registrado.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <h4>Orcamento de APIs</h4>
+            <div className="table-wrap health-modal-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th>Janela</th>
+                    <th>Uso</th>
+                    <th>Limite</th>
+                    <th>Restante</th>
+                    <th>Uso %</th>
+                    <th>HTTP 429</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {providerUsage.flatMap((provider) => {
+                    const windows = provider?.windows || {}
+                    return Object.keys(windows).map((windowKey) => {
+                      const win = windows[windowKey] || {}
+                      return (
+                        <tr key={`provider-${provider.provider}-${windowKey}`}>
+                          <td>{String(provider.provider || '').toUpperCase()}</td>
+                          <td>{windowKey}</td>
+                          <td>{Number(win.request_count || 0)}</td>
+                          <td>{Number(win.limit || 0)}</td>
+                          <td>{win.remaining == null ? 'sem limite' : Number(win.remaining || 0)}</td>
+                          <td>{win.usage_pct == null ? '-' : `${Number(win.usage_pct).toFixed(2)}%`}</td>
+                          <td>{Number(win.status_429_count || 0)}</td>
+                        </tr>
+                      )
+                    })
+                  })}
+                  {providerUsage.length === 0 && (
+                    <tr>
+                      <td colSpan={7}>Sem dados de orcamento de provider.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 

@@ -514,6 +514,10 @@ def ensure_schema_upgrades():
         db.execute("ALTER TABLE assets ADD COLUMN market_data_last_attempt_at TEXT")
     if "market_data_last_error" not in asset_cols:
         db.execute("ALTER TABLE assets ADD COLUMN market_data_last_error TEXT NOT NULL DEFAULT ''")
+    if "market_data_provider_trace" not in asset_cols:
+        db.execute("ALTER TABLE assets ADD COLUMN market_data_provider_trace TEXT NOT NULL DEFAULT ''")
+    if "market_data_fallback_used" not in asset_cols:
+        db.execute("ALTER TABLE assets ADD COLUMN market_data_fallback_used INTEGER NOT NULL DEFAULT 0")
 
     db.execute(
         """
@@ -540,6 +544,82 @@ def ensure_schema_upgrades():
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (ticker) REFERENCES assets (ticker)
         )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_provider_circuit_state (
+          provider TEXT PRIMARY KEY,
+          disabled_until REAL NOT NULL DEFAULT 0,
+          status_code INTEGER,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_provider_usage_window (
+          provider TEXT NOT NULL,
+          window TEXT NOT NULL,
+          bucket TEXT NOT NULL,
+          request_count INTEGER NOT NULL DEFAULT 0,
+          success_count INTEGER NOT NULL DEFAULT 0,
+          error_count INTEGER NOT NULL DEFAULT 0,
+          status_429_count INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (provider, window, bucket)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_api_provider_usage_window_updated_at
+        ON api_provider_usage_window (updated_at DESC)
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS market_data_sync_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ticker TEXT NOT NULL,
+          attempted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          success INTEGER NOT NULL DEFAULT 0,
+          scope TEXT NOT NULL DEFAULT 'asset',
+          providers_tried TEXT NOT NULL DEFAULT '',
+          metrics_source TEXT NOT NULL DEFAULT '',
+          profile_source TEXT NOT NULL DEFAULT '',
+          fallback_used INTEGER NOT NULL DEFAULT 0,
+          market_data_status TEXT NOT NULL DEFAULT 'unknown',
+          error_message TEXT NOT NULL DEFAULT '',
+          price REAL,
+          FOREIGN KEY (ticker) REFERENCES assets (ticker)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_market_data_sync_audit_ticker_attempted_at
+        ON market_data_sync_audit (ticker, attempted_at DESC)
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS trade_pnl_reconciliation_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trade_id INTEGER NOT NULL,
+          ticker TEXT NOT NULL,
+          trade_status TEXT NOT NULL DEFAULT '',
+          divergence_pct REAL NOT NULL DEFAULT 0,
+          divergence_amount REAL NOT NULL DEFAULT 0,
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_trade_pnl_reconciliation_audit_trade_id
+        ON trade_pnl_reconciliation_audit (trade_id, detected_at DESC)
         """
     )
     db.execute(

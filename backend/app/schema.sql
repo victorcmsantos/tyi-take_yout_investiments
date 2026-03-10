@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS assets (
   market_data_updated_at TEXT,
   market_data_last_attempt_at TEXT,
   market_data_last_error TEXT NOT NULL DEFAULT '',
+  market_data_provider_trace TEXT NOT NULL DEFAULT '',
+  market_data_fallback_used INTEGER NOT NULL DEFAULT 0,
   price REAL NOT NULL,
   dy REAL NOT NULL DEFAULT 0,
   pl REAL NOT NULL DEFAULT 0,
@@ -102,6 +104,61 @@ CREATE TABLE IF NOT EXISTS asset_metric_baselines (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (ticker) REFERENCES assets (ticker)
 );
+
+CREATE TABLE IF NOT EXISTS api_provider_circuit_state (
+  provider TEXT PRIMARY KEY,
+  disabled_until REAL NOT NULL DEFAULT 0,
+  status_code INTEGER,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS api_provider_usage_window (
+  provider TEXT NOT NULL,
+  window TEXT NOT NULL,
+  bucket TEXT NOT NULL,
+  request_count INTEGER NOT NULL DEFAULT 0,
+  success_count INTEGER NOT NULL DEFAULT 0,
+  error_count INTEGER NOT NULL DEFAULT 0,
+  status_429_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (provider, window, bucket)
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_provider_usage_window_updated_at
+ON api_provider_usage_window (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS market_data_sync_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticker TEXT NOT NULL,
+  attempted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  success INTEGER NOT NULL DEFAULT 0,
+  scope TEXT NOT NULL DEFAULT 'asset',
+  providers_tried TEXT NOT NULL DEFAULT '',
+  metrics_source TEXT NOT NULL DEFAULT '',
+  profile_source TEXT NOT NULL DEFAULT '',
+  fallback_used INTEGER NOT NULL DEFAULT 0,
+  market_data_status TEXT NOT NULL DEFAULT 'unknown',
+  error_message TEXT NOT NULL DEFAULT '',
+  price REAL,
+  FOREIGN KEY (ticker) REFERENCES assets (ticker)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_data_sync_audit_ticker_attempted_at
+ON market_data_sync_audit (ticker, attempted_at DESC);
+
+CREATE TABLE IF NOT EXISTS trade_pnl_reconciliation_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_id INTEGER NOT NULL,
+  ticker TEXT NOT NULL,
+  trade_status TEXT NOT NULL DEFAULT '',
+  divergence_pct REAL NOT NULL DEFAULT 0,
+  divergence_amount REAL NOT NULL DEFAULT 0,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_pnl_reconciliation_audit_trade_id
+ON trade_pnl_reconciliation_audit (trade_id, detected_at DESC);
 
 CREATE TABLE IF NOT EXISTS upcoming_income_cache_state (
   ticker TEXT PRIMARY KEY,

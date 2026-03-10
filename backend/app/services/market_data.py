@@ -31,6 +31,37 @@ def _market_data_stale_after_seconds():
         return 43200
 
 
+def _market_data_class_key_from_asset(asset):
+    ticker = str((asset or {}).get("ticker") or "").strip().upper()
+    sector = str((asset or {}).get("sector") or "").strip().lower()
+    if legacy._is_crypto_ticker(ticker):
+        return "crypto"
+    if legacy._is_us_stock_ticker(ticker):
+        return "us"
+    if ticker.endswith("11") or "fii" in sector or "fundo imobili" in sector:
+        return "fiis"
+    return "br"
+
+
+def _market_data_stale_after_seconds_for_class(class_key: str):
+    default_seconds = _market_data_stale_after_seconds()
+    env_name = {
+        "br": "MARKET_DATA_STALE_AFTER_SECONDS_BR",
+        "fiis": "MARKET_DATA_STALE_AFTER_SECONDS_FIIS",
+        "us": "MARKET_DATA_STALE_AFTER_SECONDS_US",
+        "crypto": "MARKET_DATA_STALE_AFTER_SECONDS_CRYPTO",
+    }.get(str(class_key or "").strip().lower())
+    if not env_name:
+        return default_seconds
+    raw = os.getenv(env_name, "").strip()
+    if not raw:
+        return default_seconds
+    try:
+        return max(int(raw), 60)
+    except (TypeError, ValueError):
+        return default_seconds
+
+
 def _parse_iso_datetime(value):
     raw = (value or "").strip()
     if not raw:
@@ -505,12 +536,17 @@ def _market_data_meta_from_asset(asset):
             "last_attempt_at": None,
             "last_error": "",
             "age_seconds": None,
+            "class_key": "br",
             "stale_after_seconds": _market_data_stale_after_seconds(),
             "is_stale": True,
             "is_live": False,
+            "stale_reason": "missing_asset",
+            "providers_tried": [],
+            "fallback_used": False,
         }
 
-    stale_after_seconds = _market_data_stale_after_seconds()
+    class_key = _market_data_class_key_from_asset(asset)
+    stale_after_seconds = _market_data_stale_after_seconds_for_class(class_key)
     updated_at = asset.get("market_data_updated_at")
     updated_dt = _parse_iso_datetime(updated_at)
     age_seconds = None
@@ -521,6 +557,19 @@ def _market_data_meta_from_asset(asset):
     is_stale = status in {"stale", "failed", "unknown"} or updated_dt is None
     if age_seconds is not None and age_seconds > stale_after_seconds:
         is_stale = True
+    stale_reason = "fresh"
+    if status in {"stale", "failed", "unknown"}:
+        stale_reason = f"status_{status}"
+    elif updated_dt is None:
+        stale_reason = "missing_updated_at"
+    elif age_seconds is not None and age_seconds > stale_after_seconds:
+        stale_reason = "stale_ttl_expired"
+
+    providers_tried = [
+        item.strip()
+        for item in str(asset.get("market_data_provider_trace") or "").split(",")
+        if item and item.strip()
+    ]
 
     return {
         "status": status or "unknown",
@@ -529,9 +578,13 @@ def _market_data_meta_from_asset(asset):
         "last_attempt_at": asset.get("market_data_last_attempt_at"),
         "last_error": (asset.get("market_data_last_error") or "").strip(),
         "age_seconds": age_seconds,
+        "class_key": class_key,
         "stale_after_seconds": stale_after_seconds,
         "is_stale": bool(is_stale),
         "is_live": not bool(is_stale),
+        "stale_reason": stale_reason,
+        "providers_tried": providers_tried,
+        "fallback_used": bool(int(asset.get("market_data_fallback_used") or 0)),
     }
 
 
@@ -543,8 +596,66 @@ def _serialize_asset(asset):
     return item
 
 
-def _mark_asset_market_data_failed(ticker: str, error_message: str):
+def _record_market_data_sync_audit(
+    *,
+    ticker: str,
+    success: bool,
+    scope: str,
+    providers_tried: str,
+    metrics_source: str,
+    profile_source: str,
+    fallback_used: bool,
+    market_data_status: str,
+    error_message: str,
+    price,
+    attempted_at: str | None = None,
+):
     db = get_db()
+    db.execute(
+        """
+        INSERT INTO market_data_sync_audit (
+            ticker,
+            attempted_at,
+            success,
+            scope,
+            providers_tried,
+            metrics_source,
+            profile_source,
+            fallback_used,
+            market_data_status,
+            error_message,
+            price
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(ticker or "").strip().upper(),
+            attempted_at or _now_iso(),
+            1 if success else 0,
+            str(scope or "asset").strip().lower() or "asset",
+            str(providers_tried or "").strip(),
+            str(metrics_source or "").strip(),
+            str(profile_source or "").strip(),
+            1 if fallback_used else 0,
+            str(market_data_status or "unknown").strip().lower() or "unknown",
+            str(error_message or "").strip(),
+            float(price) if price is not None else None,
+        ),
+    )
+    db.commit()
+
+
+def _mark_asset_market_data_failed(
+    ticker: str,
+    error_message: str,
+    *,
+    providers_tried: str = "",
+    metrics_source: str = "",
+    profile_source: str = "",
+    fallback_used: bool = False,
+):
+    db = get_db()
+    attempted_at = _now_iso()
     db.execute(
         """
         UPDATE assets
@@ -554,9 +665,22 @@ def _mark_asset_market_data_failed(ticker: str, error_message: str):
             market_data_last_error = ?
         WHERE ticker = ?
         """,
-        (_now_iso(), (error_message or "").strip(), (ticker or "").strip().upper()),
+        (attempted_at, (error_message or "").strip(), (ticker or "").strip().upper()),
     )
     db.commit()
+    _record_market_data_sync_audit(
+        ticker=ticker,
+        success=False,
+        scope="asset",
+        providers_tried=providers_tried,
+        metrics_source=metrics_source,
+        profile_source=profile_source,
+        fallback_used=fallback_used,
+        market_data_status="stale",
+        error_message=(error_message or "").strip(),
+        price=None,
+        attempted_at=attempted_at,
+    )
 
 
 def get_top_assets():
@@ -625,6 +749,12 @@ def refresh_asset_market_data(
     asset = get_asset(ticker)
     if not asset:
         return False
+    providers_tried = legacy._market_data_provider_label(
+        ticker,
+        include_scanner_br=include_scanner_br,
+    )
+    profile_source = None
+    metrics_source = None
 
     if str(preferred_provider or "").strip().lower() == "market_scanner":
         profile = legacy._fetch_market_scanner_profile(ticker) or {}
@@ -641,7 +771,14 @@ def refresh_asset_market_data(
             include_scanner_br=include_scanner_br,
         )
     if not metrics and not profile:
-        _mark_asset_market_data_failed(ticker, "Nenhum provider retornou dados de mercado.")
+        _mark_asset_market_data_failed(
+            ticker,
+            "Nenhum provider retornou dados de mercado.",
+            providers_tried=providers_tried,
+            metrics_source=str(metrics_source or ""),
+            profile_source=str(profile_source or ""),
+            fallback_used=False,
+        )
         return False
     has_market_metrics = legacy._has_market_metrics(metrics)
     attempted_at = _now_iso()
@@ -649,6 +786,17 @@ def refresh_asset_market_data(
     market_data_updated_at = attempted_at if has_market_metrics else asset.get("market_data_updated_at")
     market_data_source = metrics_source or asset.get("market_data_source", "")
     market_data_last_error = "" if has_market_metrics else "Atualizacao sem metricas novas."
+    metrics_order = legacy._market_data_provider_order(
+        "metrics",
+        ticker,
+        include_scanner_br=include_scanner_br,
+    )
+    fallback_used = bool(
+        has_market_metrics
+        and metrics_source
+        and metrics_order
+        and str(metrics_source).strip().lower() != str(metrics_order[0]).strip().lower()
+    )
 
     db = get_db()
     name = asset["name"]
@@ -710,7 +858,9 @@ def refresh_asset_market_data(
             market_data_source = ?,
             market_data_updated_at = ?,
             market_data_last_attempt_at = ?,
-            market_data_last_error = ?
+            market_data_last_error = ?,
+            market_data_provider_trace = ?,
+            market_data_fallback_used = ?
         WHERE ticker = ?
         """,
         (
@@ -730,10 +880,25 @@ def refresh_asset_market_data(
             market_data_updated_at,
             attempted_at,
             market_data_last_error,
+            providers_tried,
+            1 if fallback_used else 0,
             ticker.upper(),
         ),
     )
     db.commit()
+    _record_market_data_sync_audit(
+        ticker=ticker,
+        success=bool(has_market_metrics),
+        scope="asset",
+        providers_tried=providers_tried,
+        metrics_source=str(metrics_source or ""),
+        profile_source=str(profile_source or ""),
+        fallback_used=fallback_used,
+        market_data_status=market_data_status,
+        error_message=market_data_last_error,
+        price=applied_metrics.get("price"),
+        attempted_at=attempted_at,
+    )
     if legacy._is_truthy_env("MARKET_DATA_LOG_SOURCES", "0"):
         logger = legacy._LOGGER
         try:

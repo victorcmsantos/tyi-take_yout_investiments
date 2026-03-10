@@ -2,6 +2,7 @@ import os
 import time
 from threading import Event, Thread
 
+from .notifications import notify_event
 from .observability import init_job_status, mark_job_finished, mark_job_started
 from .runtime_lock import should_run_background_jobs
 from .services import refresh_stale_assets_market_data
@@ -28,6 +29,17 @@ def _run_sync_once(app):
                     scope_key,
                     len(failed),
                     ", ".join(failed[:10]),
+                )
+                notify_event(
+                    "job_failed",
+                    "Market sync com falhas parciais",
+                    details={
+                        "scope": scope_key,
+                        "failed_tickers": len(failed),
+                        "sample": failed[:10],
+                    },
+                    dedupe_key=f"market-sync:partial:{scope_key}",
+                    min_interval_seconds=max(int(app.config.get("MARKET_SYNC_INTERVAL_SECONDS", 300)), 120),
                 )
             mark_job_finished(
                 app,

@@ -11,7 +11,7 @@ import {
   Toolbar,
   Typography,
 } from '@mui/material'
-import { apiGet, apiPost } from './api'
+import { apiGet, apiGetCached, apiPost } from './api'
 import HomePage from './pages/HomePage'
 import PortfolioPage from './pages/PortfolioPage'
 import FixedIncomePage from './pages/FixedIncomePage'
@@ -27,6 +27,7 @@ import MetricFormulasPage from './pages/MetricFormulasPage'
 import ScannerPage from './pages/ScannerPage'
 import ScannerMetricsLabPage from './pages/ScannerMetricsLabPage'
 import SwingTradePage from './pages/SwingTradePage'
+import SyncHealthPage from './pages/SyncHealthPage'
 
 function App({ themeMode, onToggleTheme }) {
   const navigate = useNavigate()
@@ -121,7 +122,7 @@ function App({ themeMode, onToggleTheme }) {
     let active = true
     ;(async () => {
       try {
-        const assets = await apiGet('/api/assets')
+        const assets = await apiGetCached('/api/assets', {}, { ttlMs: 15000, staleWhileRevalidate: true })
         if (!active) return
         setAssetSuggestions(Array.isArray(assets) ? assets : [])
       } catch (err) {
@@ -213,6 +214,7 @@ function App({ themeMode, onToggleTheme }) {
     '/carteiras': 'Carteiras',
     '/alocador': 'Alocador',
     '/scanner': 'Scanner',
+    '/admin/sync-health': 'Saude de sync',
     '/swing-trade': 'Swing Trade',
     '/admin': 'Admin',
     '/admin/metricas': 'Metricas',
@@ -244,6 +246,7 @@ function App({ themeMode, onToggleTheme }) {
           title: 'Administracao',
           items: [
             { to: '/admin', label: 'Usuarios' },
+            { to: '/admin/sync-health', label: 'Saude de sync' },
             { to: '/admin/metricas', label: 'Metricas' },
             { to: '/admin/metrics-lab', label: 'Metrics Lab' },
           ],
@@ -491,6 +494,10 @@ function App({ themeMode, onToggleTheme }) {
               element={isAdminUser ? <AdminPage currentUser={currentUser} /> : <Navigate to="/" replace />}
             />
             <Route
+              path="/admin/sync-health"
+              element={isAdminUser ? <SyncHealthPage /> : <Navigate to="/" replace />}
+            />
+            <Route
               path="/admin/metricas"
               element={isAdminUser ? <MetricFormulasPage /> : <Navigate to="/" replace />}
             />
@@ -499,6 +506,10 @@ function App({ themeMode, onToggleTheme }) {
               element={isAdminUser ? <ScannerMetricsLabPage /> : <Navigate to="/" replace />}
             />
             <Route path="/login" element={<Navigate to="/" replace />} />
+            <Route
+              path="/sync-health"
+              element={isAdminUser ? <Navigate to="/admin/sync-health" replace /> : <Navigate to="/" replace />}
+            />
             <Route path="/transacoes/nova" element={<Navigate to="/nova" replace />} />
             <Route path="/proventos/novo" element={<Navigate to="/novo" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />

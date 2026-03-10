@@ -27,6 +27,11 @@ function AdminPage({ currentUser }) {
   const [scannerStatusLoading, setScannerStatusLoading] = useState(false)
   const [scannerAudit, setScannerAudit] = useState([])
   const [scannerAuditLoading, setScannerAuditLoading] = useState(false)
+  const [syncStatus, setSyncStatus] = useState(null)
+  const [syncStatusLoading, setSyncStatusLoading] = useState(false)
+  const [telegramStatus, setTelegramStatus] = useState(null)
+  const [telegramStatusLoading, setTelegramStatusLoading] = useState(false)
+  const [telegramTestLoading, setTelegramTestLoading] = useState(false)
   const browserTimeZone = currentBrowserTimeZone()
 
   const loadUsers = async () => {
@@ -89,10 +94,53 @@ function AdminPage({ currentUser }) {
     }
   }
 
+  const loadSyncStatus = async () => {
+    setSyncStatusLoading(true)
+    setError('')
+    try {
+      const payload = await apiGet('/api/sync/status')
+      setSyncStatus(payload || null)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSyncStatusLoading(false)
+    }
+  }
+
+  const loadTelegramStatus = async () => {
+    setTelegramStatusLoading(true)
+    setError('')
+    try {
+      const payload = await apiGet('/api/admin/telegram/status')
+      setTelegramStatus(payload || null)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setTelegramStatusLoading(false)
+    }
+  }
+
   useEffect(() => {
     loadScannerStatus()
     loadScannerAudit()
+    loadSyncStatus()
+    loadTelegramStatus()
   }, [])
+
+  const onSendTelegramTest = async () => {
+    setTelegramTestLoading(true)
+    setError('')
+    setMessage('')
+    try {
+      const payload = await apiPost('/api/admin/telegram/test', {})
+      setMessage(payload?.message || 'Teste enviado no Telegram.')
+      await loadTelegramStatus()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setTelegramTestLoading(false)
+    }
+  }
 
   const formatBytes = (value) => {
     const size = Number(value)
@@ -219,6 +267,77 @@ function AdminPage({ currentUser }) {
 
       {!!message && <p className="notice-ok">{message}</p>}
       {!!error && <p className="notice-warn">{error}</p>}
+
+      <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
+        <div className="hero-line" style={{ marginBottom: 12 }}>
+          <div>
+            <Typography variant="h6" sx={{ mb: 0.5 }}>Saude de sync</Typography>
+            <Typography variant="body2" sx={{ opacity: 0.8 }}>
+              Status consolidado de jobs, fila e orcamento de providers.
+            </Typography>
+          </div>
+          <div className="hero-actions">
+            <Button variant="outlined" onClick={() => loadSyncStatus()} disabled={syncStatusLoading}>
+              {syncStatusLoading ? 'Atualizando...' : 'Atualizar'}
+            </Button>
+            <Button variant="contained" onClick={() => navigate('/admin/sync-health')}>
+              Abrir painel completo
+            </Button>
+          </div>
+        </div>
+
+        {syncStatusLoading ? (
+          <p>Carregando saude de sync...</p>
+        ) : !syncStatus ? (
+          <p>Saude de sync indisponivel.</p>
+        ) : (
+          <div className="admin-user-meta" style={{ marginBottom: 6 }}>
+            <span>Status: {String(syncStatus?.health?.status || 'unknown').toUpperCase()}</span>
+            <span>Ativos stale: {Number(syncStatus?.stale_assets_total || 0)}</span>
+            <span>Falhas de jobs: {(syncStatus?.health?.jobs || []).filter((item) => Number(item?.consecutive_failures || 0) > 0).length}</span>
+            <span>Cooldown APIs: {(syncStatus?.health?.provider_circuits || []).filter((item) => Boolean(item?.active)).length}</span>
+          </div>
+        )}
+      </Paper>
+
+      <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
+        <div className="hero-line" style={{ marginBottom: 12 }}>
+          <div>
+            <Typography variant="h6" sx={{ mb: 0.5 }}>Telegram</Typography>
+            <Typography variant="body2" sx={{ opacity: 0.8 }}>
+              Canal de alertas operacionais (jobs, sync e providers).
+            </Typography>
+          </div>
+          <div className="hero-actions">
+            <Button variant="outlined" onClick={() => loadTelegramStatus()} disabled={telegramStatusLoading}>
+              {telegramStatusLoading ? 'Atualizando...' : 'Atualizar'}
+            </Button>
+            <Button variant="contained" onClick={onSendTelegramTest} disabled={telegramTestLoading}>
+              {telegramTestLoading ? 'Enviando...' : 'Enviar teste'}
+            </Button>
+          </div>
+        </div>
+        {telegramStatusLoading ? (
+          <p>Carregando status do Telegram...</p>
+        ) : !telegramStatus ? (
+          <p>Status do Telegram indisponivel.</p>
+        ) : (
+          <div>
+            <div className="admin-user-meta" style={{ marginBottom: 6 }}>
+              <span>Habilitado: {telegramStatus.enabled ? 'sim' : 'nao'}</span>
+              <span>Configurado: {telegramStatus.configured ? 'sim' : 'nao'}</span>
+              <span>Perfil: {String(telegramStatus.notify_profile || 'prod')}</span>
+              <span>Bot token: {telegramStatus.bot_configured ? 'ok' : 'ausente'}</span>
+              <span>Chat ID: {telegramStatus.chat_configured ? 'ok' : 'ausente'}</span>
+              <span>Thread: {telegramStatus.thread_id ?? '-'}</span>
+            </div>
+            <div className="admin-user-meta">
+              <span>Eventos ativos: {Array.isArray(telegramStatus.notify_events) ? telegramStatus.notify_events.length : 0}</span>
+              <span>Intervalo padrao: {Number(telegramStatus.default_min_interval_seconds || 0)}s</span>
+            </div>
+          </div>
+        )}
+      </Paper>
 
       <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
         <div className="hero-line" style={{ marginBottom: 12 }}>

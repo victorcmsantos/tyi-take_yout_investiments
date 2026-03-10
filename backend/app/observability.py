@@ -9,6 +9,7 @@ from flask import current_app, g, has_request_context, request
 from werkzeug.exceptions import HTTPException
 
 from .db import get_db, list_database_backups
+from .notifications import notify_event, telegram_status_payload
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -197,6 +198,7 @@ def mark_job_started(app, job_name):
 
 def mark_job_finished(app, job_name, result=None, error=None):
     state = app.extensions["job_statuses"][job_name]
+    previous_failures = int(state.get("consecutive_failures") or 0)
     started_perf = state.pop("_started_perf", None)
     duration_ms = None
     if started_perf is not None:
@@ -210,10 +212,34 @@ def mark_job_finished(app, job_name, result=None, error=None):
         state["last_result"] = result
         state["last_error"] = None
         state["consecutive_failures"] = 0
+        if previous_failures > 0:
+            notify_event(
+                "job_recovered",
+                f"Job recuperado: {job_name}",
+                details={
+                    "job": job_name,
+                    "duration_ms": duration_ms,
+                    "result": result,
+                },
+                dedupe_key=f"job:recovered:{job_name}",
+                min_interval_seconds=60,
+            )
     else:
         state["last_error_at"] = now
         state["last_error"] = str(error)
         state["consecutive_failures"] += 1
+        notify_event(
+            "job_failed",
+            f"Falha no job: {job_name}",
+            details={
+                "job": job_name,
+                "consecutive_failures": int(state.get("consecutive_failures") or 0),
+                "duration_ms": duration_ms,
+                "error": str(error),
+            },
+            dedupe_key=f"job:failed:{job_name}",
+            min_interval_seconds=300,
+        )
 
 
 def get_job_statuses(app):
@@ -252,17 +278,97 @@ def get_route_metrics(app):
     return [dict(value) for _, value in sorted(metrics.items(), key=lambda item: item[0])]
 
 
+def get_provider_circuit_statuses():
+    now_epoch = time.time()
+    rows = []
+    try:
+        rows = get_db().execute(
+            """
+            SELECT provider, disabled_until, status_code, updated_at
+            FROM api_provider_circuit_state
+            ORDER BY provider ASC
+            """
+        ).fetchall()
+    except Exception:
+        return []
+
+    payload = []
+    for row in rows:
+        until_epoch = float(row["disabled_until"] or 0.0)
+        is_active = until_epoch > now_epoch
+        remaining = max(int(until_epoch - now_epoch), 0) if is_active else 0
+        payload.append(
+            {
+                "provider": str(row["provider"] or "").strip().lower(),
+                "active": bool(is_active),
+                "disabled_until_epoch": until_epoch,
+                "remaining_seconds": remaining,
+                "status_code": row["status_code"],
+                "updated_at": row["updated_at"],
+            }
+        )
+    return payload
+
+
+def get_provider_usage_statuses():
+    try:
+        from .services import _legacy as legacy_market
+    except Exception:
+        return []
+
+    statuses = []
+    for provider in ("brapi", "coingecko"):
+        try:
+            status = legacy_market._provider_usage_status(provider)
+        except Exception:
+            status = {"provider": provider, "windows": {}}
+        statuses.append(status)
+    return statuses
+
+
 def build_health_payload():
     db_status = _database_status()
     backups = list_database_backups()
     job_statuses = get_job_statuses(current_app)
+    provider_circuits = get_provider_circuit_statuses()
+    provider_usage = get_provider_usage_statuses()
+    budget_exhausted = False
+    for provider in provider_usage:
+        for window_payload in (provider.get("windows") or {}).values():
+            limit = int(window_payload.get("limit") or 0)
+            remaining = window_payload.get("remaining")
+            if limit > 0 and remaining is not None and int(remaining) <= 0:
+                budget_exhausted = True
+                break
+        if budget_exhausted:
+            break
     degraded = (
         not db_status["ok"]
         or any(item["consecutive_failures"] > 0 for item in job_statuses)
         or any(item["stale"] for item in job_statuses)
+        or any(item.get("active") for item in provider_circuits)
+        or budget_exhausted
     )
+    current_status = "degraded" if degraded else "ok"
+    previous_status = current_app.extensions.get("health_last_status")
+    current_app.extensions["health_last_status"] = current_status
+    if previous_status and previous_status != current_status:
+        notify_event(
+            "health_degraded" if current_status == "degraded" else "health_recovered",
+            f"Saude do sistema: {current_status.upper()}",
+            details={
+                "status": current_status,
+                "database_ok": bool(db_status.get("ok")),
+                "jobs_failed": sum(1 for item in job_statuses if int(item.get("consecutive_failures") or 0) > 0),
+                "jobs_stale": sum(1 for item in job_statuses if bool(item.get("stale"))),
+                "active_circuits": sum(1 for item in provider_circuits if bool(item.get("active"))),
+                "budget_exhausted": bool(budget_exhausted),
+            },
+            dedupe_key=f"health:status:{current_status}",
+            min_interval_seconds=120,
+        )
     return {
-        "status": "degraded" if degraded else "ok",
+        "status": current_status,
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "database": db_status,
         "backups": {
@@ -270,6 +376,9 @@ def build_health_payload():
             "latest": backups[0] if backups else None,
         },
         "jobs": job_statuses,
+        "provider_circuits": provider_circuits,
+        "provider_usage": provider_usage,
+        "telegram": telegram_status_payload(),
         "metrics": {
             "routes_tracked": len(current_app.extensions.get("route_metrics", {})),
         },

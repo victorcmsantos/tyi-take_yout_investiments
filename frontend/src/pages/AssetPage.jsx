@@ -423,6 +423,10 @@ function AssetPage({ selectedPortfolioIds }) {
     setSyncMessage('')
     try {
       const response = await apiPost(`/api/sync/market-data/${ticker}`, {})
+      if (response?.success === false) {
+        setSyncMessage(String(response?.message || 'Sincronizacao adiada: existe outro scan em andamento.'))
+        return
+      }
       const sourceLabel = String(response?.source || '').trim().toUpperCase()
       const updatedLabel = formatDateTimeLocal(response?.updated_at)
       if (sourceLabel && updatedLabel) {

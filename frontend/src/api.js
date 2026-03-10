@@ -25,8 +25,72 @@ async function requestJson(path, { method = 'GET', params = {}, body } = {}) {
   return payload.data
 }
 
+const GET_CACHE = new Map()
+
+function buildUrl(path, params = {}) {
+  const url = new URL(path, window.location.origin)
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => url.searchParams.append(key, String(item)))
+      return
+    }
+    if (value !== undefined && value !== null && value !== '') {
+      url.searchParams.set(key, String(value))
+    }
+  })
+  return url.toString()
+}
+
 export async function apiGet(path, params = {}) {
   return requestJson(path, { method: 'GET', params })
+}
+
+export async function apiGetCached(path, params = {}, options = {}) {
+  const ttlMsRaw = Number(options?.ttlMs)
+  const ttlMs = Number.isFinite(ttlMsRaw) && ttlMsRaw > 0 ? ttlMsRaw : 15000
+  const staleWhileRevalidate = options?.staleWhileRevalidate !== false
+  const cacheKey = `GET:${buildUrl(path, params)}`
+  const now = Date.now()
+  const cached = GET_CACHE.get(cacheKey)
+
+  if (cached && Number(cached.expiresAt || 0) > now) {
+    return cached.data
+  }
+
+  if (cached && staleWhileRevalidate && cached.data !== undefined) {
+    if (!cached.refreshPromise) {
+      cached.refreshPromise = apiGet(path, params)
+        .then((fresh) => {
+          GET_CACHE.set(cacheKey, {
+            data: fresh,
+            expiresAt: Date.now() + ttlMs,
+            refreshPromise: null,
+          })
+          return fresh
+        })
+        .catch(() => null)
+    }
+    return cached.data
+  }
+
+  const fresh = await apiGet(path, params)
+  GET_CACHE.set(cacheKey, {
+    data: fresh,
+    expiresAt: Date.now() + ttlMs,
+    refreshPromise: null,
+  })
+  return fresh
+}
+
+export function clearApiCache(pathPrefix = '') {
+  const prefix = String(pathPrefix || '').trim()
+  if (!prefix) {
+    GET_CACHE.clear()
+    return
+  }
+  Array.from(GET_CACHE.keys()).forEach((key) => {
+    if (key.includes(prefix)) GET_CACHE.delete(key)
+  })
 }
 
 export async function apiPost(path, body = {}, params = {}) {

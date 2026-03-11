@@ -169,6 +169,59 @@ class ScannerAdminObservabilityTest(unittest.TestCase):
             test_payload = test_response.get_json(silent=True) or {}
             self.assertFalse(bool(test_payload.get("ok")))
 
+    def test_auto_close_trades_emit_single_notification(self):
+        captured_events = []
+        original_notify = api_routes._notify_swing_trade_event
+
+        def _capture_event(**kwargs):
+            captured_events.append(kwargs)
+
+        with self.app.app_context():
+            api_routes._notify_swing_trade_event = _capture_event
+            try:
+                payload = {
+                    "history": [
+                        {
+                            "id": 42,
+                            "ticker": "PETR4.SA",
+                            "status": "TARGET_HIT",
+                            "quantity": 100,
+                            "entry_price": 42.11,
+                            "exit_price": 44.33,
+                            "invested_amount": 4211.0,
+                        }
+                    ]
+                }
+                api_routes._notify_scanner_auto_closed_trades(
+                    user=self.audit_user,
+                    trades_payload=payload,
+                )
+                api_routes._notify_scanner_auto_closed_trades(
+                    user=self.audit_user,
+                    trades_payload=payload,
+                )
+            finally:
+                api_routes._notify_swing_trade_event = original_notify
+
+            self.assertEqual(len(captured_events), 1)
+            self.assertEqual(captured_events[0].get("event_key"), "swing_trade_closed")
+            self.assertIn("automaticamente", str(captured_events[0].get("title") or "").lower())
+
+            row = get_db().execute(
+                """
+                SELECT user_id, trade_id, close_status, exit_reason, ticker
+                FROM scanner_trade_close_notifications
+                WHERE user_id = ? AND trade_id = ?
+                """,
+                (int(self.audit_user["id"]), 42),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(int(row["user_id"]), int(self.audit_user["id"]))
+            self.assertEqual(int(row["trade_id"]), 42)
+            self.assertEqual(str(row["close_status"]), "TARGET_HIT")
+            self.assertEqual(str(row["exit_reason"]), "target_hit")
+            self.assertEqual(str(row["ticker"]), "PETR4.SA")
+
 
 if __name__ == "__main__":
     unittest.main()

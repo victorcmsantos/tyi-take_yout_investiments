@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import {
+  Alert,
   AppBar,
   Box,
   Button,
@@ -8,10 +9,12 @@ import {
   FormControlLabel,
   FormGroup,
   Paper,
+  Snackbar,
   Toolbar,
   Typography,
 } from '@mui/material'
 import { apiGet, apiGetCached, apiPost } from './api'
+import { APP_TOAST_EVENT } from './toast'
 import HomePage from './pages/HomePage'
 import PortfolioPage from './pages/PortfolioPage'
 import FixedIncomePage from './pages/FixedIncomePage'
@@ -41,6 +44,13 @@ function App({ themeMode, onToggleTheme }) {
   const [assetSearch, setAssetSearch] = useState('')
   const [assetSuggestions, setAssetSuggestions] = useState([])
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [toastState, setToastState] = useState({
+    open: false,
+    message: '',
+    severity: 'info',
+    durationMs: 4200,
+    stamp: '',
+  })
   const currentUserRole = String(currentUser?.role || '').toLowerCase()
   const isAdminUser = Boolean(currentUser?.is_admin) || currentUserRole === 'admin'
   const isViewerUser = currentUserRole === 'viewer'
@@ -143,6 +153,23 @@ function App({ themeMode, onToggleTheme }) {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [sidebarOpen])
+
+  useEffect(() => {
+    const handleToast = (event) => {
+      const detail = event?.detail || {}
+      const message = String(detail.message || '').trim()
+      if (!message) return
+      setToastState({
+        open: true,
+        message,
+        severity: String(detail.severity || 'info'),
+        durationMs: Number(detail.durationMs) || 4200,
+        stamp: new Date().toLocaleTimeString('pt-BR', { hour12: false }),
+      })
+    }
+    window.addEventListener(APP_TOAST_EVENT, handleToast)
+    return () => window.removeEventListener(APP_TOAST_EVENT, handleToast)
+  }, [])
 
   const onLoggedIn = async (user) => {
     setCurrentUser(user)
@@ -516,6 +543,25 @@ function App({ themeMode, onToggleTheme }) {
           </Routes>
         </Box>
       </Box>
+      <Snackbar
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        open={toastState.open}
+        autoHideDuration={toastState.durationMs}
+        onClose={() => setToastState((current) => ({ ...current, open: false }))}
+      >
+        <Alert
+          onClose={() => setToastState((current) => ({ ...current, open: false }))}
+          severity={toastState.severity}
+          variant="filled"
+          className="app-v2-toast"
+          sx={{ width: '100%' }}
+        >
+          <div className="app-v2-toast-body">
+            <span>{toastState.message}</span>
+            <small>{toastState.stamp}</small>
+          </div>
+        </Alert>
+      </Snackbar>
     </Box>
   )
 }

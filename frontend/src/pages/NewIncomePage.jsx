@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { apiDelete, apiGet, apiPost, apiPostForm } from '../api'
+import { formatCurrencyBRL } from '../formatters'
+import { emitAppToast } from '../toast'
 
-const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
+const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
 
 function dateBr(value) {
   if (!value) return ''
@@ -100,6 +102,22 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
   useEffect(() => {
     setForm((current) => ({ ...current, target_portfolio_id: String(activePortfolioId || '') }))
   }, [activePortfolioId])
+
+  useEffect(() => {
+    if (error) emitAppToast({ severity: 'error', message: error })
+  }, [error])
+
+  useEffect(() => {
+    if (message) emitAppToast({ severity: 'success', message })
+  }, [message])
+
+  useEffect(() => {
+    if (importError) emitAppToast({ severity: 'error', message: importError })
+  }, [importError])
+
+  useEffect(() => {
+    if (importMessage) emitAppToast({ severity: 'success', message: importMessage })
+  }, [importMessage])
 
   const onChange = (event) => {
     const { name, value } = event.target

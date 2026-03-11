@@ -41,6 +41,21 @@ ON scanner_trade_audit (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_scanner_trade_audit_user_id
 ON scanner_trade_audit (user_id);
 
+CREATE TABLE IF NOT EXISTS scanner_trade_close_notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  trade_id INTEGER NOT NULL,
+  close_status TEXT NOT NULL,
+  exit_reason TEXT NOT NULL DEFAULT '',
+  ticker TEXT,
+  notified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users (id),
+  UNIQUE (user_id, trade_id, close_status)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scanner_trade_close_notifications_user_created
+ON scanner_trade_close_notifications (user_id, notified_at DESC);
+
 CREATE TABLE IF NOT EXISTS scanner_manual_scan_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   status TEXT NOT NULL CHECK(status IN ('running', 'success', 'failed')),

@@ -825,6 +825,101 @@ def _scanner_reconcile_trades_payload(payload: dict):
     }
 
 
+def _scanner_trade_auto_close_metadata(trade: dict):
+    status = str((trade or {}).get("status") or "").strip().upper()
+    if status == "TARGET_HIT":
+        return {
+            "status": status,
+            "exit_reason": "target_hit",
+            "close_label": "alvo atingido",
+        }
+    if status == "STOP_HIT":
+        return {
+            "status": status,
+            "exit_reason": "stop_hit",
+            "close_label": "stop atingido",
+        }
+    return None
+
+
+def _notify_scanner_auto_closed_trades(*, user: dict, trades_payload: dict):
+    if not isinstance(user, dict) or user.get("id") is None:
+        return
+
+    history_rows = [
+        item
+        for item in ((trades_payload or {}).get("history") or [])
+        if isinstance(item, dict)
+    ]
+    if not history_rows:
+        return
+
+    candidates = []
+    for trade in history_rows:
+        metadata = _scanner_trade_auto_close_metadata(trade)
+        if not metadata:
+            continue
+        try:
+            trade_id = int(trade.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if trade_id <= 0:
+            continue
+        candidates.append((trade_id, trade, metadata))
+
+    if not candidates:
+        return
+
+    user_id = int(user["id"])
+    db = get_db()
+    pending_notifications = []
+    try:
+        for trade_id, trade, metadata in candidates:
+            ticker = str(trade.get("ticker") or "").strip().upper() or None
+            cursor = db.execute(
+                """
+                INSERT OR IGNORE INTO scanner_trade_close_notifications (
+                  user_id,
+                  trade_id,
+                  close_status,
+                  exit_reason,
+                  ticker,
+                  notified_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    int(trade_id),
+                    str(metadata["status"]),
+                    str(metadata["exit_reason"]),
+                    ticker,
+                    _now_iso_utc(),
+                ),
+            )
+            if int(cursor.rowcount or 0) > 0:
+                pending_notifications.append((trade_id, trade, metadata))
+        if pending_notifications:
+            db.commit()
+    except Exception:
+        db.rollback()
+        current_app.logger.exception(
+            "Falha ao registrar fechamento automatico de swing trade para notificacao."
+        )
+        return
+
+    for trade_id, trade, metadata in pending_notifications:
+        _notify_swing_trade_event(
+            event_key="swing_trade_closed",
+            title=f"Swing trade encerrada automaticamente ({metadata['close_label']})",
+            user=user,
+            trade_id=trade_id,
+            ticker=trade.get("ticker"),
+            target=trade,
+            response_payload=trade,
+            upstream_status=200,
+        )
+
+
 def _scanner_prepare_trade_payload(payload, user: dict, force_notes: bool = False):
     prepared = dict(payload or {})
     prepared["user_id"] = int(user["id"])
@@ -1669,6 +1764,7 @@ def scanner_trades():
         return _json_error(message, status=status, details={"upstream": response_payload})
     filtered = _scanner_filter_trades_payload_for_user(response_payload, user)
     reconciled = _scanner_reconcile_trades_payload(filtered)
+    _notify_scanner_auto_closed_trades(user=user, trades_payload=reconciled)
     return _json_ok(reconciled, status=status)
 
 

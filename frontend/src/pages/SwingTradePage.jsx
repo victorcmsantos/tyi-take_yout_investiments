@@ -2,31 +2,15 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button, Paper, Typography } from '@mui/material'
 import { apiGet, apiPatch, apiPost } from '../api'
 import { currentBrowserTimeZone, formatAgeFromNow, formatDateTimeLocal } from '../datetime'
+import { formatCurrencyBRL, formatDecimal, formatPercent, formatQuantity, toFiniteNumber } from '../formatters'
+import { emitAppToast } from '../toast'
 
 function toNumberOrNull(value) {
-  const num = Number(value)
-  return Number.isFinite(num) ? num : null
+  return toFiniteNumber(value, null)
 }
 
 function formatFloat(value, digits = 2) {
-  const num = Number(value)
-  return Number.isFinite(num) ? num.toFixed(digits) : '-'
-}
-
-function formatQuantity(value, maxDigits = 6) {
-  const num = Number(value)
-  if (!Number.isFinite(num)) return '-'
-  const fixed = num.toFixed(maxDigits)
-  const trimmed = fixed.replace(/\.?0+$/, '')
-  return trimmed === '-0' ? '0' : trimmed
-}
-
-function formatCurrency(value) {
-  const num = Number(value || 0)
-  return new Intl.NumberFormat('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  }).format(Number.isFinite(num) ? num : 0)
+  return formatDecimal(value, digits)
 }
 
 function marketDataStampLabel(marketData) {
@@ -72,6 +56,16 @@ function SwingTradePage({ readOnly = false }) {
     }, 60000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (!message) return
+    emitAppToast({ severity: 'success', message })
+  }, [message])
+
+  useEffect(() => {
+    if (!error) return
+    emitAppToast({ severity: 'error', message: error })
+  }, [error])
 
   const operationSummary = useMemo(() => ({
     trackedCount: Number(trades?.summary?.tracked_count || 0),
@@ -175,12 +169,12 @@ function SwingTradePage({ readOnly = false }) {
           </article>
           <article className="card">
             <h3>Capital aberto</h3>
-            <p>{formatCurrency(operationSummary.openInvestedAmount)}</p>
+            <p>{formatCurrencyBRL(operationSummary.openInvestedAmount)}</p>
           </article>
           <article className="card">
             <h3>PnL aberto</h3>
             <p className={operationSummary.openPnlAmount >= 0 ? 'scanner-positive' : 'scanner-negative'}>
-              {formatCurrency(operationSummary.openPnlAmount)}
+              {formatCurrencyBRL(operationSummary.openPnlAmount)}
             </p>
           </article>
         </div>
@@ -208,16 +202,16 @@ function SwingTradePage({ readOnly = false }) {
 
                 <div className="scanner-open-trade-metrics">
                   <div><small>Entrada</small><strong>{formatFloat(trade.entry_price, 4)}</strong></div>
-                  <div><small>Quantidade</small><strong>{formatQuantity(trade.quantity, 6)}</strong></div>
-                  <div><small>Investido</small><strong>{formatCurrency(trade.invested_amount)}</strong></div>
+                  <div><small>Quantidade</small><strong>{formatQuantity(trade.quantity, { maxDigits: 4 })}</strong></div>
+                  <div><small>Investido</small><strong>{formatCurrencyBRL(trade.invested_amount)}</strong></div>
                   <div>
                     <small>Último preço</small>
                     <strong>{trade.last_price == null ? 'N/A' : formatFloat(trade.last_price, 4)}</strong>
                     <small className="scanner-market-data-stamp">{marketDataStampLabel(trade?.market_data)}</small>
                   </div>
-                  <div><small>Valor atual</small><strong>{formatCurrency(trade.current_market_value)}</strong></div>
-                  <div><small>PnL %</small><strong className={Number(trade.current_pnl_pct || 0) >= 0 ? 'scanner-positive' : 'scanner-negative'}>{`${Number(trade.current_pnl_pct || 0) >= 0 ? '+' : ''}${formatFloat(Number(trade.current_pnl_pct || 0))}%`}</strong></div>
-                  <div><small>PnL R$</small><strong className={Number(trade.current_pnl_amount || 0) >= 0 ? 'scanner-positive' : 'scanner-negative'}>{formatCurrency(trade.current_pnl_amount)}</strong></div>
+                  <div><small>Valor atual</small><strong>{formatCurrencyBRL(trade.current_market_value)}</strong></div>
+                  <div><small>PnL %</small><strong className={Number(trade.current_pnl_pct || 0) >= 0 ? 'scanner-positive' : 'scanner-negative'}>{formatPercent(trade.current_pnl_pct, 2, { signed: true })}</strong></div>
+                  <div><small>PnL R$</small><strong className={Number(trade.current_pnl_amount || 0) >= 0 ? 'scanner-positive' : 'scanner-negative'}>{formatCurrencyBRL(trade.current_pnl_amount)}</strong></div>
                   <div><small>Score</small><strong>{formatFloat(trade.score)}</strong></div>
                 </div>
 
@@ -308,15 +302,15 @@ function SwingTradePage({ readOnly = false }) {
                         {trade.status_label || trade.status || 'N/A'}
                       </span>
                     </td>
-                    <td>{formatQuantity(trade.quantity, 6)}</td>
-                    <td>{formatCurrency(trade.invested_amount)}</td>
+                    <td>{formatQuantity(trade.quantity, { maxDigits: 4 })}</td>
+                    <td>{formatCurrencyBRL(trade.invested_amount)}</td>
                     <td>{formatFloat(trade.entry_price, 4)}</td>
                     <td>{trade.exit_price == null ? 'N/A' : formatFloat(trade.exit_price, 4)}</td>
                     <td className={Number(trade.realized_pnl_pct || 0) >= 0 ? 'scanner-positive' : 'scanner-negative'}>
-                      {`${Number(trade.realized_pnl_pct || 0) >= 0 ? '+' : ''}${formatFloat(Number(trade.realized_pnl_pct || 0))}%`}
+                      {formatPercent(trade.realized_pnl_pct, 2, { signed: true })}
                     </td>
                     <td className={Number(trade.realized_pnl_amount || 0) >= 0 ? 'scanner-positive' : 'scanner-negative'}>
-                      {formatCurrency(trade.realized_pnl_amount)}
+                      {formatCurrencyBRL(trade.realized_pnl_amount)}
                     </td>
                     <td>{marketDataStampLabel(trade?.market_data)}</td>
                     <td>{trade.exit_reason || 'N/A'}</td>

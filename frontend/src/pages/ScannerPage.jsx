@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   Accordion,
   AccordionDetails,
@@ -9,29 +10,22 @@ import {
   DialogContent,
   DialogTitle,
   Paper,
+  Skeleton,
+  Tooltip,
   Typography,
 } from '@mui/material'
 import { apiGet, apiGetCached, apiPost } from '../api'
 import { currentBrowserTimeZone, formatAgeFromNow, formatDateTimeLocal } from '../datetime'
+import { emitAppToast } from '../toast'
+import { formatCurrencyBRL, formatDecimal, formatPercent, toFiniteNumber } from '../formatters'
+import { usePersistedState } from '../persistedState'
 
 function toNumberOrNull(value) {
-  const num = Number(value)
-  return Number.isFinite(num) ? num : null
+  return toFiniteNumber(value, null)
 }
 
 function formatFloat(value, digits = 2) {
-  const num = Number(value)
-  return Number.isFinite(num) ? num.toFixed(digits) : '-'
-}
-
-function formatPercent(value, digits = 2) {
-  const num = Number(value)
-  return Number.isFinite(num) ? `${num.toFixed(digits)}%` : '-'
-}
-
-function formatDecimal(value, digits = 2) {
-  const num = Number(value)
-  return Number.isFinite(num) ? num.toFixed(digits) : ''
+  return formatDecimal(value, digits)
 }
 
 function formatDurationMs(value) {
@@ -50,6 +44,12 @@ function scannerMarketDataLabel(marketData) {
   const candle = formatDateTimeLocal(marketData?.updated_at, '-')
   const age = formatAgeFromNow(marketData?.updated_at, '-')
   return `Fonte ${source} | Candle ${candle} | Idade ${age}`
+}
+
+function truncateText(value, maxLength = 26) {
+  const text = String(value || '').trim()
+  if (text.length <= maxLength) return text
+  return `${text.slice(0, maxLength - 1)}…`
 }
 
 function getRiskRewardRatio(signal) {
@@ -159,7 +159,7 @@ function ScannerPage({ readOnly = false }) {
     investedAmount: '',
     notes: '',
   })
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = usePersistedState('scanner.filters.v3', {
     ticker: '',
     rr: 'all',
     sort: 'count_desc',
@@ -207,6 +207,16 @@ function ScannerPage({ readOnly = false }) {
   useEffect(() => {
     loadScanner(false)
   }, [])
+
+  useEffect(() => {
+    if (!message) return
+    emitAppToast({ severity: 'success', message })
+  }, [message])
+
+  useEffect(() => {
+    if (!error) return
+    emitAppToast({ severity: 'error', message: error })
+  }, [error])
 
   useEffect(() => {
     const isRunning = (
@@ -497,7 +507,29 @@ function ScannerPage({ readOnly = false }) {
   }
 
   if (loading) {
-    return <p>Carregando scanner...</p>
+    return (
+      <section className="scanner-page">
+        <div className="hero-line">
+          <div>
+            <Skeleton variant="text" width={220} height={42} />
+            <Skeleton variant="text" width={420} height={24} />
+          </div>
+        </div>
+        <div className="cards">
+          {Array.from({ length: 6 }).map((_, idx) => (
+            <article className="card" key={`scanner-loading-card-${idx}`}>
+              <Skeleton variant="text" width={140} height={24} />
+              <Skeleton variant="text" width={90} height={42} />
+              <Skeleton variant="text" width={220} height={20} />
+            </article>
+          ))}
+        </div>
+        <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
+          <Skeleton variant="text" width={180} height={30} />
+          <Skeleton variant="rectangular" height={140} sx={{ borderRadius: 2 }} />
+        </Paper>
+      </section>
+    )
   }
 
   return (
@@ -507,22 +539,34 @@ function ScannerPage({ readOnly = false }) {
           <h1>Scanner</h1>
           <p className="subtitle">Leitura do Market Scanner integrada ao portal principal.</p>
         </div>
-        <div className="hero-actions">
-          <Button
-            variant="contained"
-            color="secondary"
-            onClick={onScanAllTickers}
-            disabled={readOnly || scanningAll || refreshing || scanRunStatus.isRunning}
-          >
-            {scanRunStatus.isRunning
-              ? `Scan em andamento (${scanRunStatus.processed}/${scanRunStatus.planned || '-'})`
-              : scanningAll
-                ? 'Iniciando scan...'
-                : 'Ler todos os tickers'}
-          </Button>
-          <Button variant="contained" onClick={() => loadScanner(true)} disabled={refreshing}>
-            {refreshing ? 'Recarregando...' : 'Recarregar painel'}
-          </Button>
+        <div className="hero-actions scanner-actions-main">
+          <div>
+            <Button
+              variant="contained"
+              color="secondary"
+              onClick={onScanAllTickers}
+              disabled={readOnly || scanningAll || refreshing || scanRunStatus.isRunning}
+              title="Executa um scan geral manual no scanner para atualizar todos os tickers."
+            >
+              {scanRunStatus.isRunning
+                ? `Scan em andamento (${scanRunStatus.processed}/${scanRunStatus.planned || '-'})`
+                : scanningAll
+                  ? 'Iniciando scan...'
+                  : 'Scan geral manual'}
+            </Button>
+            <small className="action-hint">Dispara leitura completa de todos os tickers do catálogo.</small>
+          </div>
+          <div>
+            <Button
+              variant="contained"
+              onClick={() => loadScanner(true)}
+              disabled={refreshing}
+              title="Recarrega somente os dados da tela sem disparar novo scan."
+            >
+              {refreshing ? 'Recarregando...' : 'Recarregar painel'}
+            </Button>
+            <small className="action-hint">Só atualiza esta tela com o último estado disponível.</small>
+          </div>
         </div>
       </div>
 
@@ -634,6 +678,14 @@ function ScannerPage({ readOnly = false }) {
             </select>
           </label>
         </div>
+        <div className="hero-actions" style={{ marginTop: 10 }}>
+          <Button
+            variant="outlined"
+            onClick={() => setFilters({ ticker: '', rr: 'all', sort: 'count_desc', setup: 'all' })}
+          >
+            Limpar filtros
+          </Button>
+        </div>
       </Paper>
 
       <Accordion
@@ -690,7 +742,19 @@ function ScannerPage({ readOnly = false }) {
         {!filteredSignals.length ? (
           <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
             <Typography variant="h6" sx={{ mb: 1 }}>Sinais</Typography>
-            <p>Nenhum card corresponde aos filtros atuais.</p>
+            <p>Nenhum card corresponde aos filtros atuais. Ajuste filtros ou rode um scan geral.</p>
+            <div className="hero-actions">
+              <Button variant="outlined" onClick={() => setFilters({ ticker: '', rr: 'all', sort: 'count_desc', setup: 'all' })}>
+                Limpar filtros
+              </Button>
+              <Button
+                variant="contained"
+                onClick={onScanAllTickers}
+                disabled={readOnly || scanningAll || refreshing || scanRunStatus.isRunning}
+              >
+                Rodar scan geral
+              </Button>
+            </div>
           </Paper>
         ) : (
           filteredSignals.map((signal) => {
@@ -705,20 +769,41 @@ function ScannerPage({ readOnly = false }) {
                 className={`scanner-signal-tile ${signalScore >= highlightScore ? 'scanner-signal-tile--highlight' : ''}`}
               >
                 <header className="scanner-signal-header">
-                  <strong>{signal.ticker}</strong>
-                  <span className="scanner-buy-badge">BUY</span>
+                  <Link to={`/ativo/${signal.ticker}`} className="scanner-signal-title-link">
+                    <strong>{signal.ticker}</strong>
+                  </Link>
+                  <div className="scanner-signal-header-badges">
+                    <span className="scanner-buy-badge">BUY</span>
+                    <Button
+                      size="small"
+                      component={Link}
+                      to={`/ativo/${signal.ticker}`}
+                      variant="outlined"
+                    >
+                      Detalhes
+                    </Button>
+                  </div>
                 </header>
                 <div className="scanner-signal-stats">
                   <div>
-                    <small>Preço</small>
-                    <strong>{formatFloat(signal.price)}</strong>
+                    <small>Preço atual</small>
+                    <strong className="scanner-key-price">{formatCurrencyBRL(signal.price)}</strong>
                   </div>
                   <div>
                     <small>Score</small>
-                    <strong>{formatFloat(signal.score)}</strong>
+                    <strong className="scanner-score-pill">{formatFloat(signal.score)}</strong>
                   </div>
                 </div>
-                <p className="subtitle">{scannerMarketDataLabel(signal?.market_data)}</p>
+                <p className="subtitle">
+                  <span
+                    className={`market-data-badge ${signal?.market_data?.is_stale ? 'stale' : 'live'}`}
+                    title={scannerMarketDataLabel(signal?.market_data)}
+                  >
+                    {signal?.market_data?.is_stale ? 'STALE' : 'OK'}
+                  </span>
+                  {' '}
+                  {scannerMarketDataLabel(signal?.market_data)}
+                </p>
                 <div className="scanner-trade-plan">
                   <p>
                     <span>Entrada:</span> {formatFloat(entryLow)} - {formatFloat(entryHigh)}
@@ -735,7 +820,9 @@ function ScannerPage({ readOnly = false }) {
                 </div>
                 <div className="scanner-metrics">
                   {(Array.isArray(signal.metrics_triggered) ? signal.metrics_triggered : []).slice(0, 8).map((metric) => (
-                    <span key={`${signal.ticker}-${metric}`} className="scanner-metric-chip">{metric}</span>
+                    <Tooltip title={metric} key={`${signal.ticker}-${metric}`}>
+                      <span className="scanner-metric-chip">{truncateText(metric, 26)}</span>
+                    </Tooltip>
                   ))}
                   {Array.isArray(signal.metrics_triggered) && signal.metrics_triggered.length > 8 && (
                     <span className="scanner-metric-chip">+{signal.metrics_triggered.length - 8}</span>
@@ -828,7 +915,7 @@ function ScannerPage({ readOnly = false }) {
                 </tr>
                 <tr>
                   <td>Preço atual</td>
-                  <td>{tickerDetails.latest_price ?? '-'}</td>
+                  <td>{formatCurrencyBRL(tickerDetails.latest_price)}</td>
                 </tr>
                 <tr>
                   <td>Último sinal</td>
@@ -843,6 +930,20 @@ function ScannerPage({ readOnly = false }) {
           </div>
         )}
       </Paper>
+
+      <div className="mobile-sticky-actions">
+        <Button
+          variant="contained"
+          color="secondary"
+          onClick={onScanAllTickers}
+          disabled={readOnly || scanningAll || refreshing || scanRunStatus.isRunning}
+        >
+          Scan geral
+        </Button>
+        <Button variant="outlined" onClick={() => loadScanner(true)} disabled={refreshing}>
+          Atualizar
+        </Button>
+      </div>
 
       <Dialog open={tradeModalOpen} onClose={closeTradeModal} fullWidth maxWidth="sm">
         <DialogTitle>Registrar entrada</DialogTitle>

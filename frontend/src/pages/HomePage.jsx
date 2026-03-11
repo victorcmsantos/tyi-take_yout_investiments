@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Skeleton } from '@mui/material'
 import { apiGetCached } from '../api'
+import { formatCompactBrl, formatCurrencyBRL, formatDecimal, formatPercent, formatQuantity } from '../formatters'
+import { usePersistedState } from '../persistedState'
+import { emitAppToast } from '../toast'
 
-const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
-const pct = (value) => `${Number(value || 0).toFixed(2)}%`
+const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
+const pct = (value, signed = false) => formatPercent(value, 2, { signed, fallback: '0.00%' })
 const money = (value, currency = 'BRL') => {
   const num = Number(value)
   if (!Number.isFinite(num)) return '-'
@@ -61,16 +65,19 @@ function HomePage({ selectedPortfolioIds }) {
   const [showHealthModal, setShowHealthModal] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [sortBy, setSortBy] = useState('name')
-  const [sortDir, setSortDir] = useState('asc')
+  const [sortState, setSortState] = usePersistedState('home.assets.sort.v1', { by: 'name', dir: 'asc' })
+  const sortBy = String(sortState?.by || 'name')
+  const sortDir = String(sortState?.dir || 'asc')
 
   const toggleSort = (field) => {
     if (sortBy === field) {
-      setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'))
+      setSortState((current) => ({
+        by: String(current?.by || 'name'),
+        dir: String(current?.dir || 'asc') === 'asc' ? 'desc' : 'asc',
+      }))
       return
     }
-    setSortBy(field)
-    setSortDir('desc')
+    setSortState({ by: field, dir: 'desc' })
   }
 
   const sortLabel = (label, field) => {
@@ -145,6 +152,11 @@ function HomePage({ selectedPortfolioIds }) {
     }
   }, [selectedPortfolioIds])
 
+  useEffect(() => {
+    if (!error) return
+    emitAppToast({ severity: 'error', message: error })
+  }, [error])
+
   const highlights = assets.length > 0
     ? {
       highestDy: assets.reduce((best, asset) => (Number(asset.dy || 0) > Number(best.dy || 0) ? asset : best), assets[0]),
@@ -202,7 +214,44 @@ function HomePage({ selectedPortfolioIds }) {
   const healthStatusLabel = syncHealth?.status === 'ok' ? 'OK' : 'ATENCAO'
   const healthTimeLabel = syncHealth?.time ? dateTimeBr(syncHealth.time) : '-'
 
-  if (loading) return <p>Carregando...</p>
+  if (loading) {
+    return (
+      <section>
+        <h1>Acoes</h1>
+        <div className="cards">
+          {Array.from({ length: 6 }).map((_, idx) => (
+            <article className="card" key={`home-skeleton-${idx}`}>
+              <Skeleton variant="text" width={160} height={24} />
+              <Skeleton variant="text" width={110} height={44} />
+              <Skeleton variant="text" width={200} height={20} />
+            </article>
+          ))}
+        </div>
+        <div className="table-wrap">
+          <table className="asset-table">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Nome</th>
+                <th>Setor</th>
+                <th>Preco</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({ length: 8 }).map((_, idx) => (
+                <tr key={`home-skeleton-row-${idx}`}>
+                  <td><Skeleton variant="text" width={90} /></td>
+                  <td><Skeleton variant="text" width={200} /></td>
+                  <td><Skeleton variant="text" width={130} /></td>
+                  <td><Skeleton variant="text" width={120} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    )
+  }
   if (error) return <p className="error">{error}</p>
 
   return (
@@ -229,7 +278,7 @@ function HomePage({ selectedPortfolioIds }) {
           <article className="card">
             <h3>Maior valor de mercado</h3>
             <p>{highlights.largestCap.ticker}</p>
-            <small>R$ {Number(highlights.largestCap.market_cap_bi || 0).toFixed(2)} bi</small>
+            <small>{formatCompactBrl(Number(highlights.largestCap.market_cap_bi || 0) * 1_000_000_000, '-')}</small>
           </article>
           <article className="card">
             <h3>Proventos totais</h3>
@@ -435,17 +484,17 @@ function HomePage({ selectedPortfolioIds }) {
                   </div>
                 </td>
                 <td>{pct(asset.dy)}</td>
-                <td>{Number(asset.pl || 0).toFixed(2)}</td>
-                <td>{Number(asset.pvp || 0).toFixed(2)}</td>
+                <td>{formatDecimal(asset.pl, 2, '-')}</td>
+                <td>{formatDecimal(asset.pvp, 2, '-')}</td>
                 <td>{brl(incomesByTicker[asset.ticker] || 0)}</td>
                 <td className={Number(asset.variation_day || 0) >= 0 ? 'up' : 'down'}>
-                  {pct(asset.variation_day)}
+                  {pct(asset.variation_day, true)}
                 </td>
                 <td className={Number(asset.variation_7d || 0) >= 0 ? 'up' : 'down'}>
-                  {pct(asset.variation_7d)}
+                  {pct(asset.variation_7d, true)}
                 </td>
                 <td className={Number(asset.variation_30d || 0) >= 0 ? 'up' : 'down'}>
-                  {pct(asset.variation_30d)}
+                  {pct(asset.variation_30d, true)}
                 </td>
               </tr>
             ))}
@@ -475,7 +524,7 @@ function HomePage({ selectedPortfolioIds }) {
                 <td>{sector.sector}</td>
                 <td>{sector.assets_count}</td>
                 <td>{pct(sector.avg_dy)}</td>
-                <td>R$ {Number(sector.market_cap_bi || 0).toFixed(2)} bi</td>
+                <td>{formatCompactBrl(Number(sector.market_cap_bi || 0) * 1_000_000_000, '-')}</td>
               </tr>
             ))}
             {sectors.length === 0 && (
@@ -508,7 +557,7 @@ function HomePage({ selectedPortfolioIds }) {
                 <td>{dateBr(item.ex_date)}</td>
                 <td>{dateBr(item.payment_date)}</td>
                 <td>{money(item.amount_per_share, item.currency)}</td>
-                <td>{Number(item.shares || 0).toFixed(4)}</td>
+                <td>{formatQuantity(item.shares, { maxDigits: 4, fallback: '0' })}</td>
                 <td>{money(item.estimated_total, item.currency)}</td>
                 <td>{String(item.source || '').trim() || '-'}</td>
               </tr>

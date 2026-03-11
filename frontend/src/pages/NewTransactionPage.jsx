@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { apiDelete, apiGet, apiPost, apiPostForm } from '../api'
+import { formatCurrencyBRL, formatQuantity } from '../formatters'
+import { emitAppToast } from '../toast'
 
-const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
+const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
 
 function dateBr(value) {
   if (!value) return ''
@@ -132,6 +134,38 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
     setForm((current) => ({ ...current, target_portfolio_id: String(activePortfolioId || '') }))
     setFixedForm((current) => ({ ...current, target_portfolio_id: String(activePortfolioId || '') }))
   }, [activePortfolioId])
+
+  useEffect(() => {
+    if (error) emitAppToast({ severity: 'error', message: error })
+  }, [error])
+
+  useEffect(() => {
+    if (message) emitAppToast({ severity: 'success', message })
+  }, [message])
+
+  useEffect(() => {
+    if (fixedError) emitAppToast({ severity: 'error', message: fixedError })
+  }, [fixedError])
+
+  useEffect(() => {
+    if (fixedMessage) emitAppToast({ severity: 'success', message: fixedMessage })
+  }, [fixedMessage])
+
+  useEffect(() => {
+    if (importError) emitAppToast({ severity: 'error', message: importError })
+  }, [importError])
+
+  useEffect(() => {
+    if (importMessage) emitAppToast({ severity: 'success', message: importMessage })
+  }, [importMessage])
+
+  useEffect(() => {
+    if (fixedImportError) emitAppToast({ severity: 'error', message: fixedImportError })
+  }, [fixedImportError])
+
+  useEffect(() => {
+    if (fixedImportMessage) emitAppToast({ severity: 'success', message: fixedImportMessage })
+  }, [fixedImportMessage])
 
   const onChange = (event) => {
     const { name, value } = event.target
@@ -385,7 +419,7 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
                     <td>{tx.portfolio_name}</td>
                     <td>{tx.ticker}</td>
                     <td>{tx.tx_type === 'buy' ? 'Compra' : 'Venda'}</td>
-                    <td>{Number(tx.shares || 0).toFixed(4)}</td>
+                    <td>{formatQuantity(tx.shares, { maxDigits: 4, fallback: '0' })}</td>
                     <td>{brl(tx.price)}</td>
                     <td>{brl(tx.total_value)}</td>
                     <td>{dateBr(tx.date)}</td>

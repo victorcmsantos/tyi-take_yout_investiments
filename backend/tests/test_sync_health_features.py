@@ -101,6 +101,76 @@ class SyncHealthFeaturesTest(unittest.TestCase):
             self.assertIn('stale_assets_total', data)
             self.assertIn('telegram', data.get('health') or {})
 
+    def test_sync_stale_market_data_endpoint_returns_summary(self):
+        calls = []
+        original_refresh = api_routes.refresh_assets_market_data
+
+        def _fake_refresh_assets_market_data(**kwargs):
+            calls.append(dict(kwargs))
+            return {
+                'scope': 'all',
+                'stale_only': True,
+                'selected_count': 3,
+                'failed': ['PETR4.SA'],
+            }
+
+        api_routes.refresh_assets_market_data = _fake_refresh_assets_market_data
+        try:
+            with self.app.test_client() as client:
+                with client.session_transaction() as sess:
+                    sess['user_id'] = int(self.user['id'])
+                response = client.post('/api/sync/market-data/stale', json={'attempts': 2})
+                self.assertEqual(response.status_code, 200)
+                payload = response.get_json(silent=True) or {}
+                data = payload.get('data') or {}
+                self.assertEqual(data.get('mode'), 'manual_stale_sync')
+                self.assertEqual(int(data.get('selected_count') or 0), 3)
+                self.assertEqual(int(data.get('updated_count') or 0), 2)
+                self.assertEqual(int(data.get('failed_count') or 0), 1)
+                self.assertEqual(data.get('failed') or [], ['PETR4.SA'])
+                self.assertEqual(len(calls), 1)
+                self.assertTrue(bool(calls[0].get('stale_only')))
+        finally:
+            api_routes.refresh_assets_market_data = original_refresh
+
+    def test_variable_income_daily_chart_endpoint_returns_payload(self):
+        calls = []
+        original_chart_fn = api_routes.get_variable_income_value_daily_series
+
+        def _fake_daily_chart(portfolio_ids, range_key='90d'):
+            calls.append({
+                'portfolio_ids': list(portfolio_ids or []),
+                'range_key': str(range_key or ''),
+            })
+            return {
+                'range_key': '90d',
+                'labels': ['10/03', '11/03'],
+                'values': [1000.0, 1015.5],
+                'points_count': 2,
+                'included_tickers': ['PETR4.SA'],
+                'missing_tickers': [],
+                'current_total_value': 1015.5,
+                'generated_at': '2026-03-12T00:00:00Z',
+            }
+
+        api_routes.get_variable_income_value_daily_series = _fake_daily_chart
+        try:
+            with self.app.test_client() as client:
+                with client.session_transaction() as sess:
+                    sess['user_id'] = int(self.user['id'])
+                response = client.get('/api/charts/variable-income-value-daily?range=90d')
+                self.assertEqual(response.status_code, 200)
+                payload = response.get_json(silent=True) or {}
+                data = payload.get('data') or {}
+                self.assertEqual(data.get('range_key'), '90d')
+                self.assertEqual(data.get('labels') or [], ['10/03', '11/03'])
+                self.assertEqual(data.get('values') or [], [1000.0, 1015.5])
+                self.assertEqual(int(data.get('points_count') or 0), 2)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0]['range_key'], '90d')
+        finally:
+            api_routes.get_variable_income_value_daily_series = original_chart_fn
+
 
 if __name__ == '__main__':
     unittest.main()

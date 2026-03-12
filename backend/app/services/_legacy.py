@@ -28,8 +28,10 @@ _COINGECKO_CIRCUIT = {"until": 0.0, "status_code": None}
 _TWELVE_DATA_CACHE = {}
 _ALPHA_VANTAGE_CACHE = {}
 _YAHOO_MONTHLY_CACHE = {}
+_YAHOO_DAILY_CACHE = {}
 _ASSET_PRICE_HISTORY_CACHE = {}
 _BENCHMARK_CACHE = {}
+_PORTFOLIO_DAILY_VALUE_CACHE = {}
 _MARKET_SCANNER_CACHE = {}
 _LOGGER = logging.getLogger(__name__)
 _BRAPI_DIAG = {
@@ -4783,6 +4785,213 @@ def _subtract_months_from_date(date_value, months_back: int):
     return date_value.replace(year=year, month=month, day=1)
 
 
+def _portfolio_daily_range_config(range_key: str):
+    normalized = (range_key or "90d").strip().lower()
+    mapping = {
+        "30d": {"days": 30, "period": "1mo"},
+        "90d": {"days": 90, "period": "3mo"},
+        "180d": {"days": 180, "period": "6mo"},
+        "1y": {"days": 365, "period": "1y"},
+    }
+    if normalized not in mapping:
+        normalized = "90d"
+    cfg = mapping[normalized]
+    return normalized, int(cfg["days"]), str(cfg["period"])
+
+
+def _day_keys_back(days: int):
+    total_days = max(int(days or 0), 1)
+    today = datetime.now().date()
+    keys = []
+    for offset in range(total_days - 1, -1, -1):
+        dt = today - timedelta(days=offset)
+        keys.append(dt.isoformat())
+    return keys
+
+
+def _day_label(day_key: str):
+    try:
+        dt = datetime.strptime(str(day_key), "%Y-%m-%d")
+        return dt.strftime("%d/%m")
+    except Exception:
+        return str(day_key)
+
+
+def _download_daily_close_map(symbol: str, period: str):
+    ticker = (symbol or "").strip().upper()
+    normalized_period = (period or "").strip().lower() or "3mo"
+    if not ticker:
+        return {}
+    cache_ttl = int(current_app.config.get("YAHOO_DAILY_CACHE_TTL_SECONDS", 1800))
+    cache_key = (ticker, normalized_period)
+    cached = _memory_cache_get(_YAHOO_DAILY_CACHE, cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    def _to_map_from_series(series):
+        if series is None:
+            return {}
+        result = {}
+        try:
+            for idx, value in series.items():
+                close_value = _to_number(value)
+                if close_value is None:
+                    continue
+                dt = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else idx
+                key = dt.strftime("%Y-%m-%d")
+                result[key] = float(close_value)
+        except Exception:
+            return {}
+        return result
+
+    day_map = {}
+    if yf is not None:
+        try:
+            hist = yf.download(
+                ticker,
+                period=normalized_period,
+                interval="1d",
+                progress=False,
+                threads=False,
+                auto_adjust=True,
+            )
+        except Exception:
+            hist = None
+        closes = _extract_close_series(hist)
+        if closes is not None:
+            try:
+                closes = closes.dropna()
+            except Exception:
+                pass
+            day_map = _to_map_from_series(closes)
+
+    if not day_map:
+        payload = _http_get_json(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range={normalized_period}&interval=1d"
+        )
+        if payload:
+            try:
+                result = payload.get("chart", {}).get("result", [])
+                item = result[0] if result else {}
+                timestamps = item.get("timestamp") or []
+                quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]
+                closes = quote.get("close") or []
+                for ts, close in zip(timestamps, closes):
+                    close_value = _to_number(close)
+                    if close_value is None:
+                        continue
+                    dt = datetime.fromtimestamp(int(ts))
+                    day_map[dt.strftime("%Y-%m-%d")] = float(close_value)
+            except Exception:
+                day_map = {}
+
+    if day_map:
+        _memory_cache_set(_YAHOO_DAILY_CACHE, cache_key, dict(day_map), cache_ttl)
+    return day_map
+
+
+def _levels_from_day_map(day_keys, day_map, fill_before_first: bool = True):
+    if not day_keys:
+        return []
+    result = []
+    last_value = None
+    first_index = None
+    for idx, key in enumerate(day_keys):
+        if key in day_map:
+            last_value = day_map[key]
+            if first_index is None:
+                first_index = idx
+        result.append(last_value)
+
+    if fill_before_first and first_index is not None and first_index > 0:
+        first_value = result[first_index]
+        for idx in range(first_index):
+            result[idx] = first_value
+    return result
+
+
+def _portfolio_daily_value_series(snapshot: dict, day_keys, period: str):
+    positions = [item for item in (snapshot or {}).get("positions", []) if isinstance(item, dict)]
+    if not positions:
+        return {
+            "values": [None for _ in day_keys],
+            "included_tickers": [],
+            "missing_tickers": [],
+        }
+
+    selected_categories = {"br_stocks", "us_stocks", "fiis", "crypto"}
+    selected_positions = []
+    for item in positions:
+        category = _position_category(item.get("ticker"), item.get("name"), item.get("sector"))
+        if category in selected_categories:
+            selected_positions.append(item)
+
+    if not selected_positions:
+        return {
+            "values": [None for _ in day_keys],
+            "included_tickers": [],
+            "missing_tickers": [],
+        }
+
+    usdbrl_map = _download_daily_close_map("USDBRL=X", period)
+    if not usdbrl_map:
+        usdbrl_map = _download_daily_close_map("BRL=X", period)
+    usdbrl_levels = _levels_from_day_map(day_keys, usdbrl_map, fill_before_first=True) if usdbrl_map else []
+
+    totals = [0.0 for _ in day_keys]
+    included_tickers = []
+    missing_tickers = []
+    for item in selected_positions:
+        ticker = str(item.get("ticker") or "").strip().upper()
+        current_value = float(item.get("value") or 0.0)
+        if not ticker or current_value <= 0:
+            continue
+
+        ticker_day_map = {}
+        for symbol in _candidate_yahoo_symbols(ticker):
+            ticker_day_map = _download_daily_close_map(symbol, period)
+            if ticker_day_map:
+                break
+        if not ticker_day_map:
+            missing_tickers.append(ticker)
+            continue
+
+        levels = _levels_from_day_map(day_keys, ticker_day_map, fill_before_first=True)
+        if _is_usd_quoted_ticker(ticker) and usdbrl_levels:
+            converted = []
+            for idx, value in enumerate(levels):
+                fx = usdbrl_levels[idx] if idx < len(usdbrl_levels) else None
+                if value is None or fx in (None, 0):
+                    converted.append(None)
+                    continue
+                converted.append(float(value) * float(fx))
+            levels = converted
+
+        latest_value = next((value for value in reversed(levels) if value not in (None, 0)), None)
+        if latest_value in (None, 0):
+            missing_tickers.append(ticker)
+            continue
+
+        for idx, value in enumerate(levels):
+            if value is None:
+                continue
+            totals[idx] += current_value * (float(value) / float(latest_value))
+        included_tickers.append(ticker)
+
+    if not included_tickers:
+        return {
+            "values": [None for _ in day_keys],
+            "included_tickers": [],
+            "missing_tickers": sorted(set(missing_tickers)),
+        }
+
+    return {
+        "values": [round(float(value), 2) for value in totals],
+        "included_tickers": sorted(set(included_tickers)),
+        "missing_tickers": sorted(set(missing_tickers)),
+    }
+
+
 def _benchmark_range_config(range_key: str):
     normalized = (range_key or "12m").strip().lower()
     mapping = {
@@ -5052,4 +5261,31 @@ def get_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: s
         "scope_key": normalized_scope,
     }
     _memory_cache_set(_BENCHMARK_CACHE, cache_key, result, cache_ttl)
+    return result
+
+
+def get_variable_income_value_daily_series(portfolio_ids, range_key: str = "90d"):
+    normalized_range, days, period = _portfolio_daily_range_config(range_key)
+    pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
+    cache_ttl = int(current_app.config.get("PORTFOLIO_DAILY_VALUE_CACHE_TTL_SECONDS", 900))
+    cache_key = (pids, normalized_range)
+    cached = _memory_cache_get(_PORTFOLIO_DAILY_VALUE_CACHE, cache_key)
+    if cached is not None:
+        return cached
+
+    snapshot = get_portfolio_snapshot(pids)
+    day_keys = _day_keys_back(days)
+    series_payload = _portfolio_daily_value_series(snapshot, day_keys, period)
+    values = list(series_payload.get("values") or [])
+    result = {
+        "range_key": normalized_range,
+        "labels": [_day_label(key) for key in day_keys],
+        "values": values,
+        "points_count": sum(1 for value in values if value is not None),
+        "included_tickers": list(series_payload.get("included_tickers") or []),
+        "missing_tickers": list(series_payload.get("missing_tickers") or []),
+        "current_total_value": round(float((snapshot or {}).get("total_value") or 0.0), 2),
+        "generated_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    }
+    _memory_cache_set(_PORTFOLIO_DAILY_VALUE_CACHE, cache_key, result, cache_ttl)
     return result

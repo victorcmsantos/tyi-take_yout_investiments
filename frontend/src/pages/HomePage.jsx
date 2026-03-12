@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Skeleton } from '@mui/material'
-import { apiGetCached } from '../api'
+import { apiGet, apiGetCached, apiPost, clearApiCache } from '../api'
 import { formatCompactBrl, formatCurrencyBRL, formatDecimal, formatPercent, formatQuantity } from '../formatters'
 import { usePersistedState } from '../persistedState'
 import { emitAppToast } from '../toast'
@@ -63,6 +63,7 @@ function HomePage({ selectedPortfolioIds }) {
   const [syncHealth, setSyncHealth] = useState(null)
   const [syncHealthError, setSyncHealthError] = useState('')
   const [showHealthModal, setShowHealthModal] = useState(false)
+  const [refreshingStaleAssets, setRefreshingStaleAssets] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [sortState, setSortState] = usePersistedState('home.assets.sort.v1', { by: 'name', dir: 'asc' })
@@ -197,6 +198,13 @@ function HomePage({ selectedPortfolioIds }) {
     () => assets.filter((asset) => asset?.market_data?.is_stale).length,
     [assets],
   )
+  const staleTickers = useMemo(
+    () => assets
+      .filter((asset) => asset?.market_data?.is_stale)
+      .map((asset) => String(asset?.ticker || '').trim().toUpperCase())
+      .filter(Boolean),
+    [assets],
+  )
   const upcomingItems = Array.isArray(upcomingIncomes?.items) ? upcomingIncomes.items : []
   const upcomingSummary = upcomingIncomes?.summary || {}
   const upcomingEstimatedBrl = Number(upcomingSummary?.estimated_totals?.BRL || 0)
@@ -213,6 +221,38 @@ function HomePage({ selectedPortfolioIds }) {
     : 'nenhum'
   const healthStatusLabel = syncHealth?.status === 'ok' ? 'OK' : 'ATENCAO'
   const healthTimeLabel = syncHealth?.time ? dateTimeBr(syncHealth.time) : '-'
+
+  const refreshOnlyStaleAssets = async () => {
+    if (refreshingStaleAssets || staleTickers.length === 0) return
+    setRefreshingStaleAssets(true)
+    try {
+      const result = await apiPost('/api/sync/market-data/stale', { attempts: 2 })
+      clearApiCache('/api/assets')
+      const refreshedAssets = await apiGet('/api/assets')
+      setAssets(Array.isArray(refreshedAssets) ? refreshedAssets : [])
+
+      const failedCount = Number(result?.failed_count || 0)
+      const updatedCount = Number(result?.updated_count || 0)
+      if (failedCount > 0) {
+        emitAppToast({
+          severity: 'warning',
+          message: `Atualizacao concluida com ${failedCount} falha(s). ${updatedCount} ativo(s) atualizado(s).`,
+        })
+      } else {
+        emitAppToast({
+          severity: 'success',
+          message: `${updatedCount} ativo(s) desatualizado(s) atualizado(s).`,
+        })
+      }
+    } catch (err) {
+      emitAppToast({
+        severity: 'error',
+        message: err?.message || 'Falha ao atualizar ativos desatualizados.',
+      })
+    } finally {
+      setRefreshingStaleAssets(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -258,9 +298,19 @@ function HomePage({ selectedPortfolioIds }) {
     <section>
       <h1>Acoes</h1>
       {staleAssetsCount > 0 && (
-        <p className="notice-warn">
-          {staleAssetsCount} ativo(s) exibem cotacao possivelmente antiga. Veja a coluna de preco para identificar quais.
-        </p>
+        <div className="notice-warn notice-warn-action">
+          <span>
+            {staleAssetsCount} ativo(s) exibem cotacao possivelmente antiga. Veja a coluna de preco para identificar quais.
+          </span>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={refreshOnlyStaleAssets}
+            disabled={refreshingStaleAssets || staleTickers.length === 0}
+          >
+            {refreshingStaleAssets ? 'Atualizando...' : 'Atualizar somente desatualizados'}
+          </button>
+        </div>
       )}
 
       {highlights && (

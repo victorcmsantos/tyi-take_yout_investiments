@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import 'chart.js/auto'
+import { Line } from 'react-chartjs-2'
 import { apiGet } from '../api'
 
 const CATEGORY_META = [
@@ -23,9 +25,19 @@ const BUCKET_META = [
   { key: 'hold', label: 'Parecem para segurar', tone: 'neutral' },
   { key: 'reduce', label: 'Merecem reduzir', tone: 'down' },
 ]
+const DAILY_RANGE_OPTIONS = [
+  { key: '30d', label: '30d' },
+  { key: '90d', label: '90d' },
+  { key: '180d', label: '180d' },
+  { key: '1y', label: '1 ano' },
+]
 
 function PortfolioPage({ selectedPortfolioIds }) {
   const [snapshot, setSnapshot] = useState(null)
+  const [dailySeries, setDailySeries] = useState({ labels: [], values: [], included_tickers: [], missing_tickers: [] })
+  const [dailyRange, setDailyRange] = useState('90d')
+  const [dailyLoading, setDailyLoading] = useState(false)
+  const [dailyError, setDailyError] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [sortBy, setSortBy] = useState('name')
@@ -75,6 +87,30 @@ function PortfolioPage({ selectedPortfolioIds }) {
     }
   }, [selectedPortfolioIds, sortBy, sortDir])
 
+  useEffect(() => {
+    let active = true
+    setDailyLoading(true)
+    setDailyError('')
+    ;(async () => {
+      try {
+        const data = await apiGet('/api/charts/variable-income-value-daily', {
+          portfolio_id: selectedPortfolioIds,
+          range: dailyRange,
+        })
+        if (!active) return
+        setDailySeries(data || { labels: [], values: [], included_tickers: [], missing_tickers: [] })
+      } catch (err) {
+        if (!active) return
+        setDailyError(err.message)
+      } finally {
+        if (active) setDailyLoading(false)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [selectedPortfolioIds, dailyRange])
+
   if (loading && !snapshot) return <p>Carregando...</p>
   if (error) return <p className="error">{error}</p>
   if (!snapshot) return <p>Sem dados.</p>
@@ -83,6 +119,38 @@ function PortfolioPage({ selectedPortfolioIds }) {
   const tacticalCounts = tacticalSummary.summary || {}
   const concentrationAlerts = tacticalSummary.concentration_alerts || []
   const thresholds = tacticalSummary.thresholds || {}
+  const dailyLabels = Array.isArray(dailySeries?.labels) ? dailySeries.labels : []
+  const dailyValues = Array.isArray(dailySeries?.values) ? dailySeries.values : []
+  const hasDailyPoints = dailyValues.some((value) => Number.isFinite(Number(value)))
+  const dailyChartData = {
+    labels: dailyLabels,
+    datasets: [
+      {
+        label: 'Valor estimado (R$)',
+        data: dailyValues,
+        borderColor: '#0f8a77',
+        backgroundColor: 'rgba(15, 138, 119, 0.15)',
+        fill: true,
+        tension: 0.22,
+        pointRadius: 0,
+        pointHoverRadius: 3,
+      },
+    ],
+  }
+  const dailyChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: {
+        ticks: {
+          callback: (value) => brl(value),
+        },
+      },
+    },
+    plugins: {
+      legend: { display: false },
+    },
+  }
 
   return (
     <section>
@@ -98,6 +166,37 @@ function PortfolioPage({ selectedPortfolioIds }) {
         <article className="card"><h3>Proventos 12 meses</h3><p>{brl(snapshot.incomes_12m)}</p></article>
         <article className="card"><h3>Proventos total</h3><p>{brl(snapshot.total_incomes)}</p></article>
       </div>
+
+      <article className="card chart-card">
+        <div className="chart-head-inline">
+          <div>
+            <h3>Valor da renda variavel (dia a dia)</h3>
+            <p className="subtitle">Serie estimada em BRL usando cotacoes historicas e composicao atual da carteira.</p>
+          </div>
+          <label>
+            Periodo
+            <select value={dailyRange} onChange={(event) => setDailyRange(String(event.target.value || '90d'))}>
+              {DAILY_RANGE_OPTIONS.map((item) => (
+                <option key={item.key} value={item.key}>{item.label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {dailyLoading && <p className="subtitle">Atualizando grafico...</p>}
+        {!dailyLoading && dailyError && <p className="error">{dailyError}</p>}
+        {!dailyLoading && !dailyError && hasDailyPoints && (
+          <div className="chart-canvas-wrap">
+            <Line data={dailyChartData} options={dailyChartOptions} />
+          </div>
+        )}
+        {!dailyLoading && !dailyError && !hasDailyPoints && (
+          <p className="subtitle">Sem historico diario suficiente para montar o grafico no periodo selecionado.</p>
+        )}
+        <small>
+          Ativos com historico: {(dailySeries?.included_tickers || []).length}
+          {(dailySeries?.missing_tickers || []).length > 0 ? ` | Sem historico: ${(dailySeries?.missing_tickers || []).length}` : ''}
+        </small>
+      </article>
 
       <article className="card detail-card portfolio-tactical-card">
         <div className="analysis-head">

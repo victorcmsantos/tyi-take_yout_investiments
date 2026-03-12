@@ -56,9 +56,11 @@ from .services import (
     get_sectors_summary,
     get_top_assets,
     get_transactions,
+    get_variable_income_value_daily_series,
     import_fixed_incomes_csv,
     import_transactions_csv,
     normalize_portfolio_ids,
+    refresh_assets_market_data,
     refresh_asset_market_data,
     resolve_portfolio_id,
     enrich_asset_with_openclaw,
@@ -2678,6 +2680,13 @@ def charts_ticker_summary():
     return _json_ok(get_monthly_ticker_summary(portfolio_ids, months=months))
 
 
+@api_bp.route("/charts/variable-income-value-daily", methods=["GET"])
+def charts_variable_income_value_daily():
+    portfolio_ids = _selected_portfolio_ids_from_request()
+    range_key = (request.args.get("range") or "90d").strip().lower()
+    return _json_ok(get_variable_income_value_daily_series(portfolio_ids, range_key=range_key))
+
+
 @api_bp.route("/charts/dashboard", methods=["GET"])
 def charts_dashboard():
     portfolio_ids = _selected_portfolio_ids_from_request()
@@ -2839,6 +2848,82 @@ def sync_market_data_all():
         },
         status=status,
     )
+
+
+@api_bp.route("/sync/market-data/stale", methods=["POST"])
+def sync_market_data_stale():
+    user = get_current_user()
+    if not user:
+        return _json_error("Nao autenticado.", status=401)
+    if not can_user_write(user):
+        return _json_error("Perfil viewer possui acesso somente leitura.", status=403)
+
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    scope_key = str(payload.get("scope") or "all").strip().lower() or "all"
+    raw_attempts = payload.get("attempts")
+    try:
+        attempts = int(raw_attempts) if raw_attempts is not None else 2
+    except (TypeError, ValueError):
+        return _json_error("Parametro attempts invalido.", status=400)
+    attempts = max(1, min(attempts, 5))
+    include_scanner_br = not bool(current_app.config.get("MARKET_SYNC_FORCE_LIVE_BR", False))
+
+    try:
+        result = refresh_assets_market_data(
+            scope_key=scope_key,
+            stale_only=True,
+            attempts=attempts,
+            include_scanner_br=include_scanner_br,
+        )
+    except ValueError as exc:
+        return _json_error(str(exc), status=400)
+    except Exception:
+        current_app.logger.exception("Falha no sync manual de ativos desatualizados.")
+        return _json_error("Falha ao atualizar ativos desatualizados.", status=503)
+
+    failed = [str(item or "").strip().upper() for item in (result.get("failed") or []) if str(item or "").strip()]
+    selected_count = int(result.get("selected_count") or 0)
+    failed_count = len(failed)
+    updated_count = max(selected_count - failed_count, 0)
+    output = {
+        "mode": "manual_stale_sync",
+        "scope": str(result.get("scope") or scope_key),
+        "stale_only": True,
+        "selected_count": selected_count,
+        "updated_count": updated_count,
+        "failed_count": failed_count,
+        "failed": failed,
+    }
+    if failed_count == 0:
+        _notify_sync_event(
+            "manual_scan_success",
+            "Sync de ativos desatualizados concluido",
+            details={
+                "requested_by": str((user or {}).get("username") or ""),
+                "scope": output["scope"],
+                "selected_count": selected_count,
+                "updated_count": updated_count,
+                "failed_count": failed_count,
+            },
+            dedupe_key=f"sync:stale:success:{output['scope']}",
+            min_interval_seconds=15,
+        )
+    else:
+        _notify_sync_event(
+            "manual_scan_failed",
+            "Sync de ativos desatualizados com falhas",
+            details={
+                "requested_by": str((user or {}).get("username") or ""),
+                "scope": output["scope"],
+                "selected_count": selected_count,
+                "updated_count": updated_count,
+                "failed_count": failed_count,
+                "failed_sample": failed[:10],
+            },
+            dedupe_key=f"sync:stale:failed:{output['scope']}",
+            min_interval_seconds=30,
+        )
+    return _json_ok(output)
 
 
 @api_bp.route("/sync/market-data/<ticker>", methods=["POST"])

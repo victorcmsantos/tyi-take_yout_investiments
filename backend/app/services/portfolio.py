@@ -1447,6 +1447,10 @@ def get_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: s
     return legacy.get_benchmark_comparison(portfolio_ids, range_key=range_key, scope_key=scope_key)
 
 
+def get_variable_income_value_daily_series(portfolio_ids, range_key: str = "90d"):
+    return legacy.get_variable_income_value_daily_series(portfolio_ids, range_key=range_key)
+
+
 def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str = "asc"):
     return legacy.get_portfolio_snapshot(portfolio_ids, sort_by=sort_by, sort_dir=sort_dir)
 
@@ -1485,6 +1489,7 @@ __all__ = [
     "get_portfolios",
     "get_sectors_summary",
     "get_transactions",
+    "get_variable_income_value_daily_series",
     "import_fixed_incomes_csv",
     "import_transactions_csv",
     "normalize_portfolio_ids",

@@ -639,6 +639,19 @@ body {
   color: #8a5c00;
 }
 
+.notice-warn-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.notice-warn-action .btn-primary {
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
 .accordion-wrap {
   display: grid;
   gap: 12px;

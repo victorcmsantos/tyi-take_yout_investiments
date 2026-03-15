@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import {
   Alert,
@@ -15,22 +15,36 @@ import {
 } from '@mui/material'
 import { apiGet, apiGetCached, apiPost } from './api'
 import { APP_TOAST_EVENT } from './toast'
-import HomePage from './pages/HomePage'
-import PortfolioPage from './pages/PortfolioPage'
-import FixedIncomePage from './pages/FixedIncomePage'
-import ChartsPage from './pages/ChartsPage'
-import AssetPage from './pages/AssetPage'
-import NewTransactionPage from './pages/NewTransactionPage'
-import NewIncomePage from './pages/NewIncomePage'
-import PortfoliosPage from './pages/PortfoliosPage'
-import LoginPage from './pages/LoginPage'
-import AdminPage from './pages/AdminPage'
-import AllocationPage from './pages/AllocationPage'
-import MetricFormulasPage from './pages/MetricFormulasPage'
-import ScannerPage from './pages/ScannerPage'
-import ScannerMetricsLabPage from './pages/ScannerMetricsLabPage'
-import SwingTradePage from './pages/SwingTradePage'
-import SyncHealthPage from './pages/SyncHealthPage'
+import StatePanel from './components/StatePanel'
+
+const HomePage = lazy(() => import('./pages/HomePage'))
+const PortfolioPage = lazy(() => import('./pages/PortfolioPage'))
+const FixedIncomePage = lazy(() => import('./pages/FixedIncomePage'))
+const ChartsPage = lazy(() => import('./pages/ChartsPage'))
+const AssetPage = lazy(() => import('./pages/AssetPage'))
+const NewTransactionPage = lazy(() => import('./pages/NewTransactionPage'))
+const NewIncomePage = lazy(() => import('./pages/NewIncomePage'))
+const PortfoliosPage = lazy(() => import('./pages/PortfoliosPage'))
+const LoginPage = lazy(() => import('./pages/LoginPage'))
+const AdminPage = lazy(() => import('./pages/AdminPage'))
+const AllocationPage = lazy(() => import('./pages/AllocationPage'))
+const MetricFormulasPage = lazy(() => import('./pages/MetricFormulasPage'))
+const ScannerPage = lazy(() => import('./pages/ScannerPage'))
+const ScannerMetricsLabPage = lazy(() => import('./pages/ScannerMetricsLabPage'))
+const SwingTradePage = lazy(() => import('./pages/SwingTradePage'))
+const SyncHealthPage = lazy(() => import('./pages/SyncHealthPage'))
+
+function RouteFallback({ title = 'Carregando pagina...' }) {
+  return (
+    <StatePanel
+      busy
+      eyebrow="Navegacao"
+      title={title}
+      description="Preparando os dados e componentes desta tela."
+      className="route-fallback"
+    />
+  )
+}
 
 function App({ themeMode, onToggleTheme }) {
   const navigate = useNavigate()
@@ -329,10 +343,12 @@ function App({ themeMode, onToggleTheme }) {
 
   if (!currentUser) {
     return (
-      <Routes>
-        <Route path="/login" element={<LoginPage onLoggedIn={onLoggedIn} />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
+      <Suspense fallback={<main className="auth-shell"><RouteFallback title="Abrindo login..." /></main>}>
+        <Routes>
+          <Route path="/login" element={<LoginPage onLoggedIn={onLoggedIn} />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      </Suspense>
     )
   }
 
@@ -461,86 +477,88 @@ function App({ themeMode, onToggleTheme }) {
               </span>
             ))}
           </div>
-          <Routes>
-            <Route
-              path="/"
-              element={
-                isAdminUser
-                  ? <Navigate to="/admin" replace />
-                  : <HomePage selectedPortfolioIds={selectedPortfolioIds} />
-              }
-            />
-            <Route
-              path="/carteira"
-              element={isAdminUser ? <Navigate to="/admin" replace /> : <PortfolioPage selectedPortfolioIds={selectedPortfolioIds} />}
-            />
-            <Route
-              path="/renda-fixa"
-              element={isAdminUser ? <Navigate to="/admin" replace /> : <FixedIncomePage selectedPortfolioIds={selectedPortfolioIds} />}
-            />
-            <Route
-              path="/graficos"
-              element={isAdminUser ? <Navigate to="/admin" replace /> : <ChartsPage selectedPortfolioIds={selectedPortfolioIds} />}
-            />
-            <Route
-              path="/ativo/:ticker"
-              element={isAdminUser ? <Navigate to="/admin" replace /> : <AssetPage selectedPortfolioIds={selectedPortfolioIds} />}
-            />
-            <Route
-              path="/nova"
-              element={(isAdminUser || isViewerUser) ? <Navigate to="/" replace /> : <NewTransactionPage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} assets={assetSuggestions} />}
-            />
-            <Route
-              path="/novo"
-              element={(isAdminUser || isViewerUser) ? <Navigate to="/" replace /> : <NewIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} assets={assetSuggestions} />}
-            />
-            <Route
-              path="/carteiras"
-              element={
-                isAdminUser
-                  ? <Navigate to="/admin" replace />
-                  : isViewerUser
-                    ? <Navigate to="/" replace />
-                  : (
-                    <PortfoliosPage
-                      portfolios={portfolios}
-                      selectedPortfolioIds={selectedPortfolioIds}
-                      refreshPortfolios={refreshPortfolios}
-                    />
-                  )
-              }
-            />
-            <Route
-              path="/alocador"
-              element={isAdminUser ? <Navigate to="/admin" replace /> : <AllocationPage assets={assetSuggestions} />}
-            />
-            <Route path="/scanner" element={<ScannerPage readOnly={isViewerUser} />} />
-            <Route path="/swing-trade" element={<SwingTradePage readOnly={isViewerUser} />} />
-            <Route
-              path="/admin"
-              element={isAdminUser ? <AdminPage currentUser={currentUser} /> : <Navigate to="/" replace />}
-            />
-            <Route
-              path="/admin/sync-health"
-              element={isAdminUser ? <SyncHealthPage /> : <Navigate to="/" replace />}
-            />
-            <Route
-              path="/admin/metricas"
-              element={isAdminUser ? <MetricFormulasPage /> : <Navigate to="/" replace />}
-            />
-            <Route
-              path="/admin/metrics-lab"
-              element={isAdminUser ? <ScannerMetricsLabPage /> : <Navigate to="/" replace />}
-            />
-            <Route path="/login" element={<Navigate to="/" replace />} />
-            <Route
-              path="/sync-health"
-              element={isAdminUser ? <Navigate to="/admin/sync-health" replace /> : <Navigate to="/" replace />}
-            />
-            <Route path="/transacoes/nova" element={<Navigate to="/nova" replace />} />
-            <Route path="/proventos/novo" element={<Navigate to="/novo" replace />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          <Suspense fallback={<RouteFallback />}>
+            <Routes>
+              <Route
+                path="/"
+                element={
+                  isAdminUser
+                    ? <Navigate to="/admin" replace />
+                    : <HomePage selectedPortfolioIds={selectedPortfolioIds} />
+                }
+              />
+              <Route
+                path="/carteira"
+                element={isAdminUser ? <Navigate to="/admin" replace /> : <PortfolioPage selectedPortfolioIds={selectedPortfolioIds} />}
+              />
+              <Route
+                path="/renda-fixa"
+                element={isAdminUser ? <Navigate to="/admin" replace /> : <FixedIncomePage selectedPortfolioIds={selectedPortfolioIds} />}
+              />
+              <Route
+                path="/graficos"
+                element={isAdminUser ? <Navigate to="/admin" replace /> : <ChartsPage selectedPortfolioIds={selectedPortfolioIds} />}
+              />
+              <Route
+                path="/ativo/:ticker"
+                element={isAdminUser ? <Navigate to="/admin" replace /> : <AssetPage selectedPortfolioIds={selectedPortfolioIds} />}
+              />
+              <Route
+                path="/nova"
+                element={(isAdminUser || isViewerUser) ? <Navigate to="/" replace /> : <NewTransactionPage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} assets={assetSuggestions} />}
+              />
+              <Route
+                path="/novo"
+                element={(isAdminUser || isViewerUser) ? <Navigate to="/" replace /> : <NewIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} assets={assetSuggestions} />}
+              />
+              <Route
+                path="/carteiras"
+                element={
+                  isAdminUser
+                    ? <Navigate to="/admin" replace />
+                    : isViewerUser
+                      ? <Navigate to="/" replace />
+                    : (
+                      <PortfoliosPage
+                        portfolios={portfolios}
+                        selectedPortfolioIds={selectedPortfolioIds}
+                        refreshPortfolios={refreshPortfolios}
+                      />
+                    )
+                }
+              />
+              <Route
+                path="/alocador"
+                element={isAdminUser ? <Navigate to="/admin" replace /> : <AllocationPage assets={assetSuggestions} />}
+              />
+              <Route path="/scanner" element={<ScannerPage readOnly={isViewerUser} />} />
+              <Route path="/swing-trade" element={<SwingTradePage readOnly={isViewerUser} />} />
+              <Route
+                path="/admin"
+                element={isAdminUser ? <AdminPage currentUser={currentUser} /> : <Navigate to="/" replace />}
+              />
+              <Route
+                path="/admin/sync-health"
+                element={isAdminUser ? <SyncHealthPage /> : <Navigate to="/" replace />}
+              />
+              <Route
+                path="/admin/metricas"
+                element={isAdminUser ? <MetricFormulasPage /> : <Navigate to="/" replace />}
+              />
+              <Route
+                path="/admin/metrics-lab"
+                element={isAdminUser ? <ScannerMetricsLabPage /> : <Navigate to="/" replace />}
+              />
+              <Route path="/login" element={<Navigate to="/" replace />} />
+              <Route
+                path="/sync-health"
+                element={isAdminUser ? <Navigate to="/admin/sync-health" replace /> : <Navigate to="/" replace />}
+              />
+              <Route path="/transacoes/nova" element={<Navigate to="/nova" replace />} />
+              <Route path="/proventos/novo" element={<Navigate to="/novo" replace />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
         </Box>
       </Box>
       <Snackbar

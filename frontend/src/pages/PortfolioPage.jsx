@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import 'chart.js/auto'
 import { Line } from 'react-chartjs-2'
-import { apiGet } from '../api'
+import StatePanel from '../components/StatePanel'
+import { useApiQuery } from '../hooks/useApiQuery'
 
 const CATEGORY_META = [
   { key: 'br_stocks', label: 'Acoes BR' },
@@ -33,16 +34,34 @@ const DAILY_RANGE_OPTIONS = [
 ]
 
 function PortfolioPage({ selectedPortfolioIds }) {
-  const [snapshot, setSnapshot] = useState(null)
-  const [dailySeries, setDailySeries] = useState({ labels: [], values: [], included_tickers: [], missing_tickers: [] })
   const [dailyRange, setDailyRange] = useState('90d')
-  const [dailyLoading, setDailyLoading] = useState(false)
-  const [dailyError, setDailyError] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [sortBy, setSortBy] = useState('name')
   const [sortDir, setSortDir] = useState('asc')
   const [openGroups, setOpenGroups] = useState({})
+  const {
+    data: snapshot,
+    loading,
+    refreshing,
+    error,
+  } = useApiQuery('/api/portfolio/snapshot', {
+    params: {
+      portfolio_id: selectedPortfolioIds,
+      sort_by: sortBy,
+      sort_dir: sortDir,
+    },
+  })
+  const {
+    data: dailySeries = { labels: [], values: [], included_tickers: [], missing_tickers: [] },
+    loading: dailyLoading,
+    refreshing: dailyRefreshing,
+    error: dailyError,
+  } = useApiQuery('/api/charts/variable-income-value-daily', {
+    params: {
+      portfolio_id: selectedPortfolioIds,
+      range: dailyRange,
+    },
+    initialData: { labels: [], values: [], included_tickers: [], missing_tickers: [] },
+  })
 
   const toggleSort = (field) => {
     if (sortBy === field) {
@@ -62,58 +81,26 @@ function PortfolioPage({ selectedPortfolioIds }) {
     setOpenGroups((current) => ({ ...current, [key]: !current[key] }))
   }
 
-  useEffect(() => {
-    let active = true
-    setLoading(true)
-    setError('')
-    ;(async () => {
-      try {
-        const data = await apiGet('/api/portfolio/snapshot', {
-          portfolio_id: selectedPortfolioIds,
-          sort_by: sortBy,
-          sort_dir: sortDir,
-        })
-        if (!active) return
-        setSnapshot(data)
-      } catch (err) {
-        if (!active) return
-        setError(err.message)
-      } finally {
-        if (active) setLoading(false)
-      }
-    })()
-    return () => {
-      active = false
-    }
-  }, [selectedPortfolioIds, sortBy, sortDir])
-
-  useEffect(() => {
-    let active = true
-    setDailyLoading(true)
-    setDailyError('')
-    ;(async () => {
-      try {
-        const data = await apiGet('/api/charts/variable-income-value-daily', {
-          portfolio_id: selectedPortfolioIds,
-          range: dailyRange,
-        })
-        if (!active) return
-        setDailySeries(data || { labels: [], values: [], included_tickers: [], missing_tickers: [] })
-      } catch (err) {
-        if (!active) return
-        setDailyError(err.message)
-      } finally {
-        if (active) setDailyLoading(false)
-      }
-    })()
-    return () => {
-      active = false
-    }
-  }, [selectedPortfolioIds, dailyRange])
-
-  if (loading && !snapshot) return <p>Carregando...</p>
+  if (loading && !snapshot) {
+    return (
+      <StatePanel
+        busy
+        eyebrow="Renda variavel"
+        title="Montando a visao consolidada da carteira"
+        description="Buscando posicoes, consolidado e historico diario."
+      />
+    )
+  }
   if (error) return <p className="error">{error}</p>
-  if (!snapshot) return <p>Sem dados.</p>
+  if (!snapshot) {
+    return (
+      <StatePanel
+        eyebrow="Renda variavel"
+        title="Ainda nao ha dados para exibir"
+        description="Selecione uma carteira com ativos ou lance uma transacao para destravar este resumo."
+      />
+    )
+  }
 
   const tacticalSummary = snapshot.tactical_summary || {}
   const tacticalCounts = tacticalSummary.summary || {}
@@ -155,7 +142,7 @@ function PortfolioPage({ selectedPortfolioIds }) {
   return (
     <section>
       <h1>Renda Variavel</h1>
-      {loading && <p>Atualizando ordenacao...</p>}
+      {refreshing && <p>Atualizando ordenacao...</p>}
       <div className="cards">
         <article className="card"><h3>Patrimonio</h3><p>{brl(snapshot.total_value)}</p></article>
         <article className="card"><h3>Investido</h3><p>{brl(snapshot.invested_value)}</p></article>
@@ -182,15 +169,20 @@ function PortfolioPage({ selectedPortfolioIds }) {
             </select>
           </label>
         </div>
-        {dailyLoading && <p className="subtitle">Atualizando grafico...</p>}
-        {!dailyLoading && dailyError && <p className="error">{dailyError}</p>}
-        {!dailyLoading && !dailyError && hasDailyPoints && (
+        {(dailyLoading || dailyRefreshing) && <p className="subtitle">Atualizando grafico...</p>}
+        {!dailyLoading && !dailyRefreshing && dailyError && <p className="error">{dailyError}</p>}
+        {!dailyLoading && !dailyRefreshing && !dailyError && hasDailyPoints && (
           <div className="chart-canvas-wrap">
             <Line data={dailyChartData} options={dailyChartOptions} />
           </div>
         )}
-        {!dailyLoading && !dailyError && !hasDailyPoints && (
-          <p className="subtitle">Sem historico diario suficiente para montar o grafico no periodo selecionado.</p>
+        {!dailyLoading && !dailyRefreshing && !dailyError && !hasDailyPoints && (
+          <StatePanel
+            compact
+            eyebrow="Historico diario"
+            title="Sem serie suficiente neste periodo"
+            description="Mude a janela do grafico ou aguarde mais sincronizacoes para ganhar contexto diario."
+          />
         )}
         <small>
           Ativos com historico: {(dailySeries?.included_tickers || []).length}

@@ -1,40 +1,53 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { Skeleton } from '@mui/material'
-import { apiGet, apiGetCached, apiPost, clearApiCache } from '../api'
-import { formatCompactBrl, formatCurrencyBRL, formatDecimal, formatPercent, formatQuantity } from '../formatters'
+import { formatCompactBrl, formatCurrencyBRL, formatPercent } from '../formatters'
+import DashboardCustomizerPanel from '../components/DashboardCustomizerPanel'
+import HighlightsCards from '../components/HighlightsCards'
+import AssetsTable from '../components/AssetsTable'
+import SectorsTable from '../components/SectorsTable'
+import UpcomingIncomesTable from '../components/UpcomingIncomesTable'
+import StatePanel from '../components/StatePanel'
+import { dateTimeBr } from '../datetime'
+import { useHomeDashboardData } from '../hooks/useHomeDashboardData'
 import { usePersistedState } from '../persistedState'
 import { emitAppToast } from '../toast'
 
 const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
 const pct = (value, signed = false) => formatPercent(value, 2, { signed, fallback: '0.00%' })
-const money = (value, currency = 'BRL') => {
-  const num = Number(value)
-  if (!Number.isFinite(num)) return '-'
-  const code = String(currency || 'BRL').trim().toUpperCase() || 'BRL'
-  try {
-    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: code }).format(num)
-  } catch (_) {
-    return `${code} ${num.toFixed(6)}`
+const DEFAULT_CARD_ORDER = ['highestDy', 'highestGain', 'largestCap', 'incomesTotal', 'upcomingIncomes', 'syncHealth']
+const DEFAULT_SECTION_VISIBILITY = {
+  assets: true,
+  sectors: true,
+  upcoming: true,
+}
+
+function createDefaultDashboardPrefs() {
+  return {
+    cardOrder: [...DEFAULT_CARD_ORDER],
+    hiddenCards: [],
+    sections: { ...DEFAULT_SECTION_VISIBILITY },
   }
 }
-const dateBr = (value) => {
-  const text = String(value || '').trim()
-  if (!text) return '-'
-  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
-    const [y, m, d] = text.split('-')
-    return `${d}/${m}/${y}`
+
+function normalizeDashboardPrefs(value) {
+  const raw = value && typeof value === 'object' ? value : {}
+  const rawOrder = Array.isArray(raw.cardOrder) ? raw.cardOrder.filter((key) => DEFAULT_CARD_ORDER.includes(key)) : []
+  const cardOrder = [...rawOrder, ...DEFAULT_CARD_ORDER.filter((key) => !rawOrder.includes(key))]
+  const hiddenCards = Array.isArray(raw.hiddenCards)
+    ? raw.hiddenCards.filter((key) => DEFAULT_CARD_ORDER.includes(key))
+    : []
+  const rawSections = raw.sections && typeof raw.sections === 'object' ? raw.sections : {}
+
+  return {
+    cardOrder,
+    hiddenCards,
+    sections: {
+      ...DEFAULT_SECTION_VISIBILITY,
+      ...rawSections,
+    },
   }
-  return text
 }
-const dateTimeBr = (value) => {
-  const text = String(value || '').trim()
-  if (!text) return '-'
-  const iso = text.endsWith('Z') ? text : `${text}Z`
-  const dt = new Date(iso)
-  if (Number.isNaN(dt.getTime())) return text
-  return dt.toLocaleString('pt-BR', { hour12: false })
-}
+
 const secondsLabel = (value) => {
   const total = Math.max(Number(value || 0), 0)
   if (!Number.isFinite(total) || total <= 0) return '0s'
@@ -43,32 +56,31 @@ const secondsLabel = (value) => {
   if (minutes <= 0) return `${seconds}s`
   return `${minutes}m ${seconds}s`
 }
-const formatSyncLabel = (asset) => {
-  const marketData = asset?.market_data || {}
-  if (marketData.is_stale) {
-    return 'Desatualizado'
-  }
-  if (marketData.updated_at) {
-    return `Atualizado via ${(marketData.source || 'provider').toUpperCase()}`
-  }
-  return 'Sem sincronizacao'
-}
 
 function HomePage({ selectedPortfolioIds }) {
-  const [assets, setAssets] = useState([])
-  const [sectors, setSectors] = useState([])
-  const [incomesByTicker, setIncomesByTicker] = useState({})
-  const [incomesTotal, setIncomesTotal] = useState(0)
-  const [upcomingIncomes, setUpcomingIncomes] = useState({ items: [], summary: { estimated_totals: {} } })
-  const [syncHealth, setSyncHealth] = useState(null)
-  const [syncHealthError, setSyncHealthError] = useState('')
+  const {
+    assets,
+    sectors,
+    incomesByTicker,
+    incomesTotal,
+    upcomingIncomes,
+    syncHealth,
+    syncHealthError,
+    loading,
+    error,
+    refreshingStaleAssets,
+    refreshOnlyStaleAssets,
+  } = useHomeDashboardData(selectedPortfolioIds)
   const [showHealthModal, setShowHealthModal] = useState(false)
-  const [refreshingStaleAssets, setRefreshingStaleAssets] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [showCustomizer, setShowCustomizer] = useState(false)
   const [sortState, setSortState] = usePersistedState('home.assets.sort.v1', { by: 'name', dir: 'asc' })
+  const [dashboardPrefs, setDashboardPrefs] = usePersistedState(
+    'home.dashboard.customization.v1',
+    createDefaultDashboardPrefs(),
+  )
   const sortBy = String(sortState?.by || 'name')
   const sortDir = String(sortState?.dir || 'asc')
+  const normalizedDashboardPrefs = useMemo(() => normalizeDashboardPrefs(dashboardPrefs), [dashboardPrefs])
 
   const toggleSort = (field) => {
     if (sortBy === field) {
@@ -85,73 +97,6 @@ function HomePage({ selectedPortfolioIds }) {
     if (sortBy !== field) return label
     return `${label} ${sortDir === 'asc' ? '↑' : '↓'}`
   }
-
-  useEffect(() => {
-    let active = true
-    setLoading(true)
-    setError('')
-    setSyncHealth(null)
-    setSyncHealthError('')
-    setUpcomingIncomes({ items: [], summary: { estimated_totals: {} } })
-    ;(async () => {
-      try {
-        const [assetsData, sectorsData, incomesData] = await Promise.all([
-          apiGetCached('/api/assets', {}, { ttlMs: 15000, staleWhileRevalidate: true }),
-          apiGetCached('/api/sectors', {}, { ttlMs: 20000, staleWhileRevalidate: true }),
-          apiGetCached('/api/incomes', { portfolio_id: selectedPortfolioIds }, { ttlMs: 12000, staleWhileRevalidate: true }),
-        ])
-        if (!active) return
-        const byTicker = incomesData.reduce((acc, income) => {
-          const ticker = String(income.ticker || '').toUpperCase()
-          if (!ticker) return acc
-          acc[ticker] = (acc[ticker] || 0) + Number(income.amount || 0)
-          return acc
-        }, {})
-        setAssets(assetsData)
-        setSectors(sectorsData)
-        setIncomesByTicker(byTicker)
-        setIncomesTotal(Object.values(byTicker).reduce((acc, value) => acc + Number(value || 0), 0))
-        setLoading(false)
-
-        try {
-          const upcomingData = await apiGetCached(
-            '/api/incomes/upcoming',
-            { portfolio_id: selectedPortfolioIds, limit: 24 },
-            { ttlMs: 30000, staleWhileRevalidate: true },
-          )
-          if (!active) return
-          setUpcomingIncomes(upcomingData || { items: [], summary: { estimated_totals: {} } })
-        } catch (_) {
-          if (!active) return
-          setUpcomingIncomes({ items: [], summary: { estimated_totals: {} } })
-        }
-
-        try {
-          const response = await fetch('/api/health', { credentials: 'same-origin' })
-          const payload = await response.json().catch(() => ({}))
-          if (!active) return
-          if (payload?.ok && payload?.data) {
-            setSyncHealth(payload.data)
-            setSyncHealthError('')
-          } else {
-            setSyncHealth(null)
-            setSyncHealthError('Saude indisponivel')
-          }
-        } catch (_) {
-          if (!active) return
-          setSyncHealth(null)
-          setSyncHealthError('Saude indisponivel')
-        }
-      } catch (err) {
-        if (!active) return
-        setError(err.message)
-        setLoading(false)
-      }
-    })()
-    return () => {
-      active = false
-    }
-  }, [selectedPortfolioIds])
 
   useEffect(() => {
     if (!error) return
@@ -219,29 +164,140 @@ function HomePage({ selectedPortfolioIds }) {
       .map((item) => `${String(item.provider || '').toUpperCase()} (${secondsLabel(item.remaining_seconds)})`)
       .join(', ')
     : 'nenhum'
-  const healthStatusLabel = syncHealth?.status === 'ok' ? 'OK' : 'ATENCAO'
   const healthTimeLabel = syncHealth?.time ? dateTimeBr(syncHealth.time) : '-'
 
-  const refreshOnlyStaleAssets = async () => {
-    if (refreshingStaleAssets || staleTickers.length === 0) return
-    setRefreshingStaleAssets(true)
-    try {
-      const result = await apiPost('/api/sync/market-data/stale', { attempts: 2 })
-      clearApiCache('/api/assets')
-      const refreshedAssets = await apiGet('/api/assets')
-      setAssets(Array.isArray(refreshedAssets) ? refreshedAssets : [])
+  const highlightCardItems = useMemo(() => ([
+    {
+      key: 'highestDy',
+      title: 'Maior dividend yield',
+      value: highlights?.highestDy?.ticker || '-',
+      caption: highlights?.highestDy ? `${pct(highlights.highestDy.dy)} a.a.` : 'Sem ativos suficientes',
+    },
+    {
+      key: 'highestGain',
+      title: 'Maior alta do dia',
+      value: highlights?.highestGain?.ticker || '-',
+      caption: highlights?.highestGain ? pct(highlights.highestGain.variation_day, true) : 'Sem variacao capturada',
+    },
+    {
+      key: 'largestCap',
+      title: 'Maior valor de mercado',
+      value: highlights?.largestCap?.ticker || '-',
+      caption: highlights?.largestCap
+        ? formatCompactBrl(Number(highlights.largestCap.market_cap_bi || 0) * 1_000_000_000, '-')
+        : 'Sem base suficiente',
+    },
+    {
+      key: 'incomesTotal',
+      title: 'Proventos totais',
+      value: brl(incomesTotal),
+      caption: 'Carteiras selecionadas',
+    },
+    {
+      key: 'upcomingIncomes',
+      title: 'Proventos futuros',
+      value: String(upcomingItems.length),
+      caption: upcomingEstimatedBrl > 0
+        ? `Estimado BRL: ${brl(upcomingEstimatedBrl)}`
+        : 'Sem valor estimado no momento',
+    },
+    {
+      key: 'syncHealth',
+      title: 'Saude de sync',
+      value: syncHealth?.status === 'ok' ? 'OK' : 'ATENCAO',
+      valueClassName: syncHealth?.status === 'ok' ? 'up' : 'down',
+      metaLines: [
+        `Stale: ${staleAssetsCount} | Falhas de jobs: ${failedJobsCount}`,
+        `Ultimo sync mercado: ${marketSyncJob?.last_success_at ? dateTimeBr(marketSyncJob.last_success_at) : '-'}`,
+        `Cooldown APIs: ${circuitLabel}`,
+        syncHealthError || '',
+      ].filter(Boolean),
+      actionLabel: 'Ver detalhes',
+      onAction: () => setShowHealthModal(true),
+    },
+  ]), [
+    highlights,
+    incomesTotal,
+    upcomingItems.length,
+    upcomingEstimatedBrl,
+    syncHealth,
+    staleAssetsCount,
+    failedJobsCount,
+    marketSyncJob,
+    circuitLabel,
+    syncHealthError,
+  ])
 
-      const failedCount = Number(result?.failed_count || 0)
-      const updatedCount = Number(result?.updated_count || 0)
-      if (failedCount > 0) {
+  const highlightCardMap = useMemo(
+    () => Object.fromEntries(highlightCardItems.map((item) => [item.key, item])),
+    [highlightCardItems],
+  )
+  const orderedHighlightCards = normalizedDashboardPrefs.cardOrder
+    .map((key) => highlightCardMap[key])
+    .filter(Boolean)
+  const visibleHighlightCards = orderedHighlightCards.filter(
+    (item) => !normalizedDashboardPrefs.hiddenCards.includes(item.key),
+  )
+  const sectionItems = [
+    { key: 'assets', label: 'Tabela de ativos', enabled: normalizedDashboardPrefs.sections.assets !== false },
+    { key: 'sectors', label: 'Mapa de setores', enabled: normalizedDashboardPrefs.sections.sectors !== false },
+    { key: 'upcoming', label: 'Agenda de proventos futuros', enabled: normalizedDashboardPrefs.sections.upcoming !== false },
+  ]
+  const visibleSectionsCount = sectionItems.filter((item) => item.enabled).length
+
+  const moveDashboardCard = (cardKey, direction) => {
+    setDashboardPrefs((current) => {
+      const next = normalizeDashboardPrefs(current)
+      const currentIndex = next.cardOrder.indexOf(cardKey)
+      const targetIndex = currentIndex + direction
+      if (currentIndex < 0 || targetIndex < 0 || targetIndex >= next.cardOrder.length) return next
+      const cardOrder = [...next.cardOrder]
+      const [moved] = cardOrder.splice(currentIndex, 1)
+      cardOrder.splice(targetIndex, 0, moved)
+      return { ...next, cardOrder }
+    })
+  }
+
+  const toggleDashboardCardVisibility = (cardKey) => {
+    setDashboardPrefs((current) => {
+      const next = normalizeDashboardPrefs(current)
+      const hiddenCards = next.hiddenCards.includes(cardKey)
+        ? next.hiddenCards.filter((key) => key !== cardKey)
+        : [...next.hiddenCards, cardKey]
+      return { ...next, hiddenCards }
+    })
+  }
+
+  const toggleDashboardSection = (sectionKey) => {
+    setDashboardPrefs((current) => {
+      const next = normalizeDashboardPrefs(current)
+      return {
+        ...next,
+        sections: {
+          ...next.sections,
+          [sectionKey]: !next.sections[sectionKey],
+        },
+      }
+    })
+  }
+
+  const resetDashboardPrefs = () => {
+    setDashboardPrefs(createDefaultDashboardPrefs())
+  }
+
+  const onRefreshOnlyStaleAssets = async () => {
+    if (refreshingStaleAssets || staleTickers.length === 0) return
+    try {
+      const result = await refreshOnlyStaleAssets()
+      if (result.failedCount > 0) {
         emitAppToast({
           severity: 'warning',
-          message: `Atualizacao concluida com ${failedCount} falha(s). ${updatedCount} ativo(s) atualizado(s).`,
+          message: `Atualizacao concluida com ${result.failedCount} falha(s). ${result.updatedCount} ativo(s) atualizado(s).`,
         })
       } else {
         emitAppToast({
           severity: 'success',
-          message: `${updatedCount} ativo(s) desatualizado(s) atualizado(s).`,
+          message: `${result.updatedCount} ativo(s) desatualizado(s) atualizado(s).`,
         })
       }
     } catch (err) {
@@ -249,15 +305,19 @@ function HomePage({ selectedPortfolioIds }) {
         severity: 'error',
         message: err?.message || 'Falha ao atualizar ativos desatualizados.',
       })
-    } finally {
-      setRefreshingStaleAssets(false)
     }
   }
 
   if (loading) {
     return (
       <section>
-        <h1>Acoes</h1>
+        <div className="dashboard-hero dashboard-animate">
+          <div>
+            <small className="dashboard-hero-eyebrow">Visao geral</small>
+            <h1>Acoes</h1>
+            <p>Resumo rapido dos ativos, saude de sync e agenda de proventos.</p>
+          </div>
+        </div>
         <div className="cards">
           {Array.from({ length: 6 }).map((_, idx) => (
             <article className="card" key={`home-skeleton-${idx}`}>
@@ -292,20 +352,40 @@ function HomePage({ selectedPortfolioIds }) {
       </section>
     )
   }
+
   if (error) return <p className="error">{error}</p>
 
   return (
     <section>
-      <h1>Acoes</h1>
+      <div className="dashboard-hero dashboard-animate">
+        <div>
+          <small className="dashboard-hero-eyebrow">Visao geral</small>
+          <h1>Acoes</h1>
+          <p>Leia performance, qualidade de sincronizacao e proventos sem sair da pagina inicial.</p>
+        </div>
+        <div className="dashboard-hero-actions">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setShowCustomizer((current) => !current)}
+          >
+            {showCustomizer ? 'Fechar personalizacao' : 'Personalizar dashboard'}
+          </button>
+          <small>
+            {visibleHighlightCards.length} card(s) visiveis · {visibleSectionsCount} bloco(s) ativos
+          </small>
+        </div>
+      </div>
+
       {staleAssetsCount > 0 && (
-        <div className="notice-warn notice-warn-action">
+        <div className="notice-warn notice-warn-action dashboard-animate">
           <span>
             {staleAssetsCount} ativo(s) exibem cotacao possivelmente antiga. Veja a coluna de preco para identificar quais.
           </span>
           <button
             type="button"
             className="btn-primary"
-            onClick={refreshOnlyStaleAssets}
+            onClick={onRefreshOnlyStaleAssets}
             disabled={refreshingStaleAssets || staleTickers.length === 0}
           >
             {refreshingStaleAssets ? 'Atualizando...' : 'Atualizar somente desatualizados'}
@@ -313,54 +393,22 @@ function HomePage({ selectedPortfolioIds }) {
         </div>
       )}
 
-      {highlights && (
-        <div className="cards">
-          <article className="card">
-            <h3>Maior dividend yield</h3>
-            <p>{highlights.highestDy.ticker}</p>
-            <small>{pct(highlights.highestDy.dy)} a.a.</small>
-          </article>
-          <article className="card">
-            <h3>Maior alta do dia</h3>
-            <p>{highlights.highestGain.ticker}</p>
-            <small>{pct(highlights.highestGain.variation_day)}</small>
-          </article>
-          <article className="card">
-            <h3>Maior valor de mercado</h3>
-            <p>{highlights.largestCap.ticker}</p>
-            <small>{formatCompactBrl(Number(highlights.largestCap.market_cap_bi || 0) * 1_000_000_000, '-')}</small>
-          </article>
-          <article className="card">
-            <h3>Proventos totais</h3>
-            <p>{brl(incomesTotal)}</p>
-            <small>Carteiras selecionadas</small>
-          </article>
-          <article className="card">
-            <h3>Proventos futuros</h3>
-            <p>{upcomingItems.length}</p>
-            <small>
-              {upcomingEstimatedBrl > 0
-                ? `Estimado BRL: ${brl(upcomingEstimatedBrl)}`
-                : 'Sem valor estimado no momento'}
-            </small>
-          </article>
-          <article className="card">
-            <h3>Saude de sync</h3>
-            <p>{healthStatusLabel}</p>
-            <div className="card-health-lines">
-              <small>Stale: {staleAssetsCount} | Falhas de jobs: {failedJobsCount}</small>
-              <small>
-                Ultimo sync mercado: {marketSyncJob?.last_success_at ? dateTimeBr(marketSyncJob.last_success_at) : '-'}
-              </small>
-              <small>Cooldown APIs: {circuitLabel}</small>
-              {!!syncHealthError && <small>{syncHealthError}</small>}
-              <button type="button" className="btn-primary health-details-trigger" onClick={() => setShowHealthModal(true)}>
-                Ver detalhes
-              </button>
-            </div>
-          </article>
-        </div>
+      {showCustomizer && (
+        <DashboardCustomizerPanel
+          cardItems={orderedHighlightCards}
+          hiddenCardKeys={normalizedDashboardPrefs.hiddenCards}
+          onMoveCard={moveDashboardCard}
+          onToggleCardVisibility={toggleDashboardCardVisibility}
+          sections={sectionItems}
+          onToggleSection={toggleDashboardSection}
+          onReset={resetDashboardPrefs}
+        />
       )}
+
+      <HighlightsCards
+        cards={visibleHighlightCards}
+        onResetHiddenCards={resetDashboardPrefs}
+      />
 
       {showHealthModal && (
         <div className="health-modal-backdrop" role="presentation" onClick={() => setShowHealthModal(false)}>
@@ -378,7 +426,7 @@ function HomePage({ selectedPortfolioIds }) {
               </button>
             </div>
             <div className="health-modal-summary">
-              <div><strong>Status:</strong> {healthStatusLabel}</div>
+              <div><strong>Status:</strong> {syncHealth?.status === 'ok' ? 'OK' : 'ATENCAO'}</div>
               <div><strong>Horario:</strong> {healthTimeLabel}</div>
               <div><strong>Ativos stale:</strong> {staleAssetsCount}</div>
               <div><strong>Jobs com falha:</strong> {failedJobsCount}</div>
@@ -502,124 +550,40 @@ function HomePage({ selectedPortfolioIds }) {
         </div>
       )}
 
-      <div className="table-wrap">
-        <table className="asset-table">
-          <thead>
-            <tr>
-              <th className="sticky-col sticky-col-ticker"><button type="button" className="th-sort-btn" onClick={() => toggleSort('ticker')}>{sortLabel('Ticker', 'ticker')}</button></th>
-              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('name')}>{sortLabel('Nome', 'name')}</button></th>
-              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('sector')}>{sortLabel('Setor', 'sector')}</button></th>
-              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('price')}>{sortLabel('Preco', 'price')}</button></th>
-              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('dy')}>{sortLabel('DY', 'dy')}</button></th>
-              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('pl')}>{sortLabel('P/L', 'pl')}</button></th>
-              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('pvp')}>{sortLabel('P/VP', 'pvp')}</button></th>
-              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('incomes')}>{sortLabel('Proventos', 'incomes')}</button></th>
-              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('variation_day')}>{sortLabel('Dia', 'variation_day')}</button></th>
-              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('variation_7d')}>{sortLabel('7 dias', 'variation_7d')}</button></th>
-              <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('variation_30d')}>{sortLabel('30 dias', 'variation_30d')}</button></th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedAssets.map((asset) => (
-              <tr key={asset.ticker}>
-                <td className="sticky-col sticky-col-ticker"><Link to={`/ativo/${asset.ticker}`}>{asset.ticker}</Link></td>
-                <td>{asset.name}</td>
-                <td>{asset.sector}</td>
-                <td>
-                  <div className="market-data-cell">
-                    <span>{brl(asset.price)}</span>
-                    <small className={asset?.market_data?.is_stale ? 'market-data-badge stale' : 'market-data-badge live'}>
-                      {formatSyncLabel(asset)}
-                    </small>
-                  </div>
-                </td>
-                <td>{pct(asset.dy)}</td>
-                <td>{formatDecimal(asset.pl, 2, '-')}</td>
-                <td>{formatDecimal(asset.pvp, 2, '-')}</td>
-                <td>{brl(incomesByTicker[asset.ticker] || 0)}</td>
-                <td className={Number(asset.variation_day || 0) >= 0 ? 'up' : 'down'}>
-                  {pct(asset.variation_day, true)}
-                </td>
-                <td className={Number(asset.variation_7d || 0) >= 0 ? 'up' : 'down'}>
-                  {pct(asset.variation_7d, true)}
-                </td>
-                <td className={Number(asset.variation_30d || 0) >= 0 ? 'up' : 'down'}>
-                  {pct(asset.variation_30d, true)}
-                </td>
-              </tr>
-            ))}
-            {assets.length === 0 && (
-              <tr>
-                <td colSpan={11}>Nenhum ativo cadastrado ainda.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      {visibleSectionsCount > 0 ? (
+        <div className="dashboard-sections">
+          {normalizedDashboardPrefs.sections.assets !== false && (
+            <div className="dashboard-animate">
+              <AssetsTable
+                sortedAssets={sortedAssets}
+                incomesByTicker={incomesByTicker}
+                toggleSort={toggleSort}
+                sortLabel={sortLabel}
+              />
+            </div>
+          )}
 
-      <h2 style={{ marginTop: 24 }}>Mapa de setores</h2>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Setor</th>
-              <th>Ativos</th>
-              <th>DY medio</th>
-              <th>Valor de mercado</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sectors.map((sector) => (
-              <tr key={sector.sector}>
-                <td>{sector.sector}</td>
-                <td>{sector.assets_count}</td>
-                <td>{pct(sector.avg_dy)}</td>
-                <td>{formatCompactBrl(Number(sector.market_cap_bi || 0) * 1_000_000_000, '-')}</td>
-              </tr>
-            ))}
-            {sectors.length === 0 && (
-              <tr>
-                <td colSpan={4}>Sem dados de setores disponiveis.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+          {normalizedDashboardPrefs.sections.sectors !== false && (
+            <div className="dashboard-animate">
+              <SectorsTable sectors={sectors} />
+            </div>
+          )}
 
-      <h2 style={{ marginTop: 24 }}>Agenda de proventos futuros</h2>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Ticker</th>
-              <th>Data com (ex)</th>
-              <th>Pagamento</th>
-              <th>Valor por cota</th>
-              <th>Qtd em carteira</th>
-              <th>Estimado</th>
-              <th>Fonte</th>
-            </tr>
-          </thead>
-          <tbody>
-            {upcomingItems.map((item, idx) => (
-              <tr key={`upcoming-home-${item.ticker}-${item.ex_date}-${idx}`}>
-                <td><Link to={`/ativo/${item.ticker}`}>{item.ticker}</Link></td>
-                <td>{dateBr(item.ex_date)}</td>
-                <td>{dateBr(item.payment_date)}</td>
-                <td>{money(item.amount_per_share, item.currency)}</td>
-                <td>{formatQuantity(item.shares, { maxDigits: 4, fallback: '0' })}</td>
-                <td>{money(item.estimated_total, item.currency)}</td>
-                <td>{String(item.source || '').trim() || '-'}</td>
-              </tr>
-            ))}
-            {upcomingItems.length === 0 && (
-              <tr>
-                <td colSpan={7}>Sem eventos futuros de proventos encontrados para os ativos em carteira.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+          {normalizedDashboardPrefs.sections.upcoming !== false && (
+            <div className="dashboard-animate">
+              <UpcomingIncomesTable upcomingItems={upcomingItems} />
+            </div>
+          )}
+        </div>
+      ) : (
+        <StatePanel
+          eyebrow="Dashboard personalizada"
+          title="Todos os blocos da pagina foram ocultados"
+          description="Reabra a personalizacao para voltar com tabelas, setores e agenda de proventos."
+          actionLabel="Restaurar layout"
+          onAction={resetDashboardPrefs}
+        />
+      )}
     </section>
   )
 }

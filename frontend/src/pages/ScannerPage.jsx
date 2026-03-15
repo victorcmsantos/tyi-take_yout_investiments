@@ -534,71 +534,89 @@ function ScannerPage({ readOnly = false }) {
 
   return (
     <section className="scanner-page">
-      <div className="hero-line">
-        <div>
+      <header className="card scanner-terminal-hero">
+        <div className="hero-line scanner-terminal-hero-top">
+          <div>
+            <small className="scanner-terminal-eyebrow">Signal terminal</small>
           <h1>Scanner</h1>
-          <p className="subtitle">Leitura do Market Scanner integrada ao portal principal.</p>
-        </div>
-        <div className="hero-actions scanner-actions-main">
-          <div>
-            <Button
-              variant="contained"
-              color="secondary"
-              onClick={onScanAllTickers}
-              disabled={readOnly || scanningAll || refreshing || scanRunStatus.isRunning}
-              title="Executa um scan geral manual no scanner para atualizar todos os tickers."
-            >
-              {scanRunStatus.isRunning
-                ? `Scan em andamento (${scanRunStatus.processed}/${scanRunStatus.planned || '-'})`
-                : scanningAll
-                  ? 'Iniciando scan...'
-                  : 'Scan geral manual'}
-            </Button>
-            <small className="action-hint">Dispara leitura completa de todos os tickers do catálogo.</small>
+            <p className="subtitle">Leitura do Market Scanner integrada ao portal principal.</p>
           </div>
-          <div>
-            <Button
-              variant="contained"
-              onClick={() => loadScanner(true)}
-              disabled={refreshing}
-              title="Recarrega somente os dados da tela sem disparar novo scan."
-            >
-              {refreshing ? 'Recarregando...' : 'Recarregar painel'}
-            </Button>
-            <small className="action-hint">Só atualiza esta tela com o último estado disponível.</small>
+          <div className="hero-actions scanner-actions-main">
+            <div>
+              <Button
+                variant="contained"
+                color="secondary"
+                onClick={onScanAllTickers}
+                disabled={readOnly || scanningAll || refreshing || scanRunStatus.isRunning}
+                title="Executa um scan geral manual no scanner para atualizar todos os tickers."
+              >
+                {scanRunStatus.isRunning
+                  ? `Scan em andamento (${scanRunStatus.processed}/${scanRunStatus.planned || '-'})`
+                  : scanningAll
+                    ? 'Iniciando scan...'
+                    : 'Scan geral manual'}
+              </Button>
+              <small className="action-hint">Dispara leitura completa de todos os tickers do catálogo.</small>
+            </div>
+            <div>
+              <Button
+                variant="contained"
+                onClick={() => loadScanner(true)}
+                disabled={refreshing}
+                title="Recarrega somente os dados da tela sem disparar novo scan."
+              >
+                {refreshing ? 'Recarregando...' : 'Recarregar painel'}
+              </Button>
+              <small className="action-hint">Só atualiza esta tela com o último estado disponível.</small>
+            </div>
           </div>
         </div>
-      </div>
+
+        <div className="scanner-terminal-meta-strip">
+          <div className="scanner-terminal-meta-item">
+            <span>Fuso</span>
+            <strong>{browserTimeZone}</strong>
+          </div>
+          <div className="scanner-terminal-meta-item">
+            <span>Manual run</span>
+            <strong>{scanRunStatus.isRunning ? 'RUNNING' : (scanRunStatus.lastRun?.status || 'IDLE').toUpperCase()}</strong>
+          </div>
+          <div className="scanner-terminal-meta-item">
+            <span>Fila upstream</span>
+            <strong>{!upstreamScanStatus.available ? 'DOWN' : upstreamScanStatus.running ? 'BUSY' : 'READY'}</strong>
+          </div>
+          <div className="scanner-terminal-meta-item">
+            <span>Catálogo</span>
+            <strong>{Number(scanStatus?.catalog?.active_tickers || 0)} tickers</strong>
+          </div>
+        </div>
+      </header>
 
       {!!message && <p className="notice-ok">{message}</p>}
       {!!error && <p className="notice-warn">{error}</p>}
 
-      <Typography variant="caption" sx={{ mb: 1.5, display: 'block', opacity: 0.7 }}>
-        Horários exibidos no seu fuso: {browserTimeZone}
-      </Typography>
-
-      <div className="cards">
-        <article className="card">
+      <div className="cards scanner-summary-grid">
+        <article className="card scanner-summary-card">
           <h3>Sinais ativos</h3>
           <p>{summary.activeSignals}</p>
           <small>Tickers com sinal recente.</small>
         </article>
-        <article className="card">
+        <article className="card scanner-summary-card">
           <h3>Trades abertos</h3>
           <p>{summary.openTrades}</p>
           <small>Posições em acompanhamento.</small>
         </article>
-        <article className="card">
+        <article className="card scanner-summary-card">
           <h3>Fechadas (gain/loss)</h3>
           <p>{summary.manualClosedTrades}</p>
           <small>Encerradas manualmente.</small>
         </article>
-        <article className="card">
+        <article className="card scanner-summary-card">
           <h3>Matriz</h3>
           <p>{summary.matrixTickers}</p>
           <small>Tickers na matriz de métricas.</small>
         </article>
-        <article className="card">
+        <article className="card scanner-summary-card">
           <h3>Saude scanner</h3>
           <p>{scanStatus?.scanner_db?.db_accessible ? 'Online' : 'Offline'}</p>
           <small>
@@ -606,7 +624,7 @@ function ScannerPage({ readOnly = false }) {
             Ultimo scan: {scanStatus?.catalog?.last_scan_at ? formatDateTimeLocal(scanStatus.catalog.last_scan_at) : '-'}.
           </small>
         </article>
-        <article className="card">
+        <article className="card scanner-summary-card">
           <h3>Sync manual</h3>
           <p>
             {scanRunStatus.isRunning
@@ -619,7 +637,7 @@ function ScannerPage({ readOnly = false }) {
               : `Ultima duracao: ${formatDurationMs(scanRunStatus.lastRun?.duration_ms)} | sinais: ${Number(scanRunStatus.lastRun?.triggered_signals || 0)}`}
           </small>
         </article>
-        <article className="card">
+        <article className="card scanner-summary-card">
           <h3>Fila scanner</h3>
           <p>
             {!upstreamScanStatus.available
@@ -638,7 +656,7 @@ function ScannerPage({ readOnly = false }) {
         </article>
       </div>
 
-      <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
+      <Paper className="admin-panel scanner-terminal-panel" sx={{ p: 2, mb: 2 }}>
         <Typography variant="h6" sx={{ mb: 1 }}>Pesquisas e filtros</Typography>
         <div className="scanner-filter-grid">
           <label className="auth-field">
@@ -691,7 +709,7 @@ function ScannerPage({ readOnly = false }) {
       <Accordion
         expanded={matrixExpanded}
         onChange={(_, expanded) => setMatrixExpanded(expanded)}
-        className="admin-panel scanner-matrix-panel"
+        className="admin-panel scanner-matrix-panel scanner-terminal-panel"
         sx={{ mb: 2 }}
       >
         <AccordionSummary expandIcon={<span>{matrixExpanded ? '▴' : '▾'}</span>}>
@@ -845,7 +863,7 @@ function ScannerPage({ readOnly = false }) {
         )}
       </section>
 
-      <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
+      <Paper className="admin-panel scanner-terminal-panel" sx={{ p: 2, mb: 2 }}>
         <Typography variant="h6" sx={{ mb: 1 }}>Abrir trade</Typography>
         {readOnly ? (
           <p>Perfil viewer possui acesso somente leitura.</p>
@@ -891,7 +909,7 @@ function ScannerPage({ readOnly = false }) {
         )}
       </Paper>
 
-      <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
+      <Paper className="admin-panel scanner-terminal-panel" sx={{ p: 2, mb: 2 }}>
         <Typography variant="h6" sx={{ mb: 1 }}>Consulta por ticker</Typography>
         <form onSubmit={onLookupTicker} className="hero-actions">
           <input

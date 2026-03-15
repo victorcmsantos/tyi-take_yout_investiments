@@ -51,3 +51,7 @@ export function formatAgeFromNow(value, fallback = '-') {
   const diffDays = Math.floor(diffHours / 24)
   return `${diffDays}d ${diffHours % 24}h`
 }
+
+export function dateTimeBr(value) {
+  return formatDateTimeLocal(value, '-')
+}

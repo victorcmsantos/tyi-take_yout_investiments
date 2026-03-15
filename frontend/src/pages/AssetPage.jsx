@@ -561,29 +561,59 @@ function AssetPage({ selectedPortfolioIds }) {
   if (!payload) return <p>Sem dados.</p>
 
   return (
-    <section>
-      <div className="hero-actions">
+    <section className="asset-terminal-page">
+      <div className="hero-actions asset-terminal-back">
         <Link to="/carteira" className="btn-primary btn-link">
           Voltar para Renda Variavel
         </Link>
       </div>
 
-      <div className="hero-line">
-        <h1>{asset.ticker} - {asset.name}</h1>
-        <button type="button" className="btn-primary" onClick={onSyncTicker} disabled={syncing}>
-          {syncing ? 'Atualizando...' : 'Atualizar market data'}
-        </button>
-      </div>
-      <p className="subtitle">Setor: {asset.sector}</p>
-      {!!syncMessage && <p className="notice-warn">{syncMessage}</p>}
-      {!!marketDataSummary(marketData) && (
-        <p className={marketData.is_stale ? 'notice-warn' : 'notice-ok'}>
-          {marketDataSummary(marketData)}
-          {marketData.last_error ? ` Ultimo erro: ${marketData.last_error}.` : ''}
-        </p>
-      )}
+      <header className="card asset-terminal-hero">
+        <div className="asset-terminal-hero-top">
+          <div>
+            <small className="asset-terminal-eyebrow">Asset terminal</small>
+            <div className="hero-line asset-terminal-title-row">
+              <h1>{asset.ticker} - {asset.name}</h1>
+              <span className={`market-data-badge ${marketData.is_stale ? 'stale' : 'live'}`}>
+                {marketData.is_stale ? 'STALE' : 'LIVE'}
+              </span>
+            </div>
+            <p className="subtitle">Setor: {asset.sector}</p>
+          </div>
+          <button type="button" className="btn-primary" onClick={onSyncTicker} disabled={syncing}>
+            {syncing ? 'Atualizando...' : 'Atualizar market data'}
+          </button>
+        </div>
 
-      <article className="card detail-card">
+        <div className="asset-terminal-meta-strip">
+          <div className="asset-terminal-meta-item">
+            <span>Preço</span>
+            <strong>{brl(asset.price)}</strong>
+          </div>
+          <div className="asset-terminal-meta-item">
+            <span>Dia</span>
+            <strong className={Number(asset.variation_day || 0) >= 0 ? 'up' : 'down'}>{signedPct(asset.variation_day)}</strong>
+          </div>
+          <div className="asset-terminal-meta-item">
+            <span>Provider</span>
+            <strong>{(String(marketData?.source || '').trim().toUpperCase() || 'MARKET_SCANNER')}</strong>
+          </div>
+          <div className="asset-terminal-meta-item">
+            <span>Candle</span>
+            <strong>{formatDateTimeLocal(marketData?.updated_at, '-')}</strong>
+          </div>
+        </div>
+
+        {!!syncMessage && <p className="notice-warn">{syncMessage}</p>}
+        {!!marketDataSummary(marketData) && (
+          <p className={marketData.is_stale ? 'notice-warn' : 'notice-ok'}>
+            {marketDataSummary(marketData)}
+            {marketData.last_error ? ` Ultimo erro: ${marketData.last_error}.` : ''}
+          </p>
+        )}
+      </header>
+
+      <article className="card detail-card asset-price-card">
         <div className="hero-line">
           <h3>Cotacao {asset.ticker}</h3>
           <div className="range-tabs">
@@ -620,21 +650,21 @@ function AssetPage({ selectedPortfolioIds }) {
         )}
       </article>
 
-      <div className="cards">
+      <div className="cards asset-kpi-grid">
         <article className="card"><h3>Preco</h3><p>{brl(asset.price)}</p></article>
         <article className="card"><h3>Dividend Yield</h3><p>{pct(asset.dy)}</p></article>
         <article className="card"><h3>P/L</h3><p>{Number(asset.pl || 0).toFixed(2)}</p></article>
         <article className="card"><h3>P/VP</h3><p>{Number(asset.pvp || 0).toFixed(2)}</p></article>
       </div>
 
-      <div className="cards">
+      <div className="cards asset-kpi-grid">
         <article className="card"><h3>Quantidade em carteira</h3><p>{Number(position.shares || 0).toFixed(4)}</p></article>
         <article className="card"><h3>Preco medio</h3><p>{brl(position.avg_price)}</p></article>
         <article className="card"><h3>Valor total investido</h3><p>{brl(position.total_value)}</p></article>
         <article className="card"><h3>Valor de mercado da posicao</h3><p>{brl(position.market_value)}</p></article>
       </div>
 
-      <div className="cards">
+      <div className="cards asset-kpi-grid asset-kpi-grid-wide">
         <article className="card"><h3>Resultado em aberto (R$)</h3><p className={Number(position.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>{brl(position.open_pnl_value)}</p></article>
         <article className="card"><h3>Resultado em aberto (%)</h3><p className={Number(position.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>{pct(position.open_pnl_pct)}</p></article>
         <article className="card"><h3>Proventos mes atual</h3><p>{brl(position.incomes_current_month)}</p></article>
@@ -643,7 +673,7 @@ function AssetPage({ selectedPortfolioIds }) {
         <article className="card"><h3>Proventos total</h3><p>{brl(position.total_incomes)}</p></article>
       </div>
 
-      <article className="card detail-card">
+      <article className="card detail-card asset-summary-card">
         <h3>Resumo</h3>
         <p>Variacao no dia (provider): <strong className={Number(asset.variation_day || 0) >= 0 ? 'up' : 'down'}>{pct(asset.variation_day)}</strong></p>
         <p>Valor de mercado: R$ {Number(asset.market_cap_bi || 0).toFixed(2)} bi</p>
@@ -659,7 +689,7 @@ function AssetPage({ selectedPortfolioIds }) {
         </p>
       </article>
 
-      <article className="card detail-card tactical-card">
+      <article className="card detail-card tactical-card asset-terminal-panel">
         <div className="analysis-head">
           <div>
             <h3>Leitura tática</h3>
@@ -724,7 +754,7 @@ function AssetPage({ selectedPortfolioIds }) {
         </p>
       </article>
 
-      <article className="card detail-card openclaw-card">
+      <article className="card detail-card openclaw-card asset-terminal-panel">
         <div className="hero-line">
           <div>
             <h3>OpenClaw</h3>
@@ -848,7 +878,7 @@ function AssetPage({ selectedPortfolioIds }) {
         )}
       </article>
 
-      <article className="card detail-card">
+      <article className="card detail-card asset-terminal-panel">
         <div className="hero-line">
           <div>
             <h3>Historico de leitura</h3>
@@ -892,7 +922,7 @@ function AssetPage({ selectedPortfolioIds }) {
         )}
       </article>
 
-      <article className="card detail-card">
+      <article className="card detail-card asset-terminal-panel">
         <h3>Proventos futuros (estimativa)</h3>
         <p className="subtitle">Fonte: Yahoo Finance (yfinance). Datas e valores podem mudar até a data com.</p>
         {upcomingIncomes.length > 0 ? (
@@ -925,7 +955,7 @@ function AssetPage({ selectedPortfolioIds }) {
         )}
       </article>
 
-      <div className="table-wrap">
+      <div className="table-wrap asset-ledger-table">
         <table>
           <thead>
             <tr>
@@ -953,7 +983,7 @@ function AssetPage({ selectedPortfolioIds }) {
         </table>
       </div>
 
-      <div className="table-wrap">
+      <div className="table-wrap asset-ledger-table">
         <table>
           <thead>
             <tr>

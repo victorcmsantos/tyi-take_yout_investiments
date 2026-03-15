@@ -2,7 +2,9 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Chart as ChartJS } from 'chart.js/auto'
 import { Bar, Doughnut, Line, Pie } from 'react-chartjs-2'
 import ChartDataLabels from 'chartjs-plugin-datalabels'
-import { apiGet } from '../api'
+import StatePanel from '../components/StatePanel'
+import { useApiQuery } from '../hooks/useApiQuery'
+import { usePersistedState } from '../persistedState'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const brlCompact = (value) => `R$ ${Number(value || 0).toLocaleString('pt-BR', { notation: 'compact', maximumFractionDigits: 2 })}`
@@ -20,130 +22,297 @@ const MONTH_ORDER = [
   ['NOV', 'nov'],
   ['DEZ', 'dez'],
 ]
+
 ChartJS.register(ChartDataLabels)
 
+const TERMINAL_TEXT = '#8096ad'
+const TERMINAL_GRID = 'rgba(128, 150, 173, 0.16)'
+const TERMINAL_PALETTE = ['#0f8a77', '#1f6feb', '#c48b2d', '#d95f2f', '#cf3f5b', '#6c63ff', '#2bb0c9', '#708090']
+const TERMINAL_MONO = 'IBM Plex Mono, SFMono-Regular, monospace'
+
+function chartLegend(display = true) {
+  return {
+    display,
+    labels: {
+      color: TERMINAL_TEXT,
+      usePointStyle: true,
+      pointStyle: 'circle',
+      boxWidth: 10,
+      boxHeight: 10,
+      padding: 14,
+      font: { size: 11, weight: '700' },
+    },
+  }
+}
+
+const chartTooltip = {
+  backgroundColor: 'rgba(7, 18, 31, 0.96)',
+  titleColor: '#f4fbff',
+  bodyColor: '#dbe8f5',
+  borderColor: 'rgba(43, 176, 201, 0.32)',
+  borderWidth: 1,
+  padding: 12,
+  displayColors: true,
+  titleFont: { family: TERMINAL_MONO, size: 11, weight: '700' },
+  bodyFont: { family: TERMINAL_MONO, size: 11 },
+  footerFont: { family: TERMINAL_MONO, size: 10 },
+}
+
+function makeScale(ticksConfig) {
+  return {
+    ticks: ticksConfig,
+    grid: {
+      color: TERMINAL_GRID,
+      drawBorder: false,
+    },
+    border: {
+      display: false,
+    },
+  }
+}
+
+function buildCartesianOptions({ yScale, legend = true, stacked = false, indexAxis = 'x' } = {}) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    indexAxis,
+    interaction: { intersect: false, mode: 'index' },
+    scales: {
+      x: {
+        ticks: {
+          color: TERMINAL_TEXT,
+          maxRotation: 0,
+          autoSkipPadding: 14,
+          font: { size: 11, family: TERMINAL_MONO },
+        },
+        grid: {
+          display: false,
+          drawBorder: false,
+        },
+        border: {
+          display: false,
+        },
+        stacked,
+      },
+      y: {
+        ...yScale,
+        stacked,
+      },
+    },
+    plugins: {
+      legend: chartLegend(legend),
+      tooltip: chartTooltip,
+    },
+  }
+}
+
+function formatSliceLabel({ label, value, total, minPct = 8 }) {
+  const amount = Number(value || 0)
+  const sum = Number(total || 0)
+  if (!Number.isFinite(amount) || !Number.isFinite(sum) || sum <= 0) return ''
+  const pct = (amount / sum) * 100
+  if (pct < minPct) return ''
+  return `${label} ${pct.toFixed(1)}%`
+}
+
+function buildCircularOptions({ legend = false, datalabels }) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: chartLegend(legend),
+      tooltip: chartTooltip,
+      datalabels,
+    },
+  }
+}
+
+function normalizeChoice(value, options, fallback) {
+  return options.includes(value) ? value : fallback
+}
+
+function normalizeStringList(value, allowed, fallback) {
+  if (!Array.isArray(value)) return fallback
+  const filtered = value.filter((item) => allowed.includes(item))
+  return filtered.length > 0 ? [...new Set(filtered)] : fallback
+}
+
+function csvCell(value) {
+  const text = String(value ?? '')
+  return `"${text.replace(/"/g, '""')}"`
+}
+
+function downloadTextFile(filename, content, mimeType = 'text/plain;charset=utf-8') {
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
+}
+
+function exportRowsAsCsv(filename, headers, rows) {
+  const csvLines = [
+    headers.map(csvCell).join(','),
+    ...rows.map((row) => row.map(csvCell).join(',')),
+  ]
+  downloadTextFile(filename, csvLines.join('\n'), 'text/csv;charset=utf-8')
+}
+
+function exportChartDataAsCsv(filename, chartData) {
+  const labels = Array.isArray(chartData?.labels) ? chartData.labels : []
+  const datasets = Array.isArray(chartData?.datasets) ? chartData.datasets : []
+  const headers = ['label', ...datasets.map((dataset) => dataset.label || 'serie')]
+  const rows = labels.map((label, idx) => [
+    label,
+    ...datasets.map((dataset) => dataset?.data?.[idx] ?? ''),
+  ])
+  exportRowsAsCsv(filename, headers, rows)
+}
+
+function exportChartAsImage(filename, chartInstance) {
+  const chart = chartInstance?.chartInstance || chartInstance
+  if (!chart || typeof chart.toBase64Image !== 'function') return
+  const anchor = document.createElement('a')
+  anchor.href = chart.toBase64Image('image/png', 1)
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+}
+
+function ChartPanel({ title, subtitle, className = '', children, controls, actions }) {
+  return (
+    <article className={`card chart-card ${className}`.trim()}>
+      <div className="chart-panel-head">
+        <div>
+          <h3>{title}</h3>
+          {subtitle ? <p className="subtitle">{subtitle}</p> : null}
+        </div>
+        {controls ? <div className="chart-panel-controls">{controls}</div> : null}
+      </div>
+      {actions ? <div className="chart-panel-actions">{actions}</div> : null}
+      {children}
+    </article>
+  )
+}
+
+function DataSection({ id, title, subtitle, controls, children }) {
+  return (
+    <section id={id} className="chart-data-section">
+      <div className="chart-data-section-head">
+        <div>
+          <h2>{title}</h2>
+          {subtitle ? <p className="subtitle">{subtitle}</p> : null}
+        </div>
+        {controls ? <div className="chart-data-section-controls">{controls}</div> : null}
+      </div>
+      {children}
+    </section>
+  )
+}
+
 function ChartsPage({ selectedPortfolioIds }) {
-  const [corePayload, setCorePayload] = useState(null)
-  const [benchmarkPayload, setBenchmarkPayload] = useState(null)
-  const [tickerPayload, setTickerPayload] = useState(null)
-  const [loadingCore, setLoadingCore] = useState(true)
-  const [loadingBenchmark, setLoadingBenchmark] = useState(true)
-  const [loadingTicker, setLoadingTicker] = useState(true)
-  const [error, setError] = useState('')
-  const [benchmarkError, setBenchmarkError] = useState('')
-  const [tickerError, setTickerError] = useState('')
-  const [range, setRange] = useState('12m')
-  const [scope, setScope] = useState('all')
-  const [annualMetrics, setAnnualMetrics] = useState(['invested', 'incomes'])
-  const [annualCategories, setAnnualCategories] = useState(['br', 'us', 'fii', 'cripto', 'fixa'])
-  const [tickerSortBy, setTickerSortBy] = useState('period_value')
-  const [tickerSortMetric, setTickerSortMetric] = useState('incomes')
-  const [tickerSortMonthKey, setTickerSortMonthKey] = useState('total')
-  const [tickerSortDir, setTickerSortDir] = useState('desc')
+  const [range, setRange] = usePersistedState('charts.range.v1', '12m')
+  const [scope, setScope] = usePersistedState('charts.scope.v1', 'all')
+  const [annualMetrics, setAnnualMetrics] = usePersistedState('charts.annual-metrics.v1', ['invested', 'incomes'])
+  const [annualCategories, setAnnualCategories] = usePersistedState('charts.annual-categories.v1', ['br', 'us', 'fii', 'cripto', 'fixa'])
+  const [tickerSortBy, setTickerSortBy] = usePersistedState('charts.ticker-sort-by.v1', 'period_value')
+  const [tickerSortMetric, setTickerSortMetric] = usePersistedState('charts.ticker-sort-metric.v1', 'incomes')
+  const [tickerSortMonthKey, setTickerSortMonthKey] = usePersistedState('charts.ticker-sort-month.v1', 'total')
+  const [tickerSortDir, setTickerSortDir] = usePersistedState('charts.ticker-sort-dir.v1', 'desc')
+  const [hiddenBlocks, setHiddenBlocks] = usePersistedState('charts.hidden-blocks.v1', [])
   const [loadingMessage, setLoadingMessage] = useState('Atualizando graficos...')
+  const [showLayoutControls, setShowLayoutControls] = useState(false)
   const previousPortfoliosRef = useRef('')
+  const chartRefs = useRef({})
+  const rangeValue = normalizeChoice(range, ['6m', '12m', '24m', '60m'], '12m')
+  const scopeValue = normalizeChoice(scope, ['all', 'br', 'us', 'fiis', 'crypto'], 'all')
+  const annualMetricsValue = normalizeStringList(annualMetrics, ['invested', 'incomes'], ['invested', 'incomes'])
+  const annualCategoriesValue = normalizeStringList(annualCategories, ['br', 'us', 'fii', 'cripto', 'fixa'], ['br', 'us', 'fii', 'cripto', 'fixa'])
+  const tickerSortByValue = normalizeChoice(tickerSortBy, ['ticker', 'period_value'], 'period_value')
+  const tickerSortMetricValue = normalizeChoice(tickerSortMetric, ['invested', 'incomes'], 'incomes')
+  const tickerSortMonthKeyValue = typeof tickerSortMonthKey === 'string' ? tickerSortMonthKey : 'total'
+  const tickerSortDirValue = normalizeChoice(tickerSortDir, ['asc', 'desc'], 'desc')
+  const hiddenBlocksValue = Array.isArray(hiddenBlocks) ? hiddenBlocks.filter((item) => typeof item === 'string') : []
+  const {
+    data: corePayload,
+    loading: loadingCore,
+    refreshing: refreshingCore,
+    error,
+  } = useApiQuery('/api/charts/core', {
+    params: {
+      portfolio_id: selectedPortfolioIds,
+    },
+  })
+  const {
+    data: benchmarkPayload,
+    loading: loadingBenchmark,
+    refreshing: refreshingBenchmark,
+    error: benchmarkError,
+  } = useApiQuery('/api/charts/benchmark', {
+    params: {
+      portfolio_id: selectedPortfolioIds,
+      range: rangeValue,
+      scope: scopeValue,
+    },
+  })
+  const {
+    data: tickerPayload,
+    loading: loadingTicker,
+    refreshing: refreshingTicker,
+    error: tickerError,
+  } = useApiQuery('/api/charts/ticker-summary', {
+    params: {
+      portfolio_id: selectedPortfolioIds,
+      months: 8,
+    },
+  })
 
   useEffect(() => {
-    let active = true
     const currentPortfolioKey = JSON.stringify(selectedPortfolioIds || [])
     const portfolioChanged = previousPortfoliosRef.current !== currentPortfolioKey
     previousPortfoliosRef.current = currentPortfolioKey
-    setLoadingCore(true)
     setLoadingMessage(portfolioChanged ? 'Lendo carteiras selecionadas...' : 'Atualizando graficos...')
-    setError('')
-    ;(async () => {
-      try {
-        const data = await apiGet('/api/charts/core', {
-          portfolio_id: selectedPortfolioIds,
-        })
-        if (!active) return
-        setCorePayload(data)
-      } catch (err) {
-        if (!active) return
-        setError(err.message)
-      } finally {
-        if (active) setLoadingCore(false)
-      }
-    })()
-    return () => {
-      active = false
-    }
-  }, [selectedPortfolioIds])
-
-  useEffect(() => {
-    let active = true
-    setLoadingBenchmark(true)
-    setBenchmarkError('')
-    ;(async () => {
-      try {
-        const data = await apiGet('/api/charts/benchmark', {
-          portfolio_id: selectedPortfolioIds,
-          range,
-          scope,
-        })
-        if (!active) return
-        setBenchmarkPayload(data)
-      } catch (err) {
-        if (!active) return
-        setBenchmarkError(err.message)
-      } finally {
-        if (active) setLoadingBenchmark(false)
-      }
-    })()
-    return () => {
-      active = false
-    }
-  }, [selectedPortfolioIds, range, scope])
-
-  useEffect(() => {
-    let active = true
-    setLoadingTicker(true)
-    setTickerError('')
-    ;(async () => {
-      try {
-        const data = await apiGet('/api/charts/ticker-summary', {
-          portfolio_id: selectedPortfolioIds,
-          months: 8,
-        })
-        if (!active) return
-        setTickerPayload(data)
-      } catch (err) {
-        if (!active) return
-        setTickerError(err.message)
-      } finally {
-        if (active) setLoadingTicker(false)
-      }
-    })()
-    return () => {
-      active = false
-    }
   }, [selectedPortfolioIds])
 
   const onToggleMetric = (metric) => {
     setAnnualMetrics((current) => {
-      const has = current.includes(metric)
-      if (has) return current.filter((item) => item !== metric)
-      return [...current, metric]
+      const base = normalizeStringList(current, ['invested', 'incomes'], ['invested', 'incomes'])
+      const has = base.includes(metric)
+      if (has) {
+        const next = base.filter((item) => item !== metric)
+        return next.length > 0 ? next : base
+      }
+      return [...base, metric]
     })
   }
 
   const onToggleCategory = (category) => {
     setAnnualCategories((current) => {
-      const has = current.includes(category)
+      const base = normalizeStringList(current, ['br', 'us', 'fii', 'cripto', 'fixa'], ['br', 'us', 'fii', 'cripto', 'fixa'])
+      const has = base.includes(category)
       if (has) {
-        const next = current.filter((item) => item !== category)
-        return next.length > 0 ? next : current
+        const next = base.filter((item) => item !== category)
+        return next.length > 0 ? next : base
       }
-      return [...current, category]
+      return [...base, category]
     })
   }
 
-  const moneyScale = useMemo(() => ({
-    ticks: { callback: (value) => brl(value) },
+  const moneyScale = useMemo(() => makeScale({
+    callback: (value) => brl(value),
+    color: TERMINAL_TEXT,
+    font: { size: 11, family: TERMINAL_MONO },
   }), [])
 
-  const percentScale = useMemo(() => ({
-    ticks: { callback: (value) => `${Number(value || 0).toFixed(2)}%` },
+  const percentScale = useMemo(() => makeScale({
+    callback: (value) => `${Number(value || 0).toFixed(2)}%`,
+    color: TERMINAL_TEXT,
+    font: { size: 11, family: TERMINAL_MONO },
   }), [])
 
   const annualSummary = useMemo(() => {
@@ -164,23 +333,23 @@ function ChartsPage({ selectedPortfolioIds }) {
       const yearEntry = yearMap.get(year)
       let invested = 0
       let incomes = 0
-      if (annualCategories.includes('br')) {
+      if (annualCategoriesValue.includes('br')) {
         invested += Number(row.br_invested || 0)
         incomes += Number(row.br_incomes || 0)
       }
-      if (annualCategories.includes('us')) {
+      if (annualCategoriesValue.includes('us')) {
         invested += Number(row.us_invested || 0)
         incomes += Number(row.us_incomes || 0)
       }
-      if (annualCategories.includes('fii')) {
+      if (annualCategoriesValue.includes('fii')) {
         invested += Number(row.fii_invested || 0)
         incomes += Number(row.fii_incomes || 0)
       }
-      if (annualCategories.includes('cripto')) {
+      if (annualCategoriesValue.includes('cripto')) {
         invested += Number(row.cripto_invested || 0)
         incomes += Number(row.cripto_incomes || 0)
       }
-      if (annualCategories.includes('fixa')) {
+      if (annualCategoriesValue.includes('fixa')) {
         invested += Number(row.fixa_invested || 0)
         incomes += Number(row.fixa_incomes || 0)
       }
@@ -201,11 +370,28 @@ function ChartsPage({ selectedPortfolioIds }) {
       }
     })
     return { months: MONTH_ORDER.map(([label]) => label), years }
-  }, [corePayload, annualCategories])
+  }, [corePayload, annualCategoriesValue])
 
-  if (loadingCore && !corePayload) return <p>Carregando...</p>
+  if (loadingCore && !corePayload) {
+    return (
+      <StatePanel
+        busy
+        eyebrow="Graficos"
+        title="Montando os paines visuais"
+        description="Carregando distribuicao, benchmark e historico por ticker."
+      />
+    )
+  }
   if (error) return <p className="error">{error}</p>
-  if (!corePayload) return <p>Sem dados.</p>
+  if (!corePayload) {
+    return (
+      <StatePanel
+        eyebrow="Graficos"
+        title="Ainda nao ha base suficiente para os graficos"
+        description="Selecione outra carteira ou alimente mais movimentacoes para liberar os paineis comparativos."
+      />
+    )
+  }
 
   const categoryChart = corePayload.category_chart || { labels: [], values: [] }
   const topAssetsChart = corePayload.top_assets_chart || { labels: [], values: [] }
@@ -222,32 +408,34 @@ function ChartsPage({ selectedPortfolioIds }) {
   const monthlyTickerSummary = tickerPayload || { months: [], totals: [], rows: [] }
 
   const onToggleTickerSort = (field) => {
-    if (tickerSortBy === field) return setTickerSortDir((current) => (current === 'asc' ? 'desc' : 'asc'))
+    if (tickerSortByValue === field) {
+      return setTickerSortDir((current) => (normalizeChoice(current, ['asc', 'desc'], 'desc') === 'asc' ? 'desc' : 'asc'))
+    }
     setTickerSortBy(field)
     setTickerSortDir(field === 'ticker' ? 'asc' : 'desc')
   }
 
   const tickerSortLabel = (label, field) => {
-    if (tickerSortBy !== field) return label
-    return `${label} ${tickerSortDir === 'asc' ? '↑' : '↓'}`
+    if (tickerSortByValue !== field) return label
+    return `${label} ${tickerSortDirValue === 'asc' ? '↑' : '↓'}`
   }
 
   const sortedTickerRows = [...(monthlyTickerSummary.rows || [])]
   sortedTickerRows.sort((left, right) => {
-    const factor = tickerSortDir === 'asc' ? 1 : -1
-    if (tickerSortBy === 'ticker') {
+    const factor = tickerSortDirValue === 'asc' ? 1 : -1
+    if (tickerSortByValue === 'ticker') {
       const a = String(left.ticker || '')
       const b = String(right.ticker || '')
       return a.localeCompare(b, 'pt-BR') * factor
     }
     let a = 0
     let b = 0
-    if (tickerSortMonthKey === 'total') {
-      a = Number(tickerSortMetric === 'invested' ? left.total_invested : left.total_incomes)
-      b = Number(tickerSortMetric === 'invested' ? right.total_invested : right.total_incomes)
+    if (tickerSortMonthKeyValue === 'total') {
+      a = Number(tickerSortMetricValue === 'invested' ? left.total_invested : left.total_incomes)
+      b = Number(tickerSortMetricValue === 'invested' ? right.total_invested : right.total_incomes)
     } else {
-      a = Number(left.months?.[tickerSortMonthKey]?.[tickerSortMetric] || 0)
-      b = Number(right.months?.[tickerSortMonthKey]?.[tickerSortMetric] || 0)
+      a = Number(left.months?.[tickerSortMonthKeyValue]?.[tickerSortMetricValue] || 0)
+      b = Number(right.months?.[tickerSortMonthKeyValue]?.[tickerSortMetricValue] || 0)
     }
     if (a === b) return String(left.ticker || '').localeCompare(String(right.ticker || ''), 'pt-BR')
     return (a - b) * factor
@@ -255,7 +443,7 @@ function ChartsPage({ selectedPortfolioIds }) {
 
   const classesTotal = (classesChart.values || []).reduce((acc, value) => acc + Number(value || 0), 0)
   const categoryTotal = (categoryChart.values || []).reduce((acc, value) => acc + Number(value || 0), 0)
-  const donutColors = ['#0f7b6c', '#2d6cdf', '#ea8a2f', '#6f42c1']
+  const donutColors = ['#0f8a77', '#1f6feb', '#c48b2d', '#d95f2f']
 
   const benchmarkData = {
     labels: benchmarkChart.labels || [],
@@ -263,17 +451,18 @@ function ChartsPage({ selectedPortfolioIds }) {
       label: series.label,
       data: series.values,
       borderColor: series.color,
-      backgroundColor: idx === 0 ? 'rgba(111, 143, 231, 0.12)' : 'transparent',
-      borderWidth: idx === 0 ? 2.2 : 1.7,
+      backgroundColor: idx === 0 ? 'rgba(15, 138, 119, 0.14)' : 'transparent',
+      borderWidth: idx === 0 ? 2.4 : 1.8,
       fill: idx === 0,
-      tension: 0.22,
-      pointRadius: 2,
+      tension: 0.18,
+      pointRadius: 0,
+      pointHoverRadius: 4,
     })),
   }
 
   const classesData = {
     labels: classesChart.labels || [],
-    datasets: [{ label: 'Valor', data: classesChart.values || [], backgroundColor: ['#2d6cdf', '#0f7b6c'] }],
+    datasets: [{ label: 'Valor', data: classesChart.values || [], backgroundColor: ['#1f6feb', '#0f8a77'] }],
   }
 
   const categoryData = {
@@ -286,7 +475,7 @@ function ChartsPage({ selectedPortfolioIds }) {
     datasets: [{
       label: 'Resultado',
       data: resultByCategoryChart.values || [],
-      backgroundColor: (resultByCategoryChart.values || []).map((v) => (Number(v || 0) >= 0 ? '#3f7edb' : '#d74a4a')),
+      backgroundColor: (resultByCategoryChart.values || []).map((v) => (Number(v || 0) >= 0 ? '#1f6feb' : '#cf3f5b')),
     }],
   }
 
@@ -295,7 +484,7 @@ function ChartsPage({ selectedPortfolioIds }) {
     datasets: [{
       label: 'Valor',
       data: cardsChart.values || [],
-      backgroundColor: ['#0f7b6c', '#2d6cdf', '#f2a93b'],
+      backgroundColor: ['#0f8a77', '#1f6feb', '#c48b2d'],
     }],
   }
 
@@ -305,46 +494,49 @@ function ChartsPage({ selectedPortfolioIds }) {
       {
         label: 'FIIs',
         data: monthlyIncomeChart.fii_values || [],
-        borderColor: '#0f7b6c',
-        backgroundColor: 'rgba(15, 123, 108, 0.15)',
+        borderColor: '#0f8a77',
+        backgroundColor: 'rgba(15, 138, 119, 0.15)',
         tension: 0.25,
+        pointRadius: 0,
+        pointHoverRadius: 4,
       },
       {
         label: 'Acoes',
         data: monthlyIncomeChart.acoes_values || [],
-        borderColor: '#2d6cdf',
-        backgroundColor: 'rgba(45, 108, 223, 0.15)',
+        borderColor: '#1f6feb',
+        backgroundColor: 'rgba(31, 111, 235, 0.15)',
         tension: 0.25,
+        pointRadius: 0,
+        pointHoverRadius: 4,
       },
     ],
   }
 
   const topAssetsData = {
     labels: topAssetsChart.labels || [],
-    datasets: [{ label: 'Valor', data: topAssetsChart.values || [], backgroundColor: '#2d6cdf' }],
+    datasets: [{ label: 'Valor', data: topAssetsChart.values || [], backgroundColor: '#1f6feb' }],
   }
 
   const fixedInvestmentData = {
     labels: fixedInvestmentChart.labels || [],
-    datasets: [{ label: 'Valor aplicado', data: fixedInvestmentChart.values || [], backgroundColor: '#4b80db' }],
+    datasets: [{ label: 'Valor aplicado', data: fixedInvestmentChart.values || [], backgroundColor: '#1f6feb' }],
   }
 
   const fixedDistributorData = {
     labels: fixedDistributorChart.labels || [],
-    datasets: [{ label: 'Valor aplicado', data: fixedDistributorChart.values || [], backgroundColor: '#4b80db' }],
+    datasets: [{ label: 'Valor aplicado', data: fixedDistributorChart.values || [], backgroundColor: '#2bb0c9' }],
   }
 
   const fixedIssuerData = {
     labels: fixedIssuerChart.labels || [],
     datasets: [
-      { label: 'investimento', data: fixedIssuerChart.investment_values || [], backgroundColor: '#2f67cb' },
-      { label: 'rendimento', data: fixedIssuerChart.income_values || [], backgroundColor: '#3f8a2f' },
+      { label: 'investimento', data: fixedIssuerChart.investment_values || [], backgroundColor: '#1f6feb' },
+      { label: 'rendimento', data: fixedIssuerChart.income_values || [], backgroundColor: '#0f8a77' },
     ],
   }
 
   const allocationCharts = allocationByGroupCharts.map((item, idx) => {
-    const palette = ['#3498db', '#2ecc71', '#f1c40f', '#e67e22', '#e74c3c', '#9b59b6', '#1abc9c', '#34495e', '#ff7f50', '#6a89cc']
-    const colors = (item.values || []).map((_, colorIdx) => palette[colorIdx % palette.length])
+    const colors = (item.values || []).map((_, colorIdx) => TERMINAL_PALETTE[colorIdx % TERMINAL_PALETTE.length])
     return {
       key: `allocation-${idx}`,
       title: item.title,
@@ -353,50 +545,48 @@ function ChartsPage({ selectedPortfolioIds }) {
       weights: item.weights || [],
       data: {
         labels: item.labels || [],
-        datasets: [{ label: 'Patrimonio', data: item.values || [], backgroundColor: colors, borderWidth: 1 }],
+        datasets: [{ label: 'Patrimonio', data: item.values || [], backgroundColor: colors, borderRadius: 8, borderSkipped: false }],
       },
     }
   })
 
-  const pieValueInsideOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      datalabels: {
-        color: '#ffffff',
-        anchor: 'center',
-        align: 'center',
-        formatter: (value) => brlCompact(value),
-        font: { weight: '700', size: 11 },
-      },
+  const pieValueInsideOptions = buildCircularOptions({
+    legend: true,
+    datalabels: {
+      color: '#ffffff',
+      anchor: 'center',
+      align: 'center',
+      formatter: (value, ctx) => formatSliceLabel({
+        label: classesData.labels?.[ctx.dataIndex] || '',
+        value,
+        total: classesTotal,
+        minPct: 12,
+      }),
+      font: { weight: '700', size: 11 },
     },
-  }
+  })
 
-  const categoryDonutOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: { display: false },
-      datalabels: {
-        color: '#2d3748',
-        anchor: 'end',
-        align: 'end',
-        offset: 6,
-        formatter: (value, ctx) => {
-          const label = categoryData.labels?.[ctx.dataIndex] || ''
-          const pct = categoryTotal > 0 ? (Number(value || 0) / categoryTotal) * 100 : 0
-          return `${label} | ${brlCompact(value)} | ${pct.toFixed(2)}%`
-        },
-        font: { size: 9, weight: '600' },
+  const categoryDonutOptions = buildCircularOptions({
+    legend: false,
+    datalabels: {
+      color: TERMINAL_TEXT,
+      anchor: 'end',
+      align: 'end',
+      offset: 6,
+      formatter: (value, ctx) => {
+        const label = categoryData.labels?.[ctx.dataIndex] || ''
+        const sliceLabel = formatSliceLabel({ label, value, total: categoryTotal, minPct: 9 })
+        if (!sliceLabel) return ''
+        return `${sliceLabel} | ${brlCompact(value)}`
       },
+      font: { size: 9, weight: '600' },
     },
-  }
+  })
 
   const resultByCategoryOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    scales: { y: moneyScale },
+    ...buildCartesianOptions({ yScale: moneyScale, legend: false }),
     plugins: {
+      ...buildCartesianOptions({ yScale: moneyScale, legend: false }).plugins,
       datalabels: {
         color: (ctx) => (Number(ctx.raw || 0) >= 0 ? '#255eb5' : '#b63838'),
         anchor: (ctx) => (Number(ctx.raw || 0) >= 0 ? 'end' : 'start'),
@@ -409,10 +599,9 @@ function ChartsPage({ selectedPortfolioIds }) {
   }
 
   const consolidatedOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    scales: { y: moneyScale },
+    ...buildCartesianOptions({ yScale: moneyScale, legend: false }),
     plugins: {
+      ...buildCartesianOptions({ yScale: moneyScale, legend: false }).plugins,
       datalabels: {
         color: '#ffffff',
         anchor: 'center',
@@ -423,321 +612,666 @@ function ChartsPage({ selectedPortfolioIds }) {
     },
   }
 
-  const allocationOptionsFor = (chart) => ({
-    responsive: true,
-    maintainAspectRatio: false,
+  const benchmarkOptions = buildCartesianOptions({ yScale: percentScale, legend: true })
+  const incomeLineOptions = buildCartesianOptions({ yScale: moneyScale, legend: true })
+  const barMoneyOptions = buildCartesianOptions({ yScale: moneyScale, legend: false })
+  const fixedIssuerOptions = buildCartesianOptions({ yScale: moneyScale, legend: true })
+  const allocationBarOptionsFor = (chart) => ({
+    ...buildCartesianOptions({ yScale: moneyScale, legend: false, indexAxis: 'y' }),
     plugins: {
-      legend: { display: false },
+      ...buildCartesianOptions({ yScale: moneyScale, legend: false, indexAxis: 'y' }).plugins,
       datalabels: {
-        color: '#2d3748',
+        color: TERMINAL_TEXT,
         anchor: 'end',
-        align: 'end',
+        align: 'right',
         offset: 6,
-        formatter: (_, ctx) => {
+        formatter: (value, ctx) => {
           const i = ctx.dataIndex
           const label = chart.labels?.[i] || ''
-          const value = chart.values?.[i] || 0
-          const weight = chart.weights?.[i] || 0
-          return `${label} | ${brlCompact(value)} | ${Number(weight).toFixed(2)}%`
+          const weight = Number(chart.weights?.[i] || 0)
+          if (weight < 4) return ''
+          return `${label} ${weight.toFixed(1)}%`
         },
-        font: { size: 9, weight: '600' },
+        font: { size: 10, weight: '700' },
       },
     },
   })
 
+  const analyticsHighlights = [
+    {
+      label: 'Benchmark',
+      value: `${benchmarkChart.labels?.length || 0} pts`,
+      meta: `${benchmarkChart.datasets?.length || 0} série(s)`,
+    },
+    {
+      label: 'Top ativos',
+      value: `${topAssetsChart.labels?.length || 0}`,
+      meta: 'ativos ranqueados',
+    },
+    {
+      label: 'Alocação',
+      value: `${allocationCharts.length}`,
+      meta: 'painel(is) segmentado(s)',
+    },
+    {
+      label: 'Ticker ledger',
+      value: `${sortedTickerRows.length}`,
+      meta: 'linhas por ativo',
+    },
+  ]
+  const baseSectionLinks = [
+    { href: '#composicao', label: 'Composição' },
+    { href: '#renda-fixa', label: 'Renda fixa' },
+    { href: '#ledger-anual', label: 'Ledger anual' },
+    { href: '#ticker-ledger', label: 'Ticker ledger' },
+    { href: '#classe-ledger', label: 'Classe ledger' },
+  ]
+  const blockOptions = [
+    { key: 'benchmark', label: 'Benchmark', description: 'Rentabilidade comparada com índices e benchmarks.' },
+    { key: 'monthlyIncome', label: 'Proventos mês a mês', description: 'Fluxo mensal entre FIIs e ações.' },
+    { key: 'classesPie', label: 'Renda variável x fixa', description: 'Mistura principal da carteira.' },
+    { key: 'categoryDonut', label: 'Distribuição por tipo', description: 'Peso relativo por classe de ativo.' },
+    { key: 'resultCategory', label: 'Resultado por categoria', description: 'Ganho ou perda por agrupamento.' },
+    { key: 'cardsBar', label: 'Consolidado da carteira', description: 'Resumo absoluto por grande bloco.' },
+    { key: 'topAssets', label: 'Top ativos', description: 'Ranking de concentração por patrimônio.' },
+    ...allocationCharts.map((item) => ({
+      key: item.key,
+      label: item.title,
+      description: 'Distribuição interna por agrupamento em barra horizontal.',
+    })),
+    { key: 'fixedInvestment', label: 'Investimento renda fixa', description: 'Volume aplicado por recorte do book fixo.' },
+    { key: 'fixedDistributor', label: 'Distribuidor renda fixa', description: 'Concentração da distribuição da carteira.' },
+    { key: 'fixedIssuer', label: 'Emissor renda fixa', description: 'Principal e rendimento por emissor.' },
+    { key: 'ledgerAnual', label: 'Ledger anual', description: 'Tabela comparativa por ano e mês.' },
+    { key: 'tickerLedger', label: 'Ticker ledger', description: 'Aportes e proventos por ativo.' },
+    { key: 'classLedger', label: 'Classe ledger', description: 'Resumo mensal por classe.' },
+  ]
+  const hiddenSet = new Set(hiddenBlocksValue)
+
+  const isVisible = (key) => !hiddenSet.has(key)
+  const sectionLinks = baseSectionLinks.filter((item) => {
+    if (item.href === '#composicao') {
+      return isVisible('classesPie')
+        || isVisible('categoryDonut')
+        || isVisible('resultCategory')
+        || isVisible('cardsBar')
+        || isVisible('topAssets')
+        || allocationCharts.some((chart) => isVisible(chart.key))
+    }
+    if (item.href === '#renda-fixa') return isVisible('fixedInvestment') || isVisible('fixedDistributor') || isVisible('fixedIssuer')
+    if (item.href === '#ledger-anual') return isVisible('ledgerAnual')
+    if (item.href === '#ticker-ledger') return isVisible('tickerLedger')
+    if (item.href === '#classe-ledger') return isVisible('classLedger')
+    return true
+  })
+  const toggleBlockVisibility = (key) => {
+    setHiddenBlocks((current) => (
+      current.includes(key)
+        ? current.filter((item) => item !== key)
+        : [...current, key]
+    ))
+  }
+  const showAllBlocks = () => setHiddenBlocks([])
+
+  const registerChartRef = (key) => (instance) => {
+    if (instance) chartRefs.current[key] = instance
+    else delete chartRefs.current[key]
+  }
+
+  const annualLedgerRows = annualSummary.months.map((month, monthIdx) => [
+    month,
+    ...annualSummary.years.flatMap((year) => [
+      annualMetricsValue.includes('invested') ? [year.invested_values?.[monthIdx] ?? 0] : [],
+      annualMetricsValue.includes('incomes') ? [year.incomes_values?.[monthIdx] ?? 0] : [],
+    ]),
+  ])
+  const annualLedgerHeaders = [
+    'mes',
+    ...annualSummary.years.flatMap((year) => [
+      annualMetricsValue.includes('invested') ? `${year.label} investidos` : null,
+      annualMetricsValue.includes('incomes') ? `${year.label} proventos` : null,
+    ].filter(Boolean)),
+  ]
+  const tickerLedgerHeaders = [
+    'ticker',
+    ...monthlyTickerSummary.months.flatMap((month) => [`${month.label} investidos`, `${month.label} proventos`]),
+  ]
+  const tickerLedgerRows = sortedTickerRows.map((row) => [
+    row.ticker,
+    ...monthlyTickerSummary.months.flatMap((month) => {
+      const values = row.months?.[month.key] || { invested: 0, incomes: 0 }
+      return [values.invested, values.incomes]
+    }),
+  ])
+  const classLedgerHeaders = [
+    'data',
+    'br investidos',
+    'br proventos',
+    'fii investidos',
+    'fii proventos',
+    'fixa investidos',
+    'fixa proventos',
+    'cripto investidos',
+    'cripto proventos',
+    'total investidos',
+    'total proventos',
+  ]
+  const classLedgerRows = monthlyClassSummary.map((row) => [
+    row.label,
+    row.br_invested,
+    row.br_incomes,
+    row.fii_invested,
+    row.fii_incomes,
+    row.fixa_invested,
+    row.fixa_incomes,
+    row.cripto_invested,
+    row.cripto_incomes,
+    row.total_invested,
+    row.total_incomes,
+  ])
+
+  const makeChartActions = (key, filenameBase, chartData) => (
+    <div className="dashboard-pref-actions">
+      <button type="button" className="icon-btn" onClick={() => exportChartDataAsCsv(`${filenameBase}.csv`, chartData)}>
+        CSV
+      </button>
+      <button
+        type="button"
+        className="icon-btn"
+        onClick={() => exportChartAsImage(`${filenameBase}.png`, chartRefs.current[key])}
+      >
+        PNG
+      </button>
+      <button type="button" className="icon-btn" onClick={() => toggleBlockVisibility(key)}>
+        Ocultar
+      </button>
+    </div>
+  )
+
+  const makeTableControls = (headers, rows, filenameBase, blockKey, extraControls = null) => (
+    <div className="chart-section-toolbar">
+      {extraControls}
+      <div className="dashboard-pref-actions">
+        <button type="button" className="icon-btn" onClick={() => exportRowsAsCsv(`${filenameBase}.csv`, headers, rows)}>
+          CSV
+        </button>
+        <button type="button" className="icon-btn" onClick={() => toggleBlockVisibility(blockKey)}>
+          Ocultar
+        </button>
+      </div>
+    </div>
+  )
+
+  const annualFilterControls = (
+    <div className="inline-filters inline-filters-checks">
+      <label><input type="checkbox" checked={annualMetricsValue.includes('invested')} onChange={() => onToggleMetric('invested')} /> Investidos</label>
+      <label><input type="checkbox" checked={annualMetricsValue.includes('incomes')} onChange={() => onToggleMetric('incomes')} /> Proventos</label>
+      <label><input type="checkbox" checked={annualCategoriesValue.includes('br')} onChange={() => onToggleCategory('br')} /> BR</label>
+      <label><input type="checkbox" checked={annualCategoriesValue.includes('us')} onChange={() => onToggleCategory('us')} /> US</label>
+      <label><input type="checkbox" checked={annualCategoriesValue.includes('fii')} onChange={() => onToggleCategory('fii')} /> FIIs</label>
+      <label><input type="checkbox" checked={annualCategoriesValue.includes('cripto')} onChange={() => onToggleCategory('cripto')} /> Cripto</label>
+      <label><input type="checkbox" checked={annualCategoriesValue.includes('fixa')} onChange={() => onToggleCategory('fixa')} /> FIXA</label>
+    </div>
+  )
+
+  const tickerFilterControls = (
+    <div className="inline-filters chart-inline-controls">
+      <label>
+        Ordenar por
+        <select value={tickerSortMetricValue} onChange={(e) => setTickerSortMetric(e.target.value)}>
+          <option value="invested">investidos</option>
+          <option value="incomes">proventos</option>
+        </select>
+      </label>
+      <label>
+        Mês/ano
+        <select value={tickerSortMonthKeyValue} onChange={(e) => setTickerSortMonthKey(e.target.value)}>
+          <option value="total">Total (todos os meses)</option>
+          {monthlyTickerSummary.months.map((month) => (
+            <option key={month.key} value={month.key}>{month.label}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Direção
+        <select value={tickerSortDirValue} onChange={(e) => setTickerSortDir(e.target.value)}>
+          <option value="desc">Maior para menor</option>
+          <option value="asc">Menor para maior</option>
+        </select>
+      </label>
+    </div>
+  )
+
   return (
-    <section>
-      <h1>Graficos</h1>
-      {loadingCore && <p className="subtitle">{loadingMessage}</p>}
-
-      <div className="charts-grid">
-        <article className="card chart-card">
-          <h3>Renda Variavel x Renda Fixa</h3>
-          <div className="chart-canvas-wrap">
-            <Pie data={classesData} options={pieValueInsideOptions} />
+    <section className="charts-terminal-page">
+      <header className="card charts-terminal-hero">
+        <div className="charts-terminal-hero-top">
+          <div>
+            <small className="charts-terminal-eyebrow">Analytics terminal</small>
+            <h1>Graficos</h1>
+            <p className="subtitle">Comparativos, alocação, benchmark e ledgers históricos em leitura operacional.</p>
           </div>
-          <p className="subtitle">Soma: {brl(classesTotal)}</p>
-        </article>
-
-        <article className="card chart-card">
-          <h3>Distribuicao por tipo de ativo</h3>
-          <div className="chart-canvas-wrap">
-            <Doughnut data={categoryData} options={categoryDonutOptions} />
+          <div className="dashboard-hero-actions">
+            <button type="button" className="icon-btn" onClick={() => setShowLayoutControls((current) => !current)}>
+              {showLayoutControls ? 'Fechar layout' : 'Personalizar paineis'}
+            </button>
+            <small>{refreshingCore ? loadingMessage : `${hiddenBlocksValue.length} painel(is) oculto(s)`}</small>
           </div>
-        </article>
+        </div>
+        <div className="charts-terminal-meta-strip">
+          {analyticsHighlights.map((item) => (
+            <div key={item.label} className="charts-terminal-meta-item">
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+              <small>{item.meta}</small>
+            </div>
+          ))}
+        </div>
+        <nav className="charts-terminal-nav" aria-label="Navegação dos gráficos">
+          {sectionLinks.map((item) => (
+            <a key={item.href} href={item.href} className="charts-terminal-nav-link">
+              {item.label}
+            </a>
+          ))}
+        </nav>
+      </header>
 
-        <article className="card chart-card">
-          <h3>Resultado por categoria</h3>
-          <div className="chart-canvas-wrap">
-            <Bar data={resultByCategoryData} options={resultByCategoryOptions} />
-          </div>
-        </article>
-
-        <article className="card chart-card">
-          <h3>Consolidado da carteira</h3>
-          <div className="chart-canvas-wrap">
-            <Bar data={cardsData} options={consolidatedOptions} />
-          </div>
-        </article>
-
-        <article className="card chart-card">
-          <div className="chart-head-inline">
-            <h3>Rentabilidade comparada com indices</h3>
-            <div className="inline-filters">
-              <label>
-                Periodo benchmark
-                <select value={range} onChange={(e) => setRange(e.target.value)}>
-                  <option value="6m">6 Meses</option>
-                  <option value="12m">12 Meses</option>
-                  <option value="24m">24 Meses</option>
-                  <option value="60m">5 Anos</option>
-                </select>
-              </label>
-              <label>
-                Escopo benchmark
-                <select value={scope} onChange={(e) => setScope(e.target.value)}>
-                  <option value="all">Todos os tipos</option>
-                  <option value="br">Somente BR</option>
-                  <option value="us">Somente US</option>
-                  <option value="fiis">Somente FIIs</option>
-                  <option value="crypto">Somente Cripto</option>
-                </select>
-              </label>
+      {showLayoutControls ? (
+        <section className="card dashboard-customizer charts-visibility-panel">
+          <div className="dashboard-customizer-head">
+            <div>
+              <small className="dashboard-customizer-eyebrow">Workspace controls</small>
+              <h2>Layout dos painéis</h2>
+              <p>As preferências de filtros e visibilidade ficam salvas no navegador desta máquina.</p>
+            </div>
+            <div className="dashboard-pref-actions">
+              <button type="button" className="icon-btn" onClick={showAllBlocks} disabled={hiddenBlocksValue.length === 0}>
+                Mostrar todos
+              </button>
             </div>
           </div>
-          {loadingBenchmark && <p className="subtitle">Atualizando benchmark...</p>}
-          {benchmarkError && <p className="error">{benchmarkError}</p>}
-          <div className="chart-canvas-wrap">
-            <Line data={benchmarkData} options={{ responsive: true, maintainAspectRatio: false, scales: { y: percentScale } }} />
+          <div className="dashboard-customizer-grid">
+            <div className="dashboard-customizer-section">
+              <h3>Painéis e tabelas</h3>
+              <div className="dashboard-pref-list">
+                {blockOptions.map((item) => {
+                  const visible = isVisible(item.key)
+                  return (
+                    <div key={item.key} className={`dashboard-pref-row ${visible ? '' : 'muted'}`.trim()}>
+                      <div>
+                        <strong>{item.label}</strong>
+                        <small>{item.description}</small>
+                      </div>
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        onClick={() => toggleBlockVisibility(item.key)}
+                      >
+                        {visible ? 'Ocultar' : 'Mostrar'}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
           </div>
-        </article>
+        </section>
+      ) : null}
 
-        <article className="card chart-card">
-          <h3>Proventos mes a mes (FIIs x Acoes)</h3>
-          <div className="chart-canvas-wrap">
-            <Line data={monthlyIncomeData} options={{ responsive: true, maintainAspectRatio: false, scales: { y: moneyScale } }} />
-          </div>
-        </article>
-
-        <article className="card chart-card">
-          <h3>Top 10 ativos por valor em carteira</h3>
-          <div className="chart-canvas-wrap">
-            <Bar data={topAssetsData} options={{ responsive: true, maintainAspectRatio: false, scales: { y: moneyScale } }} />
-          </div>
-        </article>
-
-        {allocationCharts.map((item) => (
-          <article key={item.key} className="card chart-card">
-            <h3>{item.title}</h3>
+      <div className="charts-feature-grid">
+        {isVisible('benchmark') ? (
+          <ChartPanel
+            title="Rentabilidade comparada com indices"
+            subtitle="Painel principal para leitura relativa contra benchmarks."
+            className="chart-card-feature chart-card-benchmark"
+            controls={(
+              <div className="inline-filters chart-inline-controls">
+                <label>
+                  Periodo benchmark
+                  <select value={rangeValue} onChange={(e) => setRange(e.target.value)}>
+                    <option value="6m">6 Meses</option>
+                    <option value="12m">12 Meses</option>
+                    <option value="24m">24 Meses</option>
+                    <option value="60m">5 Anos</option>
+                  </select>
+                </label>
+                <label>
+                  Escopo benchmark
+                  <select value={scopeValue} onChange={(e) => setScope(e.target.value)}>
+                    <option value="all">Todos os tipos</option>
+                    <option value="br">Somente BR</option>
+                    <option value="us">Somente US</option>
+                    <option value="fiis">Somente FIIs</option>
+                    <option value="crypto">Somente Cripto</option>
+                  </select>
+                </label>
+              </div>
+            )}
+            actions={makeChartActions('benchmark', 'benchmark-comparado', benchmarkData)}
+          >
+            {(loadingBenchmark || refreshingBenchmark) && <p className="subtitle">Atualizando benchmark...</p>}
+            {benchmarkError && <p className="error">{benchmarkError}</p>}
             <div className="chart-canvas-wrap">
-              <Doughnut data={item.data} options={allocationOptionsFor(item)} />
+              <Line ref={registerChartRef('benchmark')} data={benchmarkData} options={benchmarkOptions} />
             </div>
-          </article>
-        ))}
+          </ChartPanel>
+        ) : null}
 
-        <article className="card chart-card">
-          <h3>Investimento Renda Fixa</h3>
-          <div className="chart-canvas-wrap">
-            <Bar data={fixedInvestmentData} options={{ responsive: true, maintainAspectRatio: false, scales: { y: moneyScale } }} />
-          </div>
-        </article>
-
-        <article className="card chart-card">
-          <h3>Distribuidor Renda Fixa</h3>
-          <div className="chart-canvas-wrap">
-            <Bar data={fixedDistributorData} options={{ responsive: true, maintainAspectRatio: false, scales: { y: moneyScale } }} />
-          </div>
-        </article>
-
-        <article className="card chart-card">
-          <h3>Emissor</h3>
-          <div className="chart-canvas-wrap">
-            <Bar data={fixedIssuerData} options={{ responsive: true, maintainAspectRatio: false, scales: { y: moneyScale } }} />
-          </div>
-        </article>
+        {isVisible('monthlyIncome') ? (
+          <ChartPanel
+            title="Proventos mes a mes"
+            subtitle="Fluxo mensal separado entre FIIs e ações."
+            className="chart-card-feature"
+            actions={makeChartActions('monthlyIncome', 'proventos-mensais', monthlyIncomeData)}
+          >
+            <div className="chart-canvas-wrap">
+              <Line ref={registerChartRef('monthlyIncome')} data={monthlyIncomeData} options={incomeLineOptions} />
+            </div>
+          </ChartPanel>
+        ) : null}
       </div>
 
-      <section id="investidos-ano">
-        <h2 style={{ marginTop: 22 }}>Investidos por mes (ano)</h2>
-        <div className="inline-filters inline-filters-checks">
-          <label><input type="checkbox" checked={annualMetrics.includes('invested')} onChange={() => onToggleMetric('invested')} /> Investidos</label>
-          <label><input type="checkbox" checked={annualMetrics.includes('incomes')} onChange={() => onToggleMetric('incomes')} /> Proventos</label>
-          <label><input type="checkbox" checked={annualCategories.includes('br')} onChange={() => onToggleCategory('br')} /> BR</label>
-          <label><input type="checkbox" checked={annualCategories.includes('us')} onChange={() => onToggleCategory('us')} /> US</label>
-          <label><input type="checkbox" checked={annualCategories.includes('fii')} onChange={() => onToggleCategory('fii')} /> FIIs</label>
-          <label><input type="checkbox" checked={annualCategories.includes('cripto')} onChange={() => onToggleCategory('cripto')} /> Cripto</label>
-          <label><input type="checkbox" checked={annualCategories.includes('fixa')} onChange={() => onToggleCategory('fixa')} /> FIXA</label>
-        </div>
-        <div className="table-wrap">
-          <table className="annual-month-table">
-            <thead>
-              <tr>
-                <th />
-                {annualSummary.years.map((year) => (
-                  <th key={year.label}>
-                    {year.label}
-                    {annualMetrics.includes('invested') && <div>Inv: {brl(year.invested_total)}</div>}
-                    {annualMetrics.includes('incomes') && <div>Prov: {brl(year.incomes_total)}</div>}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {annualSummary.months.map((month, monthIdx) => (
-                <tr key={month}>
-                  <th>{month.toUpperCase()}</th>
+      {(isVisible('classesPie')
+        || isVisible('categoryDonut')
+        || isVisible('resultCategory')
+        || isVisible('cardsBar')
+        || isVisible('topAssets')
+        || allocationCharts.some((item) => isVisible(item.key))) ? (
+        <DataSection
+          id="composicao"
+          title="Composição da carteira"
+          subtitle="Leitura macro de alocação, mix de classes e concentração."
+        >
+          <div className="charts-grid charts-grid-analytics">
+            {isVisible('classesPie') ? (
+              <ChartPanel
+                title="Renda Variavel x Renda Fixa"
+                subtitle={`Soma consolidada: ${brl(classesTotal)}`}
+                actions={makeChartActions('classesPie', 'renda-variavel-vs-fixa', classesData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Pie ref={registerChartRef('classesPie')} data={classesData} options={pieValueInsideOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {isVisible('categoryDonut') ? (
+              <ChartPanel
+                title="Distribuicao por tipo de ativo"
+                subtitle="Peso relativo por classe dentro da carteira."
+                actions={makeChartActions('categoryDonut', 'distribuicao-por-tipo', categoryData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Doughnut ref={registerChartRef('categoryDonut')} data={categoryData} options={categoryDonutOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {isVisible('resultCategory') ? (
+              <ChartPanel
+                title="Resultado por categoria"
+                subtitle="Comparativo de ganho ou perda por agrupamento."
+                actions={makeChartActions('resultCategory', 'resultado-por-categoria', resultByCategoryData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Bar ref={registerChartRef('resultCategory')} data={resultByCategoryData} options={resultByCategoryOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {isVisible('cardsBar') ? (
+              <ChartPanel
+                title="Consolidado da carteira"
+                subtitle="Resumo absoluto de valor por grande bloco."
+                actions={makeChartActions('cardsBar', 'consolidado-carteira', cardsData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Bar ref={registerChartRef('cardsBar')} data={cardsData} options={consolidatedOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {isVisible('topAssets') ? (
+              <ChartPanel
+                title="Top 10 ativos por valor em carteira"
+                subtitle="Ranking de concentração por patrimônio atual."
+                actions={makeChartActions('topAssets', 'top-ativos-por-valor', topAssetsData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Bar ref={registerChartRef('topAssets')} data={topAssetsData} options={barMoneyOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {allocationCharts.map((item) => (
+              isVisible(item.key) ? (
+                <ChartPanel
+                  key={item.key}
+                  title={item.title}
+                  subtitle="Distribuição interna por agrupamento em barra horizontal."
+                  actions={makeChartActions(item.key, `${item.key}-alocacao`, item.data)}
+                >
+                  <div className="chart-canvas-wrap">
+                    <Bar ref={registerChartRef(item.key)} data={item.data} options={allocationBarOptionsFor(item)} />
+                  </div>
+                </ChartPanel>
+              ) : null
+            ))}
+          </div>
+        </DataSection>
+      ) : null}
+
+      {(isVisible('fixedInvestment') || isVisible('fixedDistributor') || isVisible('fixedIssuer')) ? (
+        <DataSection
+          id="renda-fixa"
+          title="Renda fixa"
+          subtitle="Patrimônio, distribuidores e emissores em leitura separada."
+        >
+          <div className="charts-grid charts-grid-fixed">
+            {isVisible('fixedInvestment') ? (
+              <ChartPanel
+                title="Investimento Renda Fixa"
+                subtitle="Volume aplicado por recorte do book fixo."
+                actions={makeChartActions('fixedInvestment', 'investimento-renda-fixa', fixedInvestmentData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Bar ref={registerChartRef('fixedInvestment')} data={fixedInvestmentData} options={barMoneyOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {isVisible('fixedDistributor') ? (
+              <ChartPanel
+                title="Distribuidor Renda Fixa"
+                subtitle="Quem está concentrando a distribuição da carteira."
+                actions={makeChartActions('fixedDistributor', 'distribuidor-renda-fixa', fixedDistributorData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Bar ref={registerChartRef('fixedDistributor')} data={fixedDistributorData} options={barMoneyOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {isVisible('fixedIssuer') ? (
+              <ChartPanel
+                title="Emissor"
+                subtitle="Separação entre principal investido e rendimento por emissor."
+                actions={makeChartActions('fixedIssuer', 'emissor-renda-fixa', fixedIssuerData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Bar ref={registerChartRef('fixedIssuer')} data={fixedIssuerData} options={fixedIssuerOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+          </div>
+        </DataSection>
+      ) : null}
+
+      {isVisible('ledgerAnual') ? (
+        <DataSection
+          id="ledger-anual"
+          title="Ledger anual"
+          subtitle="Tabela comparativa por ano com investidos e proventos mês a mês."
+          controls={makeTableControls(annualLedgerHeaders, annualLedgerRows, 'ledger-anual', 'ledgerAnual', annualFilterControls)}
+        >
+          <div className="table-wrap">
+            <table className="annual-month-table">
+              <thead>
+                <tr>
+                  <th />
                   {annualSummary.years.map((year) => (
-                    <td key={`${year.label}-${month}`}>
-                      {annualMetrics.includes('invested') && <div>Inv: {brl(year.invested_values?.[monthIdx])}</div>}
-                      {annualMetrics.includes('incomes') && <div>Prov: {brl(year.incomes_values?.[monthIdx])}</div>}
-                    </td>
+                    <th key={year.label}>
+                      {year.label}
+                      {annualMetricsValue.includes('invested') && <div>Inv: {brl(year.invested_total)}</div>}
+                      {annualMetricsValue.includes('incomes') && <div>Prov: {brl(year.incomes_total)}</div>}
+                    </th>
                   ))}
                 </tr>
-              ))}
-              {annualSummary.years.length === 0 && (
-                <tr>
-                  <td colSpan={2}>Sem dados para tabela anual.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+              </thead>
+              <tbody>
+                {annualSummary.months.map((month, monthIdx) => (
+                  <tr key={month}>
+                    <th>{month.toUpperCase()}</th>
+                    {annualSummary.years.map((year) => (
+                      <td key={`${year.label}-${month}`}>
+                        {annualMetricsValue.includes('invested') && <div>Inv: {brl(year.invested_values?.[monthIdx])}</div>}
+                        {annualMetricsValue.includes('incomes') && <div>Prov: {brl(year.incomes_values?.[monthIdx])}</div>}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                {annualSummary.years.length === 0 && (
+                  <tr>
+                    <td colSpan={2}>Sem dados para tabela anual.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </DataSection>
+      ) : null}
 
-      <section>
-        <h2 style={{ marginTop: 22 }}>Resumo mensal por ticker</h2>
-        {loadingTicker && <p className="subtitle">Atualizando resumo por ticker...</p>}
-        {tickerError && <p className="error">{tickerError}</p>}
-        <div className="inline-filters" style={{ marginBottom: 8 }}>
-          <label>
-            Ordenar por
-            <select value={tickerSortMetric} onChange={(e) => setTickerSortMetric(e.target.value)}>
-              <option value="invested">investidos</option>
-              <option value="incomes">proventos</option>
-            </select>
-          </label>
-          <label>
-            Mês/ano
-            <select value={tickerSortMonthKey} onChange={(e) => setTickerSortMonthKey(e.target.value)}>
-              <option value="total">Total (todos os meses)</option>
-              {monthlyTickerSummary.months.map((month) => (
-                <option key={month.key} value={month.key}>{month.label}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Direção
-            <select value={tickerSortDir} onChange={(e) => setTickerSortDir(e.target.value)}>
-              <option value="desc">Maior para menor</option>
-              <option value="asc">Menor para maior</option>
-            </select>
-          </label>
-        </div>
-        <div className="table-wrap">
-          <table className="ticker-month-table">
-            <thead>
-              <tr>
-                <th rowSpan={2} className="ticker-month-sticky">
-                  <button type="button" className="th-sort-btn" onClick={() => onToggleTickerSort('ticker')}>
-                    {tickerSortLabel('Ticker', 'ticker')}
-                  </button>
-                </th>
-                {monthlyTickerSummary.months.map((month) => (
-                  <th key={month.key} colSpan={2}>{month.label}</th>
-                ))}
-              </tr>
-              <tr>
-                {monthlyTickerSummary.months.map((month) => (
-                  <Fragment key={`sub-${month.key}`}>
-                    <th>investidos</th>
-                    <th>proventos</th>
-                  </Fragment>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {monthlyTickerSummary.totals.length > 0 && (
-                <tr className="ticker-month-total-row">
-                  <td className="ticker-month-sticky">
-                    <strong>Total</strong>
-                  </td>
-                  {monthlyTickerSummary.totals.map((total) => (
-                    <Fragment key={`totals-${total.month_key}`}>
-                      <td><strong>{brl(total.invested)}</strong></td>
-                      <td><strong>{brl(total.incomes)}</strong></td>
+      {isVisible('tickerLedger') ? (
+        <DataSection
+          id="ticker-ledger"
+          title="Resumo mensal por ticker"
+          subtitle="Ledger por ativo para leitura de aportes e proventos por mês."
+          controls={makeTableControls(tickerLedgerHeaders, tickerLedgerRows, 'ticker-ledger', 'tickerLedger', tickerFilterControls)}
+        >
+          {(loadingTicker || refreshingTicker) && <p className="subtitle">Atualizando resumo por ticker...</p>}
+          {tickerError && <p className="error">{tickerError}</p>}
+          <div className="table-wrap">
+            <table className="ticker-month-table">
+              <thead>
+                <tr>
+                  <th rowSpan={2} className="ticker-month-sticky">
+                    <button type="button" className="th-sort-btn" onClick={() => onToggleTickerSort('ticker')}>
+                      {tickerSortLabel('Ticker', 'ticker')}
+                    </button>
+                  </th>
+                  {monthlyTickerSummary.months.map((month) => (
+                    <th key={month.key} colSpan={2}>{month.label}</th>
+                  ))}
+                </tr>
+                <tr>
+                  {monthlyTickerSummary.months.map((month) => (
+                    <Fragment key={`sub-${month.key}`}>
+                      <th>investidos</th>
+                      <th>proventos</th>
                     </Fragment>
                   ))}
                 </tr>
-              )}
-              {sortedTickerRows.map((row) => (
-                <tr key={row.ticker}>
-                  <td className="ticker-month-sticky">
-                    <strong>{row.ticker}</strong>
-                  </td>
-                  {monthlyTickerSummary.months.map((month) => {
-                    const values = row.months?.[month.key] || { invested: 0, incomes: 0 }
-                    return (
-                      <Fragment key={`${row.ticker}-${month.key}`}>
-                        <td>{brl(values.invested)}</td>
-                        <td>{brl(values.incomes)}</td>
+              </thead>
+              <tbody>
+                {monthlyTickerSummary.totals.length > 0 && (
+                  <tr className="ticker-month-total-row">
+                    <td className="ticker-month-sticky">
+                      <strong>Total</strong>
+                    </td>
+                    {monthlyTickerSummary.totals.map((total) => (
+                      <Fragment key={`totals-${total.month_key}`}>
+                        <td><strong>{brl(total.invested)}</strong></td>
+                        <td><strong>{brl(total.incomes)}</strong></td>
                       </Fragment>
-                    )
-                  })}
-                </tr>
-              ))}
-              {sortedTickerRows.length === 0 && (
-                <tr>
-                  <td colSpan={Math.max(1, 1 + (monthlyTickerSummary.months.length * 2))}>
-                    Sem dados por ticker para o periodo selecionado.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+                    ))}
+                  </tr>
+                )}
+                {sortedTickerRows.map((row) => (
+                  <tr key={row.ticker}>
+                    <td className="ticker-month-sticky">
+                      <strong>{row.ticker}</strong>
+                    </td>
+                    {monthlyTickerSummary.months.map((month) => {
+                      const values = row.months?.[month.key] || { invested: 0, incomes: 0 }
+                      return (
+                        <Fragment key={`${row.ticker}-${month.key}`}>
+                          <td>{brl(values.invested)}</td>
+                          <td>{brl(values.incomes)}</td>
+                        </Fragment>
+                      )
+                    })}
+                  </tr>
+                ))}
+                {sortedTickerRows.length === 0 && (
+                  <tr>
+                    <td colSpan={Math.max(1, 1 + (monthlyTickerSummary.months.length * 2))}>
+                      Sem dados por ticker para o periodo selecionado.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </DataSection>
+      ) : null}
 
-      <section>
-        <h2 style={{ marginTop: 22 }}>Resumo mensal por classe</h2>
-        <div className="table-wrap">
-          <table className="monthly-table">
-            <thead>
-              <tr>
-                <th rowSpan={2}>data</th>
-                <th colSpan={2}>BR</th>
-                <th colSpan={2}>FII</th>
-                <th colSpan={2}>FIXA</th>
-                <th colSpan={2}>Cripto</th>
-                <th colSpan={2}>TOTAL</th>
-              </tr>
-              <tr>
-                <th>investidos</th><th>proventos</th>
-                <th>investidos</th><th>proventos</th>
-                <th>investidos</th><th>proventos</th>
-                <th>investidos</th><th>proventos</th>
-                <th>investidos</th><th>proventos</th>
-              </tr>
-            </thead>
-            <tbody>
-              {monthlyClassSummary.map((row) => (
-                <tr key={row.label}>
-                  <td>{row.label}</td>
-                  <td>{brl(row.br_invested)}</td><td>{brl(row.br_incomes)}</td>
-                  <td>{brl(row.fii_invested)}</td><td>{brl(row.fii_incomes)}</td>
-                  <td>{brl(row.fixa_invested)}</td><td>{brl(row.fixa_incomes)}</td>
-                  <td>{brl(row.cripto_invested)}</td><td>{brl(row.cripto_incomes)}</td>
-                  <td><strong>{brl(row.total_invested)}</strong></td><td><strong>{brl(row.total_incomes)}</strong></td>
-                </tr>
-              ))}
-              {monthlyClassSummary.length === 0 && (
+      {isVisible('classLedger') ? (
+        <DataSection
+          id="classe-ledger"
+          title="Resumo mensal por classe"
+          subtitle="Investidos e proventos agregados por bloco da carteira."
+          controls={makeTableControls(classLedgerHeaders, classLedgerRows, 'classe-ledger', 'classLedger')}
+        >
+          <div className="table-wrap">
+            <table className="monthly-table">
+              <thead>
                 <tr>
-                  <td colSpan={11}>Sem dados mensais para o periodo selecionado.</td>
+                  <th rowSpan={2}>data</th>
+                  <th colSpan={2}>BR</th>
+                  <th colSpan={2}>FII</th>
+                  <th colSpan={2}>FIXA</th>
+                  <th colSpan={2}>Cripto</th>
+                  <th colSpan={2}>TOTAL</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+                <tr>
+                  <th>investidos</th><th>proventos</th>
+                  <th>investidos</th><th>proventos</th>
+                  <th>investidos</th><th>proventos</th>
+                  <th>investidos</th><th>proventos</th>
+                  <th>investidos</th><th>proventos</th>
+                </tr>
+              </thead>
+              <tbody>
+                {monthlyClassSummary.map((row) => (
+                  <tr key={row.label}>
+                    <td>{row.label}</td>
+                    <td>{brl(row.br_invested)}</td><td>{brl(row.br_incomes)}</td>
+                    <td>{brl(row.fii_invested)}</td><td>{brl(row.fii_incomes)}</td>
+                    <td>{brl(row.fixa_invested)}</td><td>{brl(row.fixa_incomes)}</td>
+                    <td>{brl(row.cripto_invested)}</td><td>{brl(row.cripto_incomes)}</td>
+                    <td><strong>{brl(row.total_invested)}</strong></td><td><strong>{brl(row.total_incomes)}</strong></td>
+                  </tr>
+                ))}
+                {monthlyClassSummary.length === 0 && (
+                  <tr>
+                    <td colSpan={11}>Sem dados mensais para o periodo selecionado.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </DataSection>
+      ) : null}
     </section>
   )
 }

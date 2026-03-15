@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { apiDelete, apiGet } from '../api'
+import StatePanel from '../components/StatePanel'
+import { useApiQuery } from '../hooks/useApiQuery'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 
@@ -44,16 +46,26 @@ function groupSummary(items) {
 }
 
 function FixedIncomePage({ selectedPortfolioIds }) {
-  const [payload, setPayload] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-  const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [actionError, setActionError] = useState('')
   const [sortBy, setSortBy] = useState('date_aporte')
   const [sortDir, setSortDir] = useState('desc')
   const [openGroups, setOpenGroups] = useState({ prefixado: true, posfixado: false })
   const [selectedFixedIds, setSelectedFixedIds] = useState([])
   const [removingFixed, setRemovingFixed] = useState(false)
+  const {
+    data: payload,
+    setData: setPayload,
+    loading,
+    refreshing,
+    error,
+  } = useApiQuery('/api/fixed-incomes', {
+    params: {
+      portfolio_id: selectedPortfolioIds,
+      sort_by: sortBy,
+      sort_dir: sortDir,
+    },
+  })
 
   const toggleSort = (field) => {
     if (sortBy === field) {
@@ -73,38 +85,6 @@ function FixedIncomePage({ selectedPortfolioIds }) {
     setOpenGroups((current) => ({ ...current, [key]: !current[key] }))
   }
 
-  useEffect(() => {
-    let active = true
-    const isInitialLoad = !payload
-    setLoading(isInitialLoad)
-    setRefreshing(!isInitialLoad)
-    setError('')
-    setMessage('')
-    ;(async () => {
-      try {
-        const data = await apiGet('/api/fixed-incomes', {
-          portfolio_id: selectedPortfolioIds,
-          sort_by: sortBy,
-          sort_dir: sortDir,
-        })
-        if (!active) return
-        setPayload(data)
-        setSelectedFixedIds([])
-      } catch (err) {
-        if (!active) return
-        setError(err.message)
-      } finally {
-        if (active) {
-          setLoading(false)
-          setRefreshing(false)
-        }
-      }
-    })()
-    return () => {
-      active = false
-    }
-  }, [selectedPortfolioIds, sortBy, sortDir])
-
   const toggleFixed = (fixedId) => {
     setSelectedFixedIds((current) => (
       current.includes(fixedId) ? current.filter((id) => id !== fixedId) : [...current, fixedId]
@@ -113,12 +93,12 @@ function FixedIncomePage({ selectedPortfolioIds }) {
 
   const onRemoveFixed = async () => {
     if (selectedFixedIds.length === 0) {
-      setError('Selecione ao menos um registro de renda fixa para remover.')
+      setActionError('Selecione ao menos um registro de renda fixa para remover.')
       return
     }
     setRemovingFixed(true)
-    setError('')
     setMessage('')
+    setActionError('')
     try {
       const result = await apiDelete(
         '/api/fixed-incomes',
@@ -134,15 +114,32 @@ function FixedIncomePage({ selectedPortfolioIds }) {
       setPayload(data)
       setSelectedFixedIds([])
     } catch (err) {
-      setError(err.message)
+      setActionError(err?.message || 'Falha ao remover registros.')
     } finally {
       setRemovingFixed(false)
     }
   }
 
-  if (loading && !payload) return <p>Carregando...</p>
+  if (loading && !payload) {
+    return (
+      <StatePanel
+        busy
+        eyebrow="Renda fixa"
+        title="Montando a carteira de renda fixa"
+        description="Buscando emissor, rentabilidade e fluxo de recebimentos."
+      />
+    )
+  }
   if (!payload && error) return <p className="error">{error}</p>
-  if (!payload) return <p>Sem dados.</p>
+  if (!payload) {
+    return (
+      <StatePanel
+        eyebrow="Renda fixa"
+        title="Nenhum titulo encontrado"
+        description="Adicione um registro de renda fixa para acompanhar juros, valor atual e vencimento aqui."
+      />
+    )
+  }
 
   const summary = payload.summary || {}
   const items = payload.items || []
@@ -158,6 +155,7 @@ function FixedIncomePage({ selectedPortfolioIds }) {
       <h1>Renda Fixa</h1>
       {refreshing && <p className="subtitle">Atualizando ordenacao...</p>}
       {!!error && <p className="notice-warn">{error}</p>}
+      {!!actionError && <p className="notice-warn">{actionError}</p>}
       {!!message && <p className="notice-ok">{message}</p>}
       <div className="cards">
         <article className="card"><h3>Total aplicado</h3><p>{brl(summary.applied_total)}</p></article>

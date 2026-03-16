@@ -91,6 +91,46 @@ class ServicesSplitExportsTest(unittest.TestCase):
         self.assertTrue(meta["is_stale"])
         self.assertFalse(meta["is_live"])
 
+    def test_position_category_recovers_fiis_from_generic_fundos_etfs_sector(self):
+        self.assertEqual(
+            _legacy._position_category("XPML11", "XPML", "Fundos/ETFs"),
+            "fiis",
+        )
+        self.assertEqual(
+            _legacy._position_category("VGIA11", "VGIA", "Fundos/ETFs"),
+            "fiis",
+        )
+        self.assertEqual(
+            _legacy._position_category("TAEE11", "TAESA", "Fundos/ETFs"),
+            "br_stocks",
+        )
+        self.assertEqual(
+            _legacy._position_category("SANB11", "SANTANDER BR", "Fundos/ETFs"),
+            "br_stocks",
+        )
+        self.assertEqual(
+            _legacy._position_category("SAPR11", "SANEPAR", "Fundos/ETFs"),
+            "br_stocks",
+        )
+        self.assertEqual(
+            _legacy._position_category("LFTB11", "LFTB", "Fundos/ETFs"),
+            "br_stocks",
+        )
+
+    def test_market_data_class_key_follows_shared_position_category(self):
+        self.assertEqual(
+            market_data._market_data_class_key_from_asset(
+                {"ticker": "XPML11", "name": "XPML", "sector": "Fundos/ETFs"}
+            ),
+            "fiis",
+        )
+        self.assertEqual(
+            market_data._market_data_class_key_from_asset(
+                {"ticker": "TAEE11", "name": "TAESA", "sector": "Fundos/ETFs"}
+            ),
+            "br",
+        )
+
     def test_scanner_formula_validation_blocks_unsafe_name(self):
         with self.assertRaises(ValueError):
             scanner._validate_metric_formula_expression("__import__('os').system('id')")

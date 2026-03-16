@@ -45,6 +45,36 @@ _BRAPI_QUOTE_RESULT_CACHE = {}
 _BRAPI_CIRCUIT = {"until": 0.0, "status_code": None}
 _PROVIDER_CIRCUIT_CACHE = {}
 _PROVIDER_USAGE_CACHE = {}
+_NON_FII_11_TICKERS = {
+    "ALUP11",
+    "BRSR11",
+    "BPAC11",
+    "CPLE11",
+    "ENGI11",
+    "KLBN11",
+    "LFTB11",
+    "SANB11",
+    "SAPR11",
+    "TAEE11",
+}
+_NON_FII_11_NAME_MARKERS = (
+    "ALUPAR",
+    "BANRISUL",
+    "BPAC",
+    "BTG PACTUAL",
+    "COPEL",
+    "ENERGISA",
+    "KLABIN",
+    "SANEPAR",
+    "SANTANDER",
+    "TAESA",
+)
+_FII_MARKERS = (
+    "FII",
+    "FIAGRO",
+    "IMOBILI",
+    "REIT",
+)
 _MARKET_DATA_PROVIDER_CAPABILITIES = {
     "alpha_vantage": {"metrics", "profile", "history"},
     "brapi": {"metrics", "profile", "history"},
@@ -3474,15 +3504,20 @@ def _position_category(ticker: str, name: str, sector: str):
     ):
         return "crypto"
 
-    is_fii = (
+    is_explicit_fii = (
         ticker_up.endswith("11")
         and (
-            "FII" in name_up
-            or "IMOBILI" in name_up
-            or "REIT" in name_up
+            any(marker in name_up for marker in _FII_MARKERS)
             or sector_up in {"REAL ESTATE", "FUNDOS IMOBILIARIOS"}
         )
     )
+    is_generic_fund_11 = (
+        ticker_up.endswith("11")
+        and sector_up in {"FUNDOS/ETFS", "FUNDOS E ETFS"}
+        and ticker_up not in _NON_FII_11_TICKERS
+        and not any(marker in name_up for marker in _NON_FII_11_NAME_MARKERS)
+    )
+    is_fii = is_explicit_fii or is_generic_fund_11
     if is_fii:
         return "fiis"
 

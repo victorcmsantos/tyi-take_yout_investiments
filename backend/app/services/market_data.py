@@ -32,15 +32,16 @@ def _market_data_stale_after_seconds():
 
 
 def _market_data_class_key_from_asset(asset):
-    ticker = str((asset or {}).get("ticker") or "").strip().upper()
-    sector = str((asset or {}).get("sector") or "").strip().lower()
-    if legacy._is_crypto_ticker(ticker):
-        return "crypto"
-    if legacy._is_us_stock_ticker(ticker):
-        return "us"
-    if ticker.endswith("11") or "fii" in sector or "fundo imobili" in sector:
-        return "fiis"
-    return "br"
+    category = legacy._position_category(
+        str((asset or {}).get("ticker") or ""),
+        str((asset or {}).get("name") or ""),
+        str((asset or {}).get("sector") or ""),
+    )
+    return {
+        "crypto": "crypto",
+        "us_stocks": "us",
+        "fiis": "fiis",
+    }.get(category, "br")
 
 
 def _market_data_stale_after_seconds_for_class(class_key: str):

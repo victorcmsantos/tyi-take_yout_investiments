@@ -244,6 +244,23 @@ function HomePage({ selectedPortfolioIds }) {
     { key: 'upcoming', label: 'Agenda de proventos futuros', enabled: normalizedDashboardPrefs.sections.upcoming !== false },
   ]
   const visibleSectionsCount = sectionItems.filter((item) => item.enabled).length
+  const heroStatItems = [
+    {
+      label: 'Ativos monitorados',
+      value: String(assets.length),
+      detail: assets.length > 0 ? 'Base carregada para leitura rapida' : 'Sem ativos no recorte atual',
+    },
+    {
+      label: 'Proventos projetados',
+      value: upcomingEstimatedBrl > 0 ? brl(upcomingEstimatedBrl) : '-',
+      detail: `${upcomingItems.length} evento(s) futuro(s) encontrado(s)`,
+    },
+    {
+      label: 'Saude de sync',
+      value: syncHealth?.status === 'ok' ? 'Estavel' : 'Atencao',
+      detail: healthTimeLabel === '-' ? 'Sem horario reportado' : `Ultima leitura: ${healthTimeLabel}`,
+    },
+  ]
 
   const moveDashboardCard = (cardKey, direction) => {
     setDashboardPrefs((current) => {
@@ -312,9 +329,9 @@ function HomePage({ selectedPortfolioIds }) {
     return (
       <section>
         <div className="dashboard-hero dashboard-animate">
-          <div>
+          <div className="dashboard-hero-copy">
             <small className="dashboard-hero-eyebrow">Visao geral</small>
-            <h1>Acoes</h1>
+            <h1>Panorama da carteira</h1>
             <p>Resumo rapido dos ativos, saude de sync e agenda de proventos.</p>
           </div>
         </div>
@@ -358,22 +375,40 @@ function HomePage({ selectedPortfolioIds }) {
   return (
     <section>
       <div className="dashboard-hero dashboard-animate">
-        <div>
+        <div className="dashboard-hero-copy">
           <small className="dashboard-hero-eyebrow">Visao geral</small>
-          <h1>Acoes</h1>
-          <p>Leia performance, qualidade de sincronizacao e proventos sem sair da pagina inicial.</p>
+          <h1>Panorama da carteira</h1>
+          <p>Leia performance, qualidade de sincronizacao e proventos em uma visao mais executiva e agradavel.</p>
+          <div className="dashboard-hero-meta">
+            <span className="dashboard-hero-chip">Carteiras ativas: {selectedPortfolioIds.length}</span>
+            <span className={`dashboard-hero-chip ${syncHealth?.status === 'ok' ? 'is-positive' : 'is-warning'}`}>
+              {syncHealth?.status === 'ok' ? 'Sync em dia' : 'Sync exige atencao'}
+            </span>
+            <span className="dashboard-hero-chip">Stale: {staleAssetsCount}</span>
+          </div>
         </div>
-        <div className="dashboard-hero-actions">
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => setShowCustomizer((current) => !current)}
-          >
-            {showCustomizer ? 'Fechar personalizacao' : 'Personalizar dashboard'}
-          </button>
-          <small>
-            {visibleHighlightCards.length} card(s) visiveis · {visibleSectionsCount} bloco(s) ativos
-          </small>
+        <div className="dashboard-hero-side">
+          <div className="dashboard-hero-actions">
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setShowCustomizer((current) => !current)}
+            >
+              {showCustomizer ? 'Fechar personalizacao' : 'Personalizar dashboard'}
+            </button>
+            <small>
+              {visibleHighlightCards.length} card(s) visiveis · {visibleSectionsCount} bloco(s) ativos
+            </small>
+          </div>
+          <div className="dashboard-hero-stats">
+            {heroStatItems.map((item) => (
+              <article key={item.label} className="dashboard-hero-stat">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <small>{item.detail}</small>
+              </article>
+            ))}
+          </div>
         </div>
       </div>
 

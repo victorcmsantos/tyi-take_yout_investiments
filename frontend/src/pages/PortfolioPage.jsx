@@ -14,11 +14,60 @@ const CATEGORY_META = [
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const marketStatusLabel = (item) => (item?.market_data?.is_stale ? 'Desatualizado' : 'Atualizado')
-const shortText = (value, limit = 120) => {
-  const text = String(value || '').trim()
-  if (!text) return ''
-  if (text.length <= limit) return text
-  return `${text.slice(0, limit - 3).trim()}...`
+const FII_TYPE_BY_TICKER = {
+  BRCO11: 'Galpao',
+  BTLG11: 'Galpao',
+  GGRC11: 'Galpao',
+  HGBS11: 'Shopping',
+  HGRE11: 'Laje',
+  HSAF11: 'Papel',
+  JSRE11: 'Hibrido',
+  KNCA11: 'Fiagro',
+  KNRI11: 'Hibrido',
+  MXRF11: 'Papel',
+  RZTR11: 'Fiagro',
+  SNAG11: 'Fiagro',
+  VGIA11: 'Fiagro',
+  VILG11: 'Galpao',
+  VISC11: 'Shopping',
+  XPML11: 'Shopping',
+}
+
+const normalizeText = (value) => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+
+const fiiTypeLabel = (item) => {
+  const ticker = String(item?.ticker || '').trim().toUpperCase()
+  if (FII_TYPE_BY_TICKER[ticker]) return FII_TYPE_BY_TICKER[ticker]
+
+  const text = normalizeText([item?.name, item?.sector].filter(Boolean).join(' '))
+
+  if (text.includes('fiagro') || text.includes('agro') || text.includes('terra')) return 'Fiagro'
+  if (
+    text.includes('papel')
+    || text.includes('recebiveis')
+    || text.includes('credito')
+    || text.includes('cri')
+    || text.includes('cra')
+    || text.includes('ativos financeiros')
+  ) return 'Papel'
+  if (text.includes('shopping') || text.includes('mall')) return 'Shopping'
+  if (text.includes('logistica') || text.includes('galp')) return 'Galpao'
+  if (
+    text.includes('laje')
+    || text.includes('escritorio')
+    || text.includes('office')
+    || text.includes('corporativo')
+  ) return 'Laje'
+  if (text.includes('hibrid') || text.includes('multigestao') || text.includes('diversificado')) return 'Hibrido'
+  if (text.includes('hotel')) return 'Hotel'
+  if (text.includes('hospital')) return 'Hospital'
+  if (text.includes('residencial')) return 'Residencial'
+  if (text.includes('imobili') || text.includes('real estate')) return 'Tijolo'
+
+  return 'FII'
 }
 
 const BUCKET_META = [
@@ -140,7 +189,7 @@ function PortfolioPage({ selectedPortfolioIds }) {
   }
 
   return (
-    <section>
+    <section className="portfolio-page">
       <h1>Renda Variavel</h1>
       {refreshing && <p>Atualizando ordenacao...</p>}
       <div className="cards">
@@ -190,7 +239,7 @@ function PortfolioPage({ selectedPortfolioIds }) {
         </small>
       </article>
 
-      <article className="card detail-card portfolio-tactical-card">
+      <article className="card detail-card portfolio-tactical-card portfolio-tactical-card-compact">
         <div className="analysis-head">
           <div>
             <h3>Resumo da carteira inteira</h3>
@@ -236,11 +285,10 @@ function PortfolioPage({ selectedPortfolioIds }) {
                           Sinal: <strong>{item.structured_action_label}</strong>
                         </p>
                         <p className="portfolio-tactical-item-meta">
-                          Gap vs medio: <strong className={Number(item.price_gap_pct || 0) >= 0 ? 'up' : 'down'}>{Number(item.price_gap_pct || 0).toFixed(2)}%</strong>
+                          Gap: <strong className={Number(item.price_gap_pct || 0) >= 0 ? 'up' : 'down'}>{Number(item.price_gap_pct || 0).toFixed(2)}%</strong>
                           {' · '}
                           Aberto: <strong className={Number(item.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>{Number(item.open_pnl_pct || 0).toFixed(2)}%</strong>
                         </p>
-                        <p className="subtitle portfolio-tactical-item-rationale">{shortText(item.rationale)}</p>
                       </article>
                     ))}
                   </div>
@@ -359,9 +407,15 @@ function PortfolioPage({ selectedPortfolioIds }) {
                             <td className="sticky-col sticky-col-ticker">
                               <div className="market-data-cell">
                                 <Link to={`/ativo/${item.ticker}`}>{item.ticker}</Link>
-                                <small className={item?.market_data?.is_stale ? 'market-data-badge stale' : 'market-data-badge live'}>
-                                  {marketStatusLabel(item)}
-                                </small>
+                                {meta.key === 'fiis' ? (
+                                  <small className="fii-type-badge">
+                                    {fiiTypeLabel(item)}
+                                  </small>
+                                ) : (
+                                  <small className={item?.market_data?.is_stale ? 'market-data-badge stale' : 'market-data-badge live'}>
+                                    {marketStatusLabel(item)}
+                                  </small>
+                                )}
                               </div>
                             </td>
                             <td>{item.name}</td>

@@ -379,10 +379,22 @@ function App({ themeMode, onToggleTheme }) {
               <Typography variant="body2" className="app-v2-header-portfolios" title={activePortfolioNames}>
                 {currentUser.username}{isAdminUser ? ' · Admin' : isViewerUser ? ' · Viewer' : ` · ${activePortfolioNames}`}
               </Typography>
-              <Button color="inherit" variant="outlined" onClick={onToggleTheme} sx={{ borderColor: 'rgba(255,255,255,0.35)' }}>
+              <Button
+                color="inherit"
+                variant="outlined"
+                onClick={onToggleTheme}
+                className="app-v2-header-btn"
+                sx={{ borderColor: 'rgba(255,255,255,0.35)' }}
+              >
                 {themeMode === 'dark' ? 'Modo claro' : 'Modo escuro'}
               </Button>
-              <Button color="inherit" variant="outlined" onClick={onLogout} sx={{ borderColor: 'rgba(255,255,255,0.35)' }}>
+              <Button
+                color="inherit"
+                variant="outlined"
+                onClick={onLogout}
+                className="app-v2-header-btn"
+                sx={{ borderColor: 'rgba(255,255,255,0.35)' }}
+              >
                 Sair
               </Button>
             </Box>
@@ -407,7 +419,7 @@ function App({ themeMode, onToggleTheme }) {
                   <option key={item.ticker} value={item.ticker}>{item.name}</option>
                 ))}
             </datalist>
-            <Button type="submit" variant="contained" color="primary">Buscar</Button>
+            <Button type="submit" variant="contained" color="primary" className="app-v2-search-btn">Buscar</Button>
           </Box>
         </Toolbar>
       </AppBar>
@@ -448,24 +460,32 @@ function App({ themeMode, onToggleTheme }) {
             ))}
           </div>
 
-          <Typography variant="h6" sx={{ mt: 2, mb: 1 }}>Carteiras</Typography>
-          {loadingPortfolios && <Typography variant="body2">Carregando...</Typography>}
-          {!!error && <Typography color="error" variant="body2">{error}</Typography>}
-          <FormGroup>
-            {portfolios.map((portfolio) => (
-              <FormControlLabel
-                key={portfolio.id}
-                control={(
-                  <Checkbox
-                    checked={selectedPortfolioIds.some((id) => Number(id) === Number(portfolio.id))}
-                    onChange={() => onTogglePortfolio(portfolio.id)}
-                    size="small"
-                  />
-                )}
-                label={portfolio.name}
-              />
-            ))}
-          </FormGroup>
+          <div className="app-v2-sidebar-summary">
+            <small>Contexto ativo</small>
+            <strong>{activePortfolioNames}</strong>
+            <span>{currentUser.username}{isAdminUser ? ' · Admin' : isViewerUser ? ' · Viewer' : ' · Investidor'}</span>
+          </div>
+
+          <div className="app-v2-portfolio-panel">
+            <Typography variant="h6" sx={{ mt: 0, mb: 1 }}>Carteiras</Typography>
+            {loadingPortfolios && <Typography variant="body2">Carregando...</Typography>}
+            {!!error && <Typography color="error" variant="body2">{error}</Typography>}
+            <FormGroup>
+              {portfolios.map((portfolio) => (
+                <FormControlLabel
+                  key={portfolio.id}
+                  control={(
+                    <Checkbox
+                      checked={selectedPortfolioIds.some((id) => Number(id) === Number(portfolio.id))}
+                      onChange={() => onTogglePortfolio(portfolio.id)}
+                      size="small"
+                    />
+                  )}
+                  label={portfolio.name}
+                />
+              ))}
+            </FormGroup>
+          </div>
         </Paper>
 
         <Box className="app-v2-content">

@@ -5,8 +5,14 @@ const pct = (value, signed = false) => formatPercent(value, 2, { signed, fallbac
 
 function SectorsTable({ sectors }) {
   return (
-    <>
-      <h2 style={{ marginTop: 24 }}>Mapa de setores</h2>
+    <section className="dashboard-section-card">
+      <div className="dashboard-section-heading">
+        <div>
+          <small>Distribuicao</small>
+          <h2>Mapa de setores</h2>
+        </div>
+        <p>Veja concentracao, media de dividendos e peso economico por setor sem sair da dashboard.</p>
+      </div>
       <div className="table-wrap">
         <table>
           <thead>
@@ -37,11 +43,11 @@ function SectorsTable({ sectors }) {
                   />
                 </td>
               </tr>
-            )}
-          </tbody>
-        </table>
+          )}
+        </tbody>
+      </table>
       </div>
-    </>
+    </section>
   )
 }
 

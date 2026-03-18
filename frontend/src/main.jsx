@@ -22,15 +22,53 @@ function AppRoot() {
       createTheme({
         palette: {
           mode,
-          primary: { main: '#0f8a77' },
-          secondary: { main: mode === 'dark' ? '#173a5f' : '#0b4c7a' },
+          primary: { main: '#38bdf8' },
+          secondary: { main: mode === 'dark' ? '#0d1b2a' : '#14263d' },
           background: {
-            default: mode === 'dark' ? '#0f1722' : '#edf2f9',
-            paper: mode === 'dark' ? '#172232' : '#ffffff',
+            default: mode === 'dark' ? '#06111f' : '#eaf4ff',
+            paper: mode === 'dark' ? '#0d1828' : '#f7fbff',
           },
         },
         shape: {
-          borderRadius: 10,
+          borderRadius: 20,
+        },
+        typography: {
+          fontFamily: '"Manrope", "Segoe UI", sans-serif',
+          h1: {
+            fontFamily: '"Sora", "Manrope", sans-serif',
+            fontWeight: 700,
+          },
+          h2: {
+            fontFamily: '"Sora", "Manrope", sans-serif',
+            fontWeight: 700,
+          },
+          h3: {
+            fontFamily: '"Sora", "Manrope", sans-serif',
+            fontWeight: 700,
+          },
+          button: {
+            fontWeight: 700,
+            textTransform: 'none',
+            letterSpacing: '0.01em',
+          },
+        },
+        components: {
+          MuiPaper: {
+            styleOverrides: {
+              root: {
+                backgroundImage: 'none',
+              },
+            },
+          },
+          MuiButton: {
+            styleOverrides: {
+              root: {
+                borderRadius: 999,
+                paddingInline: 16,
+                boxShadow: 'none',
+              },
+            },
+          },
         },
       }),
     [mode],

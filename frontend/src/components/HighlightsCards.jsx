@@ -14,12 +14,13 @@ function HighlightsCards({ cards, onResetHiddenCards }) {
   }
 
   return (
-    <div className="cards">
-      {cards.map((card) => (
-        <article key={card.key} className={`card dashboard-card dashboard-card-${card.key}`}>
-          <h3>{card.title}</h3>
-          <p className={card.valueClassName || ''}>{card.value}</p>
-          {card.caption ? <small>{card.caption}</small> : null}
+      <div className="cards">
+        {cards.map((card) => (
+          <article key={card.key} className={`card dashboard-card dashboard-card-${card.key}`}>
+            <small className="dashboard-card-kicker">Resumo</small>
+            <h3>{card.title}</h3>
+            <p className={card.valueClassName || ''}>{card.value}</p>
+            {card.caption ? <small>{card.caption}</small> : null}
           {Array.isArray(card.metaLines) && card.metaLines.length > 0 ? (
             <div className="card-health-lines">
               {card.metaLines.map((line) => <small key={`${card.key}-${line}`}>{line}</small>)}

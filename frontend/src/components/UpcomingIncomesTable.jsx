@@ -24,8 +24,14 @@ const dateBr = (value) => {
 
 function UpcomingIncomesTable({ upcomingItems }) {
   return (
-    <>
-      <h2 style={{ marginTop: 24 }}>Agenda de proventos futuros</h2>
+    <section className="dashboard-section-card">
+      <div className="dashboard-section-heading">
+        <div>
+          <small>Fluxo de caixa</small>
+          <h2>Agenda de proventos futuros</h2>
+        </div>
+        <p>Uma agenda visual para antecipar pagamentos, datas ex e valor estimado da renda passiva.</p>
+      </div>
       <div className="table-wrap">
         <table>
           <thead>
@@ -62,11 +68,11 @@ function UpcomingIncomesTable({ upcomingItems }) {
                   />
                 </td>
               </tr>
-            )}
-          </tbody>
-        </table>
+          )}
+        </tbody>
+      </table>
       </div>
-    </>
+    </section>
   )
 }
 

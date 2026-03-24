@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
+import 'chart.js/auto'
 import { Button, Paper, Typography } from '@mui/material'
+import { Bar, Doughnut, Line } from 'react-chartjs-2'
 import { apiGet, apiPatch, apiPost } from '../api'
 import { currentBrowserTimeZone, formatAgeFromNow, formatDateTimeLocal } from '../datetime'
 import { formatCurrencyBRL, formatDecimal, formatPercent, formatQuantity, toFiniteNumber } from '../formatters'
 import { emitAppToast } from '../toast'
+
+const CHART_TEXT = '#8096ad'
+const CHART_GRID = 'rgba(128, 150, 173, 0.16)'
+const CHART_MONO = 'IBM Plex Mono, SFMono-Regular, monospace'
+const POSITIVE_COLOR = '#18b88a'
+const NEGATIVE_COLOR = '#d85f6f'
+const NEUTRAL_COLOR = '#3fb4d8'
+const WARNING_COLOR = '#c48b2d'
 
 function toNumberOrNull(value) {
   return toFiniteNumber(value, null)
@@ -24,6 +34,120 @@ function marketDataStampLabel(marketData) {
   const candle = formatDateTimeLocal(marketData?.updated_at, '-')
   const age = formatAgeFromNow(marketData?.updated_at, '-')
   return `${source} | ${candle} | ${age}`
+}
+
+function formatCompactDateTime(value) {
+  if (!value) return '-'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return '-'
+  return new Intl.DateTimeFormat('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed)
+}
+
+function chartLegend(display = true) {
+  return {
+    display,
+    labels: {
+      color: CHART_TEXT,
+      usePointStyle: true,
+      pointStyle: 'circle',
+      boxWidth: 10,
+      boxHeight: 10,
+      padding: 14,
+      font: { size: 11, weight: '700' },
+    },
+  }
+}
+
+function makeScale(tickCallback) {
+  return {
+    ticks: {
+      color: CHART_TEXT,
+      font: { size: 11, family: CHART_MONO },
+      callback: tickCallback,
+    },
+    grid: {
+      color: CHART_GRID,
+      drawBorder: false,
+    },
+    border: {
+      display: false,
+    },
+  }
+}
+
+function buildCartesianOptions({ yTick, legend = false } = {}) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { intersect: false, mode: 'index' },
+    scales: {
+      x: {
+        ticks: {
+          color: CHART_TEXT,
+          maxRotation: 0,
+          autoSkipPadding: 14,
+          font: { size: 11, family: CHART_MONO },
+        },
+        grid: {
+          display: false,
+          drawBorder: false,
+        },
+        border: {
+          display: false,
+        },
+      },
+      y: makeScale(yTick),
+    },
+    plugins: {
+      legend: chartLegend(legend),
+      tooltip: {
+        backgroundColor: 'rgba(7, 18, 31, 0.96)',
+        titleColor: '#f4fbff',
+        bodyColor: '#dbe8f5',
+        borderColor: 'rgba(43, 176, 201, 0.32)',
+        borderWidth: 1,
+        padding: 12,
+        displayColors: true,
+        titleFont: { family: CHART_MONO, size: 11, weight: '700' },
+        bodyFont: { family: CHART_MONO, size: 11 },
+      },
+    },
+  }
+}
+
+function buildCircularOptions() {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: chartLegend(true),
+      tooltip: {
+        backgroundColor: 'rgba(7, 18, 31, 0.96)',
+        titleColor: '#f4fbff',
+        bodyColor: '#dbe8f5',
+        borderColor: 'rgba(43, 176, 201, 0.32)',
+        borderWidth: 1,
+        padding: 12,
+        displayColors: true,
+        titleFont: { family: CHART_MONO, size: 11, weight: '700' },
+        bodyFont: { family: CHART_MONO, size: 11 },
+      },
+    },
+  }
+}
+
+function formatTradeHeadline(trade) {
+  if (!trade?.ticker) return 'Sem histórico'
+  return `${trade.ticker} · ${formatCurrencyBRL(trade.realized_pnl_amount)}`
+}
+
+function pnlClassName(value) {
+  return Number(value || 0) >= 0 ? 'scanner-positive' : 'scanner-negative'
 }
 
 function SwingTradePage({ readOnly = false }) {
@@ -75,6 +199,131 @@ function SwingTradePage({ readOnly = false }) {
     openInvestedAmount: Number(trades?.summary?.open_invested_amount || 0),
     openPnlAmount: Number(trades?.summary?.open_pnl_amount || 0),
   }), [trades?.summary])
+
+  const historyAnalytics = useMemo(() => {
+    const history = Array.isArray(trades?.history) ? trades.history : []
+    const orderedHistory = [...history].sort((left, right) => {
+      const leftTime = new Date(left?.closed_at || left?.opened_at || 0).getTime()
+      const rightTime = new Date(right?.closed_at || right?.opened_at || 0).getTime()
+      return leftTime - rightTime
+    })
+
+    const totals = {
+      grossProfit: 0,
+      grossLoss: 0,
+      netPnl: 0,
+      winCount: 0,
+      lossCount: 0,
+      flatCount: 0,
+    }
+    let bestTrade = null
+    let worstTrade = null
+    const statusMap = new Map()
+    let runningPnl = 0
+
+    const cumulativeSeries = orderedHistory.map((trade) => {
+      const pnlAmount = Number(trade?.realized_pnl_amount || 0)
+      totals.netPnl += pnlAmount
+      if (pnlAmount > 0) {
+        totals.grossProfit += pnlAmount
+        totals.winCount += 1
+      } else if (pnlAmount < 0) {
+        totals.grossLoss += Math.abs(pnlAmount)
+        totals.lossCount += 1
+      } else {
+        totals.flatCount += 1
+      }
+
+      if (!bestTrade || pnlAmount > Number(bestTrade.realized_pnl_amount || 0)) bestTrade = trade
+      if (!worstTrade || pnlAmount < Number(worstTrade.realized_pnl_amount || 0)) worstTrade = trade
+
+      const statusKey = String(trade?.status_label || trade?.status || 'Sem status').trim() || 'Sem status'
+      const currentStatus = statusMap.get(statusKey) || {
+        label: statusKey,
+        count: 0,
+        tone: trade?.status_tone || 'neutral',
+      }
+      currentStatus.count += 1
+      statusMap.set(statusKey, currentStatus)
+
+      runningPnl += pnlAmount
+      return {
+        label: `${trade?.ticker || 'Trade'} · ${formatCompactDateTime(trade?.closed_at || trade?.opened_at)}`,
+        value: Number(runningPnl.toFixed(2)),
+      }
+    })
+
+    const closedCount = orderedHistory.length
+    const averageWin = totals.winCount > 0 ? totals.grossProfit / totals.winCount : 0
+    const averageLoss = totals.lossCount > 0 ? totals.grossLoss / totals.lossCount : 0
+    const winRate = closedCount > 0 ? (totals.winCount / closedCount) * 100 : 0
+    const profitFactor = totals.grossLoss > 0 ? totals.grossProfit / totals.grossLoss : null
+    const statusSeries = [...statusMap.values()].sort((left, right) => right.count - left.count)
+
+    return {
+      closedCount,
+      grossProfit: Number(totals.grossProfit.toFixed(2)),
+      grossLoss: Number(totals.grossLoss.toFixed(2)),
+      netPnl: Number(totals.netPnl.toFixed(2)),
+      winCount: totals.winCount,
+      lossCount: totals.lossCount,
+      flatCount: totals.flatCount,
+      winRate,
+      averageWin,
+      averageLoss,
+      profitFactor,
+      bestTrade,
+      worstTrade,
+      statusSeries,
+      cumulativeSeries,
+    }
+  }, [trades?.history])
+
+  const historyStatusChart = useMemo(() => ({
+    labels: historyAnalytics.statusSeries.map((item) => item.label),
+    datasets: [
+      {
+        label: 'Operações',
+        data: historyAnalytics.statusSeries.map((item) => item.count),
+        backgroundColor: historyAnalytics.statusSeries.map((item) => {
+          if (item.tone === 'positive') return POSITIVE_COLOR
+          if (item.tone === 'negative') return NEGATIVE_COLOR
+          return item.count > 0 ? NEUTRAL_COLOR : WARNING_COLOR
+        }),
+        borderColor: 'rgba(7, 18, 31, 0.85)',
+        borderWidth: 2,
+      },
+    ],
+  }), [historyAnalytics.statusSeries])
+
+  const historyAmountChart = useMemo(() => ({
+    labels: ['Ganho bruto', 'Perda bruta', 'PnL líquido'],
+    datasets: [
+      {
+        label: 'Valor',
+        data: [historyAnalytics.grossProfit, historyAnalytics.grossLoss, historyAnalytics.netPnl],
+        backgroundColor: [POSITIVE_COLOR, NEGATIVE_COLOR, historyAnalytics.netPnl >= 0 ? NEUTRAL_COLOR : WARNING_COLOR],
+        borderRadius: 10,
+        maxBarThickness: 64,
+      },
+    ],
+  }), [historyAnalytics.grossLoss, historyAnalytics.grossProfit, historyAnalytics.netPnl])
+
+  const historyCurveChart = useMemo(() => ({
+    labels: historyAnalytics.cumulativeSeries.map((item) => item.label),
+    datasets: [
+      {
+        label: 'PnL acumulado',
+        data: historyAnalytics.cumulativeSeries.map((item) => item.value),
+        borderColor: historyAnalytics.netPnl >= 0 ? POSITIVE_COLOR : NEGATIVE_COLOR,
+        backgroundColor: historyAnalytics.netPnl >= 0 ? 'rgba(24, 184, 138, 0.18)' : 'rgba(216, 95, 111, 0.18)',
+        fill: true,
+        tension: 0.28,
+        pointRadius: 3,
+        pointHoverRadius: 5,
+      },
+    ],
+  }), [historyAnalytics.cumulativeSeries, historyAnalytics.netPnl])
 
   const onCloseTrade = async (tradeId) => {
     if (readOnly) {
@@ -267,6 +516,130 @@ function SwingTradePage({ readOnly = false }) {
               </article>
             ))}
           </div>
+        )}
+      </Paper>
+
+      <Paper className="admin-panel" sx={{ p: 2, mb: 2 }}>
+        <div className="chart-panel-head">
+          <div>
+            <Typography variant="h6" sx={{ mb: 0.5 }}>Painel do histórico</Typography>
+            <p className="subtitle">
+              Visão rápida das operações encerradas para acompanhar acerto, perdas e evolução do resultado.
+            </p>
+          </div>
+        </div>
+
+        {!Array.isArray(trades?.history) || trades.history.length === 0 ? (
+          <p>Ainda não existe histórico encerrado para montar os gráficos.</p>
+        ) : (
+          <>
+            <div className="scanner-ops-stats" style={{ marginBottom: 16 }}>
+              <article className="card">
+                <h3>PnL realizado</h3>
+                <p className={pnlClassName(historyAnalytics.netPnl)}>
+                  {formatCurrencyBRL(historyAnalytics.netPnl)}
+                </p>
+              </article>
+              <article className="card">
+                <h3>Ganho bruto</h3>
+                <p className="scanner-positive">{formatCurrencyBRL(historyAnalytics.grossProfit)}</p>
+              </article>
+              <article className="card">
+                <h3>Perda bruta</h3>
+                <p className="scanner-negative">{formatCurrencyBRL(historyAnalytics.grossLoss)}</p>
+              </article>
+              <article className="card">
+                <h3>Taxa de acerto</h3>
+                <p>{formatPercent(historyAnalytics.winRate, 1)}</p>
+              </article>
+              <article className="card">
+                <h3>Melhor trade</h3>
+                <p className={pnlClassName(historyAnalytics?.bestTrade?.realized_pnl_amount)}>{formatTradeHeadline(historyAnalytics.bestTrade)}</p>
+              </article>
+              <article className="card">
+                <h3>Pior trade</h3>
+                <p className={pnlClassName(historyAnalytics?.worstTrade?.realized_pnl_amount)}>{formatTradeHeadline(historyAnalytics.worstTrade)}</p>
+              </article>
+            </div>
+
+            <div className="scanner-ops-stats" style={{ marginBottom: 16 }}>
+              <article className="card">
+                <h3>Operações com lucro</h3>
+                <p>{historyAnalytics.winCount}</p>
+              </article>
+              <article className="card">
+                <h3>Operações com perda</h3>
+                <p>{historyAnalytics.lossCount}</p>
+              </article>
+              <article className="card">
+                <h3>Operações zeradas</h3>
+                <p>{historyAnalytics.flatCount}</p>
+              </article>
+              <article className="card">
+                <h3>Lucro médio</h3>
+                <p className="scanner-positive">{formatCurrencyBRL(historyAnalytics.averageWin)}</p>
+              </article>
+              <article className="card">
+                <h3>Perda média</h3>
+                <p className="scanner-negative">{formatCurrencyBRL(historyAnalytics.averageLoss)}</p>
+              </article>
+              <article className="card">
+                <h3>Profit factor</h3>
+                <p>{historyAnalytics.profitFactor == null ? 'Sem perdas' : `${formatDecimal(historyAnalytics.profitFactor, 2)}x`}</p>
+              </article>
+            </div>
+
+            <div className="charts-grid charts-grid-analytics">
+              <article className="card chart-card">
+                <div className="chart-panel-head">
+                  <div>
+                    <h3>Status do histórico</h3>
+                    <p className="subtitle">Quantidade de trades encerrados por tipo de resultado.</p>
+                  </div>
+                </div>
+                <div className="chart-canvas-wrap">
+                  <Doughnut
+                    data={historyStatusChart}
+                    options={buildCircularOptions()}
+                  />
+                </div>
+              </article>
+
+              <article className="card chart-card">
+                <div className="chart-panel-head">
+                  <div>
+                    <h3>Ganhou vs perdeu</h3>
+                    <p className="subtitle">Comparativo entre ganho bruto, perda bruta e resultado líquido.</p>
+                  </div>
+                </div>
+                <div className="chart-canvas-wrap">
+                  <Bar
+                    data={historyAmountChart}
+                    options={buildCartesianOptions({
+                      yTick: (value) => formatCurrencyBRL(value),
+                    })}
+                  />
+                </div>
+              </article>
+
+              <article className="card chart-card">
+                <div className="chart-panel-head">
+                  <div>
+                    <h3>Curva de resultado</h3>
+                    <p className="subtitle">Evolução acumulada do PnL realizado ao longo dos fechamentos.</p>
+                  </div>
+                </div>
+                <div className="chart-canvas-wrap">
+                  <Line
+                    data={historyCurveChart}
+                    options={buildCartesianOptions({
+                      yTick: (value) => formatCurrencyBRL(value),
+                    })}
+                  />
+                </div>
+              </article>
+            </div>
+          </>
         )}
       </Paper>
 

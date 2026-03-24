@@ -132,6 +132,7 @@ def start_market_sync(app):
         interval_seconds=app.config["MARKET_SYNC_INTERVAL_SECONDS"],
         max_age_seconds=app.config["MARKET_SYNC_INTERVAL_SECONDS"] * 2,
         enabled=should_start,
+        configured_enabled=app.config["MARKET_SYNC_ENABLED"],
     )
 
     if not should_start:

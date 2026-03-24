@@ -62,6 +62,7 @@ def start_chart_sync(app):
         interval_seconds=app.config["CHART_SNAPSHOT_INTERVAL_SECONDS"],
         max_age_seconds=app.config["CHART_SNAPSHOT_MAX_AGE_SECONDS"],
         enabled=should_start,
+        configured_enabled=app.config["CHART_SNAPSHOT_ENABLED"],
     )
 
     if not should_start:

@@ -61,6 +61,7 @@ def start_fixed_income_sync(app):
         interval_seconds=app.config["FIXED_INCOME_SNAPSHOT_INTERVAL_SECONDS"],
         max_age_seconds=app.config["FIXED_INCOME_SNAPSHOT_MAX_AGE_SECONDS"],
         enabled=should_start,
+        configured_enabled=app.config["FIXED_INCOME_SNAPSHOT_ENABLED"],
     )
 
     if not should_start:

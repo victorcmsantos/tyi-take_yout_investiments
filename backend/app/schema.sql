@@ -142,6 +142,25 @@ CREATE TABLE IF NOT EXISTS api_provider_usage_window (
 CREATE INDEX IF NOT EXISTS idx_api_provider_usage_window_updated_at
 ON api_provider_usage_window (updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS background_job_status (
+  job_name TEXT PRIMARY KEY,
+  configured_enabled INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  running INTEGER NOT NULL DEFAULT 0,
+  interval_seconds INTEGER NOT NULL DEFAULT 0,
+  max_age_seconds INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_started_at TEXT,
+  last_finished_at TEXT,
+  last_success_at TEXT,
+  last_error_at TEXT,
+  last_duration_ms REAL,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  last_result_json TEXT,
+  last_error TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS market_data_sync_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ticker TEXT NOT NULL,

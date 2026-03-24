@@ -13,7 +13,7 @@ import {
   Toolbar,
   Typography,
 } from '@mui/material'
-import { apiGet, apiGetCached, apiPost } from './api'
+import { apiGet, apiGetCached, apiPost, clearApiCache } from './api'
 import { APP_TOAST_EVENT } from './toast'
 import StatePanel from './components/StatePanel'
 
@@ -185,18 +185,23 @@ function App({ themeMode, onToggleTheme }) {
     return () => window.removeEventListener(APP_TOAST_EVENT, handleToast)
   }, [])
 
-  const onLoggedIn = async (user) => {
-    setCurrentUser(user)
+  const onLoggedIn = async () => {
     setAuthLoading(false)
     setLoadingPortfolios(true)
     setError('')
     try {
+      clearApiCache()
+      const authenticatedUser = await refreshAuth()
+      if (!authenticatedUser) {
+        throw new Error('Nao foi possivel confirmar a sessao apos o login.')
+      }
       const data = await refreshPortfolios()
       if (data.length > 0) {
         setSelectedPortfolioIds(data.map((item) => item.id))
       }
       navigate('/')
     } catch (err) {
+      setCurrentUser(null)
       setError(err.message)
     } finally {
       setLoadingPortfolios(false)
@@ -209,6 +214,7 @@ function App({ themeMode, onToggleTheme }) {
     } catch (err) {
       // ignora erro e limpa estado local mesmo assim
     }
+    clearApiCache()
     setCurrentUser(null)
     setPortfolios([])
     setSelectedPortfolioIds([])

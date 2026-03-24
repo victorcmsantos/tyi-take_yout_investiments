@@ -91,6 +91,7 @@ def start_upcoming_income_sync(app):
         interval_seconds=app.config["UPCOMING_INCOME_SYNC_INTERVAL_SECONDS"],
         max_age_seconds=app.config["UPCOMING_INCOME_SYNC_MAX_AGE_SECONDS"],
         enabled=should_start,
+        configured_enabled=app.config["UPCOMING_INCOME_SYNC_ENABLED"],
     )
 
     if not should_start:

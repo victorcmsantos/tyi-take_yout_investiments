@@ -279,7 +279,8 @@ cp /srv/tyi-take_yout_investiments/app_vol/backups/investments_YYYYMMDD_HHMMSS.s
 - `SQLITE_TIMEOUT_SECONDS`: timeout das conexoes SQLite antes de falhar com lock. Padrao: `30`
 - `BACKGROUND_JOBS_LOCK_FILE`: arquivo de lock que define o worker lider dos jobs. Padrao: ao lado do banco, em `.background-jobs.lock`
 - `DATABASE_STARTUP_LOCK_FILE`: arquivo de lock usado durante inicializacao/migracao do banco. Padrao: ao lado do banco, em `.db-startup.lock`
-- `MARKET_SYNC_ENABLED`: habilita/desabilita o job de sync de mercado. Padrao: `0`
+- `MARKET_SYNC_ENABLED`: habilita/desabilita o job de sync de mercado. Padrao: `1`
+- `MARKET_DATA_STALE_AFTER_SECONDS_CRYPTO`: SLA de staleness para cripto. Recomendado: `300` para acompanhar mercado 24/7.
 - `MARKET_SYNC_INTERVAL_SECONDS`: intervalo do job de sync em segundos. Padrao: `300`
 - `MARKET_SYNC_SCOPE`: escopo do job de sync (`all`, `br`, `us`, `crypto`). Padrao: `all`
 - `MARKET_SYNC_FORCE_LIVE_BR`: quando `1`, ignora `market_scanner` para BR no job automatico. Padrao: `0`

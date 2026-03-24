@@ -1,11 +1,12 @@
 import json
 import logging
+import sqlite3
 import time
 import uuid
 from datetime import datetime, timezone
 from threading import Lock
 
-from flask import current_app, g, has_request_context, request
+from flask import current_app, g, has_app_context, has_request_context, request
 from werkzeug.exceptions import HTTPException
 
 from .db import get_db, list_database_backups
@@ -63,6 +64,133 @@ def _init_metrics(app):
         "observability_started_at",
         datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
+
+
+def _job_state_to_persisted_payload(state):
+    result = state.get("last_result")
+    if result is None:
+        result_json = None
+    else:
+        try:
+            result_json = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        except TypeError:
+            result_json = json.dumps(str(result), ensure_ascii=False)
+    return {
+        "job_name": str(state.get("name") or "").strip(),
+        "configured_enabled": 1 if bool(state.get("configured_enabled")) else 0,
+        "enabled": 1 if bool(state.get("enabled")) else 0,
+        "running": 1 if bool(state.get("running")) else 0,
+        "interval_seconds": int(state.get("interval_seconds") or 0),
+        "max_age_seconds": int(state.get("max_age_seconds") or 0),
+        "created_at": state.get("created_at"),
+        "last_started_at": state.get("last_started_at"),
+        "last_finished_at": state.get("last_finished_at"),
+        "last_success_at": state.get("last_success_at"),
+        "last_error_at": state.get("last_error_at"),
+        "last_duration_ms": state.get("last_duration_ms"),
+        "consecutive_failures": int(state.get("consecutive_failures") or 0),
+        "last_result_json": result_json,
+        "last_error": state.get("last_error"),
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def _persist_job_status(app, state):
+    payload = _job_state_to_persisted_payload(state)
+    if not payload["job_name"]:
+        return
+    sql = """
+    INSERT INTO background_job_status (
+      job_name,
+      configured_enabled,
+      enabled,
+      running,
+      interval_seconds,
+      max_age_seconds,
+      created_at,
+      last_started_at,
+      last_finished_at,
+      last_success_at,
+      last_error_at,
+      last_duration_ms,
+      consecutive_failures,
+      last_result_json,
+      last_error,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(job_name) DO UPDATE SET
+      configured_enabled = excluded.configured_enabled,
+      enabled = excluded.enabled,
+      running = excluded.running,
+      interval_seconds = excluded.interval_seconds,
+      max_age_seconds = excluded.max_age_seconds,
+      last_started_at = excluded.last_started_at,
+      last_finished_at = excluded.last_finished_at,
+      last_success_at = excluded.last_success_at,
+      last_error_at = excluded.last_error_at,
+      last_duration_ms = excluded.last_duration_ms,
+      consecutive_failures = excluded.consecutive_failures,
+      last_result_json = excluded.last_result_json,
+      last_error = excluded.last_error,
+      updated_at = excluded.updated_at
+    """
+    params = (
+        payload["job_name"],
+        payload["configured_enabled"],
+        payload["enabled"],
+        payload["running"],
+        payload["interval_seconds"],
+        payload["max_age_seconds"],
+        payload["created_at"],
+        payload["last_started_at"],
+        payload["last_finished_at"],
+        payload["last_success_at"],
+        payload["last_error_at"],
+        payload["last_duration_ms"],
+        payload["consecutive_failures"],
+        payload["last_result_json"],
+        payload["last_error"],
+        payload["updated_at"],
+    )
+    if has_app_context():
+        db = get_db()
+        db.execute(sql, params)
+        db.commit()
+        return
+
+    connection = sqlite3.connect(app.config["DATABASE"])
+    try:
+        connection.execute(sql, params)
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _hydrate_job_state_from_row(row):
+    result = None
+    raw_result = row["last_result_json"]
+    if raw_result:
+        try:
+            result = json.loads(raw_result)
+        except (TypeError, ValueError):
+            result = raw_result
+    return {
+        "name": row["job_name"],
+        "created_at": row["created_at"],
+        "configured_enabled": bool(row["configured_enabled"]),
+        "enabled": bool(row["enabled"]),
+        "running": bool(row["running"]),
+        "interval_seconds": int(row["interval_seconds"] or 0),
+        "max_age_seconds": int(row["max_age_seconds"] or 0),
+        "last_started_at": row["last_started_at"],
+        "last_finished_at": row["last_finished_at"],
+        "last_success_at": row["last_success_at"],
+        "last_error_at": row["last_error_at"],
+        "last_duration_ms": row["last_duration_ms"],
+        "consecutive_failures": int(row["consecutive_failures"] or 0),
+        "last_result": result,
+        "last_error": row["last_error"],
+    }
 
 
 def _register_request_hooks(app):
@@ -166,13 +294,15 @@ def _record_request_metric(app, path, method, status_code, duration_ms):
             current["errors_5xx"] += 1
 
 
-def init_job_status(app, job_name, interval_seconds, max_age_seconds, enabled=True):
+def init_job_status(app, job_name, interval_seconds, max_age_seconds, enabled=True, configured_enabled=None):
+    configured_flag = bool(enabled) if configured_enabled is None else bool(configured_enabled)
     app.extensions.setdefault("job_statuses", {})
-    app.extensions["job_statuses"].setdefault(
+    state = app.extensions["job_statuses"].setdefault(
         job_name,
         {
             "name": job_name,
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "configured_enabled": configured_flag,
             "enabled": bool(enabled),
             "running": False,
             "interval_seconds": int(interval_seconds),
@@ -187,6 +317,12 @@ def init_job_status(app, job_name, interval_seconds, max_age_seconds, enabled=Tr
             "last_error": None,
         },
     )
+    state["configured_enabled"] = configured_flag
+    state["enabled"] = bool(enabled)
+    state["interval_seconds"] = int(interval_seconds)
+    state["max_age_seconds"] = int(max_age_seconds)
+    if bool(enabled) or not configured_flag:
+        _persist_job_status(app, state)
 
 
 def mark_job_started(app, job_name):
@@ -194,6 +330,7 @@ def mark_job_started(app, job_name):
     state["running"] = True
     state["last_started_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     state["_started_perf"] = time.perf_counter()
+    _persist_job_status(app, state)
 
 
 def mark_job_finished(app, job_name, result=None, error=None):
@@ -240,9 +377,44 @@ def mark_job_finished(app, job_name, result=None, error=None):
             dedupe_key=f"job:failed:{job_name}",
             min_interval_seconds=300,
         )
+    _persist_job_status(app, state)
 
 
 def get_job_statuses(app):
+    try:
+        rows = get_db().execute(
+            """
+            SELECT
+              job_name,
+              configured_enabled,
+              enabled,
+              running,
+              interval_seconds,
+              max_age_seconds,
+              created_at,
+              last_started_at,
+              last_finished_at,
+              last_success_at,
+              last_error_at,
+              last_duration_ms,
+              consecutive_failures,
+              last_result_json,
+              last_error
+            FROM background_job_status
+            ORDER BY job_name ASC
+            """
+        ).fetchall()
+    except Exception:
+        rows = []
+
+    if rows:
+        statuses = []
+        for row in rows:
+            item = _hydrate_job_state_from_row(row)
+            item["stale"] = _is_job_stale(item)
+            statuses.append(item)
+        return statuses
+
     statuses = []
     for state in app.extensions.get("job_statuses", {}).values():
         item = dict(state)

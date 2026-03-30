@@ -530,8 +530,18 @@ function ChartsPage({ selectedPortfolioIds }) {
   const fixedIssuerData = {
     labels: fixedIssuerChart.labels || [],
     datasets: [
-      { label: 'investimento', data: fixedIssuerChart.investment_values || [], backgroundColor: '#1f6feb' },
-      { label: 'rendimento', data: fixedIssuerChart.income_values || [], backgroundColor: '#0f8a77' },
+      {
+        label: 'investimento',
+        data: fixedIssuerChart.investment_values || [],
+        backgroundColor: '#1f6feb',
+        stack: 'fixed-issuer',
+      },
+      {
+        label: 'rendimento',
+        data: fixedIssuerChart.income_values || [],
+        backgroundColor: '#0f8a77',
+        stack: 'fixed-issuer',
+      },
     ],
   }
 
@@ -615,7 +625,39 @@ function ChartsPage({ selectedPortfolioIds }) {
   const benchmarkOptions = buildCartesianOptions({ yScale: percentScale, legend: true })
   const incomeLineOptions = buildCartesianOptions({ yScale: moneyScale, legend: true })
   const barMoneyOptions = buildCartesianOptions({ yScale: moneyScale, legend: false })
-  const fixedIssuerOptions = buildCartesianOptions({ yScale: moneyScale, legend: true })
+  const fixedIssuerOptions = {
+    ...buildCartesianOptions({ yScale: moneyScale, legend: true, stacked: true }),
+    plugins: {
+      ...buildCartesianOptions({ yScale: moneyScale, legend: true, stacked: true }).plugins,
+      datalabels: {
+        color: TERMINAL_TEXT,
+        anchor: 'end',
+        align: 'end',
+        offset: 4,
+        formatter: (_, ctx) => {
+          const dataIndex = ctx.dataIndex
+          const datasets = ctx.chart.data.datasets || []
+          const currentIndex = ctx.datasetIndex
+          const currentValue = Number(ctx.raw || 0)
+          if (!Number.isFinite(currentValue)) return ''
+
+          const lastVisibleIndex = datasets.reduce((lastIndex, dataset, index) => {
+            const value = Number(dataset?.data?.[dataIndex] || 0)
+            return value > 0 ? index : lastIndex
+          }, -1)
+
+          if (currentIndex !== lastVisibleIndex) return ''
+
+          const total = datasets.reduce((sum, dataset) => (
+            sum + Number(dataset?.data?.[dataIndex] || 0)
+          ), 0)
+          if (!Number.isFinite(total) || total <= 0) return ''
+          return brlCompact(total)
+        },
+        font: { weight: '700', size: 10 },
+      },
+    },
+  }
   const allocationBarOptionsFor = (chart) => ({
     ...buildCartesianOptions({ yScale: moneyScale, legend: false, indexAxis: 'y' }),
     plugins: {

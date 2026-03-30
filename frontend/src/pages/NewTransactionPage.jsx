@@ -4,6 +4,19 @@ import { formatCurrencyBRL, formatQuantity } from '../formatters'
 import { emitAppToast } from '../toast'
 
 const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
+const FIXED_INVESTMENT_TYPE_OPTIONS = [
+  'CDB',
+  'LCI',
+  'LCA',
+  'LCI/LCA',
+  'CRI',
+  'CRA',
+  'DEBENTURE',
+  'TESOURO DIRETO',
+  'LETRA FINANCEIRA',
+  'COE',
+]
+const FIXED_INVESTMENT_TYPE_SET = new Set(FIXED_INVESTMENT_TYPE_OPTIONS)
 
 function dateBr(value) {
   if (!value) return ''
@@ -81,6 +94,9 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
     [tickerSuggestions],
   )
   const shouldShowTickerSuggestions = String(form.ticker || '').trim().length >= 1
+  const fixedInvestmentTypeSelectValue = FIXED_INVESTMENT_TYPE_SET.has(fixedForm.investment_type)
+    ? fixedForm.investment_type
+    : (fixedForm.investment_type ? 'OUTRO' : '')
 
   const loadTransactions = async () => {
     setLoading(true)
@@ -202,6 +218,13 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
 
   const onFixedChange = (event) => {
     const { name, value } = event.target
+    if (name === 'investment_type') {
+      setFixedForm((current) => ({
+        ...current,
+        investment_type: value === 'OUTRO' ? (FIXED_INVESTMENT_TYPE_SET.has(current.investment_type) ? '' : current.investment_type) : value,
+      }))
+      return
+    }
     setFixedForm((current) => ({ ...current, [name]: value }))
   }
 
@@ -471,7 +494,31 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
           </div>
           <div>
             <label htmlFor="investment_type">Investimento</label>
-            <input id="investment_type" name="investment_type" type="text" value={fixedForm.investment_type} onChange={onFixedChange} required />
+            <select
+              id="investment_type"
+              name="investment_type"
+              value={fixedInvestmentTypeSelectValue}
+              onChange={onFixedChange}
+              required
+            >
+              <option value="">Selecione</option>
+              {FIXED_INVESTMENT_TYPE_OPTIONS.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+              <option value="OUTRO">Outro</option>
+            </select>
+            {fixedInvestmentTypeSelectValue === 'OUTRO' ? (
+              <input
+                style={{ marginTop: 8 }}
+                id="investment_type_custom"
+                name="investment_type"
+                type="text"
+                placeholder="Ex: RDB, LF, LCD..."
+                value={fixedForm.investment_type}
+                onChange={onFixedChange}
+                required
+              />
+            ) : null}
           </div>
           <div>
             <label htmlFor="rate_type">Tipo de taxa</label>

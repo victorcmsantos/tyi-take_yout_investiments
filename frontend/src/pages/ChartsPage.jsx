@@ -30,6 +30,10 @@ const TERMINAL_GRID = 'rgba(128, 150, 173, 0.16)'
 const TERMINAL_PALETTE = ['#0f8a77', '#1f6feb', '#c48b2d', '#d95f2f', '#cf3f5b', '#6c63ff', '#2bb0c9', '#708090']
 const TERMINAL_MONO = 'IBM Plex Mono, SFMono-Regular, monospace'
 
+function withHexAlpha(color, alpha = 'FF') {
+  return /^#[0-9a-f]{6}$/i.test(color) ? `${color}${alpha}` : color
+}
+
 function chartLegend(display = true) {
   return {
     display,
@@ -224,9 +228,12 @@ function ChartsPage({ selectedPortfolioIds }) {
   const [tickerSortMetric, setTickerSortMetric] = usePersistedState('charts.ticker-sort-metric.v1', 'incomes')
   const [tickerSortMonthKey, setTickerSortMonthKey] = usePersistedState('charts.ticker-sort-month.v1', 'total')
   const [tickerSortDir, setTickerSortDir] = usePersistedState('charts.ticker-sort-dir.v1', 'desc')
+  const [patrimonyTypeRange, setPatrimonyTypeRange] = usePersistedState('charts.patrimony-type-range.v1', '12m')
+  const [patrimonyTypeMetric, setPatrimonyTypeMetric] = usePersistedState('charts.patrimony-type-metric.v2', 'net')
   const [hiddenBlocks, setHiddenBlocks] = usePersistedState('charts.hidden-blocks.v1', [])
   const [loadingMessage, setLoadingMessage] = useState('Atualizando graficos...')
   const [showLayoutControls, setShowLayoutControls] = useState(false)
+  const [hoveredPatrimonySeriesKey, setHoveredPatrimonySeriesKey] = useState('')
   const previousPortfoliosRef = useRef('')
   const chartRefs = useRef({})
   const rangeValue = normalizeChoice(range, ['6m', '12m', '24m', '60m'], '12m')
@@ -237,6 +244,8 @@ function ChartsPage({ selectedPortfolioIds }) {
   const tickerSortMetricValue = normalizeChoice(tickerSortMetric, ['invested', 'incomes'], 'incomes')
   const tickerSortMonthKeyValue = typeof tickerSortMonthKey === 'string' ? tickerSortMonthKey : 'total'
   const tickerSortDirValue = normalizeChoice(tickerSortDir, ['asc', 'desc'], 'desc')
+  const patrimonyTypeRangeValue = normalizeChoice(patrimonyTypeRange, ['6m', '12m', '24m', '60m'], '12m')
+  const patrimonyTypeMetricValue = normalizeChoice(patrimonyTypeMetric, ['value', 'pnl', 'net'], 'net')
   const hiddenBlocksValue = Array.isArray(hiddenBlocks) ? hiddenBlocks.filter((item) => typeof item === 'string') : []
   const {
     data: corePayload,
@@ -270,6 +279,18 @@ function ChartsPage({ selectedPortfolioIds }) {
       portfolio_id: selectedPortfolioIds,
       months: 8,
     },
+  })
+  const {
+    data: patrimonyByTypePayload,
+    loading: loadingPatrimonyByType,
+    refreshing: refreshingPatrimonyByType,
+    error: patrimonyByTypeError,
+  } = useApiQuery('/api/charts/patrimony-open-pnl-by-type', {
+    params: {
+      portfolio_id: selectedPortfolioIds,
+      range: patrimonyTypeRangeValue,
+    },
+    initialData: { labels: [], datasets: [] },
   })
 
   useEffect(() => {
@@ -545,6 +566,64 @@ function ChartsPage({ selectedPortfolioIds }) {
     ],
   }
 
+  const patrimonyByTypeRaw = patrimonyByTypePayload || { labels: [], datasets: [] }
+  const isPatrimonyOpenMetric = patrimonyTypeMetricValue === 'pnl'
+  const patrimonyByTypeDatasets = (patrimonyByTypeRaw.datasets || []).map((series, idx) => {
+    const color = TERMINAL_PALETTE[idx % TERMINAL_PALETTE.length]
+    const datasetKey = `${series.family}:${series.key || series.label || idx}`
+    const isHighlighted = !hoveredPatrimonySeriesKey || hoveredPatrimonySeriesKey === datasetKey
+    const values = patrimonyTypeMetricValue === 'value'
+      ? (series.value_values || [])
+      : patrimonyTypeMetricValue === 'pnl'
+        ? (series.pnl_values || [])
+        : (series.net_values || [])
+    return {
+      key: datasetKey,
+      label: `${series.label}${series.family === 'fixa' ? ' · RF' : ' · RV'}`,
+      data: values.map((value) => Number(value || 0)),
+      borderColor: isHighlighted ? color : withHexAlpha(color, '45'),
+      backgroundColor: isPatrimonyOpenMetric
+        ? (isHighlighted ? withHexAlpha(color, '66') : withHexAlpha(color, '18'))
+        : (isHighlighted ? withHexAlpha(color, '22') : withHexAlpha(color, '10')),
+      borderWidth: isHighlighted ? (isPatrimonyOpenMetric ? 2.4 : 2.4) : 1.2,
+      tension: 0.22,
+      fill: isPatrimonyOpenMetric ? (idx === 0 ? 'origin' : '-1') : false,
+      pointRadius: isHighlighted ? 1.5 : 0,
+      pointHoverRadius: 5,
+      spanGaps: true,
+      stack: isPatrimonyOpenMetric ? 'patrimony-open' : undefined,
+      borderDash: !isPatrimonyOpenMetric && series.family === 'fixa' ? [8, 5] : undefined,
+      isActiveOpenSeries: Number(series.value_values?.[series.value_values.length - 1] || 0) > 0
+        || Number(series.invested_values?.[series.invested_values.length - 1] || 0) > 0,
+    }
+  }).filter((dataset) => {
+    const hasVisibleHistory = dataset.data.some((value) => Number(value || 0) !== 0)
+    if (!hasVisibleHistory) return false
+    if (!isPatrimonyOpenMetric) return true
+    return dataset.isActiveOpenSeries
+  }).map(({ isActiveOpenSeries, ...dataset }) => dataset)
+
+  const patrimonyByTypeData = {
+    labels: patrimonyByTypeRaw.labels || [],
+    datasets: patrimonyByTypeDatasets,
+  }
+  const hoveredPatrimonySeriesLabel = patrimonyByTypeDatasets.find((dataset) => dataset.key === hoveredPatrimonySeriesKey)?.label || ''
+  const setHoveredPatrimonyByIndex = (datasetIndex) => {
+    if (typeof datasetIndex !== 'number' || datasetIndex < 0) {
+      setHoveredPatrimonySeriesKey('')
+      return
+    }
+    setHoveredPatrimonySeriesKey(patrimonyByTypeDatasets[datasetIndex]?.key || '')
+  }
+  const handlePatrimonyChartHover = (event, _activeElements, chart) => {
+    const nearest = chart?.getElementsAtEventForMode?.(event, 'nearest', { intersect: true }, false) || []
+    if (nearest.length > 0) {
+      setHoveredPatrimonyByIndex(nearest[0]?.datasetIndex)
+      return
+    }
+    setHoveredPatrimonySeriesKey('')
+  }
+
   const allocationCharts = allocationByGroupCharts.map((item, idx) => {
     const colors = (item.values || []).map((_, colorIdx) => TERMINAL_PALETTE[colorIdx % TERMINAL_PALETTE.length])
     return {
@@ -624,6 +703,47 @@ function ChartsPage({ selectedPortfolioIds }) {
 
   const benchmarkOptions = buildCartesianOptions({ yScale: percentScale, legend: true })
   const incomeLineOptions = buildCartesianOptions({ yScale: moneyScale, legend: true })
+  const patrimonyOpenAreaOptions = {
+    ...buildCartesianOptions({ yScale: moneyScale, legend: true, stacked: true }),
+    interaction: { intersect: true, mode: 'nearest' },
+    onHover: handlePatrimonyChartHover,
+    plugins: {
+      ...buildCartesianOptions({ yScale: moneyScale, legend: true, stacked: true }).plugins,
+      legend: {
+        ...chartLegend(true),
+        onHover: (_event, item) => setHoveredPatrimonyByIndex(item?.datasetIndex),
+        onLeave: () => setHoveredPatrimonySeriesKey(''),
+      },
+      filler: {
+        propagate: true,
+      },
+    },
+    scales: {
+      ...buildCartesianOptions({ yScale: moneyScale, legend: true, stacked: true }).scales,
+      y: {
+        ...buildCartesianOptions({ yScale: moneyScale, legend: true, stacked: true }).scales.y,
+        grace: '8%',
+        grid: {
+          color: (ctx) => (Number(ctx.tick?.value || 0) === 0 ? 'rgba(219, 232, 245, 0.32)' : TERMINAL_GRID),
+          lineWidth: (ctx) => (Number(ctx.tick?.value || 0) === 0 ? 1.4 : 1),
+          drawBorder: false,
+        },
+      },
+    },
+  }
+  const patrimonyLineOptions = {
+    ...incomeLineOptions,
+    interaction: { intersect: true, mode: 'nearest' },
+    onHover: handlePatrimonyChartHover,
+    plugins: {
+      ...incomeLineOptions.plugins,
+      legend: {
+        ...chartLegend(true),
+        onHover: (_event, item) => setHoveredPatrimonyByIndex(item?.datasetIndex),
+        onLeave: () => setHoveredPatrimonySeriesKey(''),
+      },
+    },
+  }
   const barMoneyOptions = buildCartesianOptions({ yScale: moneyScale, legend: false })
   const fixedIssuerOptions = {
     ...buildCartesianOptions({ yScale: moneyScale, legend: true, stacked: true }),
@@ -686,6 +806,15 @@ function ChartsPage({ selectedPortfolioIds }) {
       meta: `${benchmarkChart.datasets?.length || 0} série(s)`,
     },
     {
+      label: 'Patrimônio por tipo',
+      value: `${patrimonyByTypeDatasets.length}`,
+      meta: patrimonyTypeMetricValue === 'value'
+        ? 'séries patrimoniais'
+        : patrimonyTypeMetricValue === 'pnl'
+          ? 'aberto por tipo'
+          : 'resultado líquido',
+    },
+    {
       label: 'Top ativos',
       value: `${topAssetsChart.labels?.length || 0}`,
       meta: 'ativos ranqueados',
@@ -702,6 +831,7 @@ function ChartsPage({ selectedPortfolioIds }) {
     },
   ]
   const baseSectionLinks = [
+    { href: '#patrimonio', label: 'Patrimônio' },
     { href: '#composicao', label: 'Composição' },
     { href: '#renda-fixa', label: 'Renda fixa' },
     { href: '#ledger-anual', label: 'Ledger anual' },
@@ -711,6 +841,7 @@ function ChartsPage({ selectedPortfolioIds }) {
   const blockOptions = [
     { key: 'benchmark', label: 'Benchmark', description: 'Rentabilidade comparada com índices e benchmarks.' },
     { key: 'monthlyIncome', label: 'Proventos mês a mês', description: 'Fluxo mensal entre FIIs e ações.' },
+    { key: 'patrimonyByType', label: 'Patrimônio por tipo', description: 'Evolução patrimonial e lucro/loss por classe e tipo.' },
     { key: 'classesPie', label: 'Renda variável x fixa', description: 'Mistura principal da carteira.' },
     { key: 'categoryDonut', label: 'Distribuição por tipo', description: 'Peso relativo por classe de ativo.' },
     { key: 'resultCategory', label: 'Resultado por categoria', description: 'Ganho ou perda por agrupamento.' },
@@ -732,6 +863,7 @@ function ChartsPage({ selectedPortfolioIds }) {
 
   const isVisible = (key) => !hiddenSet.has(key)
   const sectionLinks = baseSectionLinks.filter((item) => {
+    if (item.href === '#patrimonio') return isVisible('patrimonyByType')
     if (item.href === '#composicao') {
       return isVisible('classesPie')
         || isVisible('categoryDonut')
@@ -884,6 +1016,28 @@ function ChartsPage({ selectedPortfolioIds }) {
     </div>
   )
 
+  const patrimonyByTypeControls = (
+    <div className="inline-filters chart-inline-controls">
+      <label>
+        Período
+        <select value={patrimonyTypeRangeValue} onChange={(e) => setPatrimonyTypeRange(e.target.value)}>
+          <option value="6m">6 Meses</option>
+          <option value="12m">12 Meses</option>
+          <option value="24m">24 Meses</option>
+          <option value="60m">5 Anos</option>
+        </select>
+      </label>
+      <label>
+        Foco
+        <select value={patrimonyTypeMetricValue} onChange={(e) => setPatrimonyTypeMetric(e.target.value)}>
+          <option value="net">Líquido</option>
+          <option value="value">Patrimônio</option>
+          <option value="pnl">Aberto</option>
+        </select>
+      </label>
+    </div>
+  )
+
   return (
     <section className="charts-terminal-page">
       <header className="card charts-terminal-hero">
@@ -1012,6 +1166,62 @@ function ChartsPage({ selectedPortfolioIds }) {
           </ChartPanel>
         ) : null}
       </div>
+
+      {isVisible('patrimonyByType') ? (
+        <DataSection
+          id="patrimonio"
+          title="Evolução patrimonial por tipo"
+          subtitle="Leitura mensal separando renda variável e renda fixa, com foco em patrimônio ou resultado aberto."
+          controls={(
+            <div className="chart-section-toolbar">
+              {patrimonyByTypeControls}
+              <div className="dashboard-pref-actions">
+                <button type="button" className="icon-btn" onClick={() => exportChartDataAsCsv('patrimonio-por-tipo.csv', patrimonyByTypeData)}>
+                  CSV
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => exportChartAsImage('patrimonio-por-tipo.png', chartRefs.current.patrimonyByType)}
+                >
+                  PNG
+                </button>
+                <button type="button" className="icon-btn" onClick={() => toggleBlockVisibility('patrimonyByType')}>
+                  Ocultar
+                </button>
+              </div>
+            </div>
+          )}
+        >
+          {(loadingPatrimonyByType || refreshingPatrimonyByType) && <p className="subtitle">Atualizando evolução patrimonial...</p>}
+          {patrimonyByTypeError && <p className="error">{patrimonyByTypeError}</p>}
+          {patrimonyByTypeData.labels.length > 0 && patrimonyByTypeData.datasets.length > 0 ? (
+            <ChartPanel
+              title={patrimonyTypeMetricValue === 'value'
+                ? 'Patrimônio por tipo de ativo'
+                : patrimonyTypeMetricValue === 'pnl'
+                  ? 'Resultado em aberto por tipo de ativo'
+                  : 'Resultado líquido por tipo de ativo'}
+              subtitle={patrimonyTypeMetricValue === 'value'
+                ? `${hoveredPatrimonySeriesLabel ? `Destaque: ${hoveredPatrimonySeriesLabel}. ` : ''}Patrimônio estimado por série. Linhas sólidas = renda variável; tracejadas = renda fixa.`
+                : patrimonyTypeMetricValue === 'pnl'
+                  ? `${hoveredPatrimonySeriesLabel ? `Destaque: ${hoveredPatrimonySeriesLabel}. ` : ''}Áreas empilhadas mostrando o resultado em aberto positivo e negativo por tipo, apenas para posições ainda abertas.`
+                  : `${hoveredPatrimonySeriesLabel ? `Destaque: ${hoveredPatrimonySeriesLabel}. ` : ''}Resultado líquido acumulado por série, incluindo realizado e posição aberta. Linhas sólidas = renda variável; tracejadas = renda fixa.`}
+              actions={null}
+            >
+              <div className="chart-canvas-wrap">
+                <Line
+                  ref={registerChartRef('patrimonyByType')}
+                  data={patrimonyByTypeData}
+                  options={isPatrimonyOpenMetric ? patrimonyOpenAreaOptions : patrimonyLineOptions}
+                />
+              </div>
+            </ChartPanel>
+          ) : (
+            <p className="subtitle">Sem dados suficientes para montar a evolução patrimonial por tipo no período selecionado.</p>
+          )}
+        </DataSection>
+      ) : null}
 
       {(isVisible('classesPie')
         || isVisible('categoryDonut')

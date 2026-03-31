@@ -51,6 +51,7 @@ from .services import (
     get_monthly_class_summary,
     get_monthly_ticker_summary,
     get_metric_formulas_catalog,
+    get_patrimony_open_pnl_by_type_series,
     get_portfolio_snapshot,
     get_portfolios,
     get_sectors_summary,
@@ -2685,6 +2686,13 @@ def charts_variable_income_value_daily():
     portfolio_ids = _selected_portfolio_ids_from_request()
     range_key = (request.args.get("range") or "90d").strip().lower()
     return _json_ok(get_variable_income_value_daily_series(portfolio_ids, range_key=range_key))
+
+
+@api_bp.route("/charts/patrimony-open-pnl-by-type", methods=["GET"])
+def charts_patrimony_open_pnl_by_type():
+    portfolio_ids = _selected_portfolio_ids_from_request()
+    range_key = (request.args.get("range") or "12m").strip().lower()
+    return _json_ok(get_patrimony_open_pnl_by_type_series(portfolio_ids, range_key=range_key))
 
 
 @api_bp.route("/charts/dashboard", methods=["GET"])

@@ -5,7 +5,7 @@ import re
 import sqlite3
 import time
 import unicodedata
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -3560,9 +3560,13 @@ def import_fixed_incomes_csv(file_bytes, target_portfolio_id: int):
 
 
 def _fixed_income_projection(item):
+    return _fixed_income_projection_at_date(item, datetime.now().date())
+
+
+def _fixed_income_projection_at_date(item, reference_date):
     aporte_date = datetime.strptime(item["date_aporte"], "%Y-%m-%d").date()
     maturity_date = datetime.strptime(item["maturity_date"], "%Y-%m-%d").date()
-    today = datetime.now().date()
+    today = reference_date if isinstance(reference_date, date) else datetime.now().date()
 
     principal = float(item["aporte"]) + float(item["reinvested"])
     total_days = max((maturity_date - aporte_date).days, 1)
@@ -5248,6 +5252,343 @@ def _portfolio_monthly_cumulative(snapshot, month_keys, period: str, scope_key: 
         normalized_rel = weighted_rel[idx] / weights_used[idx]
         series.append((normalized_rel - 1.0) * 100.0)
     return series
+
+
+def _month_key_to_date_bounds(month_key: str):
+    start = datetime.strptime(month_key + "-01", "%Y-%m-%d").date()
+    if start.month == 12:
+        next_month = start.replace(year=start.year + 1, month=1, day=1)
+    else:
+        next_month = start.replace(month=start.month + 1, day=1)
+    end = next_month - timedelta(days=1)
+    return start, end
+
+
+def _fixed_income_chart_group_label(investment_type):
+    normalized = _normalize_search_text(investment_type)
+    if not normalized:
+        return "Renda fixa"
+
+    with_fgc_markers = (
+        "cdb",
+        "lci",
+        "lca",
+        "letra de cambio",
+        "lc ",
+        "lc-",
+    )
+    without_fgc_markers = (
+        "tesouro",
+        "cri",
+        "cra",
+        "deb",
+        "debenture",
+    )
+
+    if any(marker in normalized for marker in with_fgc_markers):
+        return "Renda fixa c/ FGC"
+    if any(marker in normalized for marker in without_fgc_markers):
+        return "Renda fixa s/ FGC"
+    return (investment_type or "Renda fixa").strip() or "Renda fixa"
+
+
+def _monthly_class_key_map(rows):
+    month_names = {
+        "jan": 1,
+        "fev": 2,
+        "mar": 3,
+        "abr": 4,
+        "mai": 5,
+        "jun": 6,
+        "jul": 7,
+        "ago": 8,
+        "set": 9,
+        "out": 10,
+        "nov": 11,
+        "dez": 12,
+    }
+    result = {}
+    for row in rows or []:
+        label = str((row or {}).get("label") or "").strip().lower()
+        month_name, _, year_short = label.partition("/")
+        month = month_names.get(month_name)
+        if not month or not year_short.isdigit():
+            continue
+        result[f"{2000 + int(year_short):04d}-{month:02d}"] = row
+    return result
+
+
+def _portfolio_monthly_metrics_by_category(portfolio_ids, month_keys, period: str):
+    pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
+    placeholders = ",".join(["?"] * len(pids))
+    db = get_db()
+    category_labels = {
+        "br_stocks": "Ações BR",
+        "us_stocks": "Ações US",
+        "fiis": "FIIs",
+        "crypto": "Cripto",
+    }
+    result = {
+        key: {
+            "label": label,
+            "value_values": [],
+            "invested_values": [],
+            "pnl_values": [],
+            "net_values": [],
+        }
+        for key, label in category_labels.items()
+    }
+
+    tx_rows = db.execute(
+        """
+        SELECT
+            t.date,
+            t.tx_type,
+            t.shares,
+            t.price,
+            a.ticker,
+            a.name,
+            a.sector
+        FROM transactions t
+        JOIN assets a ON a.ticker = t.ticker
+        WHERE t.portfolio_id IN ("""
+        + placeholders
+        + """)
+        ORDER BY t.date ASC, t.id ASC
+        """,
+        tuple(pids),
+    ).fetchall()
+    income_rows = db.execute(
+        """
+        SELECT
+            i.date,
+            i.amount,
+            a.ticker,
+            a.name,
+            a.sector
+        FROM incomes i
+        JOIN assets a ON a.ticker = i.ticker
+        WHERE i.portfolio_id IN ("""
+        + placeholders
+        + """)
+        ORDER BY i.date ASC, i.id ASC
+        """,
+        tuple(pids),
+    ).fetchall()
+
+    tickers = set()
+    ticker_category = {}
+    for row in tx_rows:
+        ticker = str(row["ticker"] or "").strip().upper()
+        category = _position_category(ticker, row["name"], row["sector"])
+        if category not in result:
+            continue
+        tickers.add(ticker)
+        ticker_category[ticker] = category
+    for row in income_rows:
+        ticker = str(row["ticker"] or "").strip().upper()
+        category = _position_category(ticker, row["name"], row["sector"])
+        if category not in result:
+            continue
+        ticker_category[ticker] = category
+
+    usdbrl_map = _download_monthly_close_map("USDBRL=X", period)
+    if not usdbrl_map:
+        usdbrl_map = _download_monthly_close_map("BRL=X", period)
+    usdbrl_levels = _levels_from_month_map(month_keys, usdbrl_map) if usdbrl_map else []
+
+    ticker_levels = {}
+    for ticker in sorted(tickers):
+        month_map = {}
+        for symbol in _candidate_yahoo_symbols(ticker):
+            month_map = _download_monthly_close_map(symbol, period)
+            if month_map:
+                break
+        if not month_map:
+            ticker_levels[ticker] = [None for _ in month_keys]
+            continue
+        levels = _levels_from_month_map(month_keys, month_map)
+        if _is_usd_quoted_ticker(ticker) and usdbrl_levels:
+            converted_levels = []
+            for idx, value in enumerate(levels):
+                fx = usdbrl_levels[idx] if idx < len(usdbrl_levels) else None
+                converted_levels.append((float(value) * float(fx)) if (value is not None and fx not in (None, 0)) else None)
+            levels = converted_levels
+        ticker_levels[ticker] = levels
+
+    def _row_date(row):
+        try:
+            return datetime.strptime(str(row["date"])[:10], "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+    tx_index = 0
+    income_index = 0
+    shares_state = {}
+    cost_state = {}
+    buys_total = {key: 0.0 for key in result}
+    sells_total = {key: 0.0 for key in result}
+    incomes_total = {key: 0.0 for key in result}
+
+    for month_idx, month_key in enumerate(month_keys):
+        _month_start, month_end = _month_key_to_date_bounds(month_key)
+
+        while tx_index < len(tx_rows):
+            row = tx_rows[tx_index]
+            tx_date = _row_date(row)
+            if tx_date is None or tx_date > month_end:
+                break
+            ticker = str(row["ticker"] or "").strip().upper()
+            category = ticker_category.get(ticker)
+            if category in result:
+                amount = float(row["shares"] or 0.0) * float(row["price"] or 0.0)
+                current_shares = float(shares_state.get(ticker, 0.0) or 0.0)
+                current_cost = float(cost_state.get(ticker, 0.0) or 0.0)
+                if (row["tx_type"] or "").lower() == "buy":
+                    shares_state[ticker] = current_shares + float(row["shares"] or 0.0)
+                    cost_state[ticker] = current_cost + amount
+                    buys_total[category] += amount
+                elif current_shares > 0:
+                    avg_price = current_cost / current_shares if current_shares > 0 else 0.0
+                    sell_shares = min(float(row["shares"] or 0.0), current_shares)
+                    next_shares = current_shares - sell_shares
+                    next_cost = current_cost - (avg_price * sell_shares)
+                    shares_state[ticker] = next_shares
+                    cost_state[ticker] = 0.0 if next_shares <= 0 else next_cost
+                    sells_total[category] += sell_shares * float(row["price"] or 0.0)
+            tx_index += 1
+
+        while income_index < len(income_rows):
+            row = income_rows[income_index]
+            income_date = _row_date(row)
+            if income_date is None or income_date > month_end:
+                break
+            ticker = str(row["ticker"] or "").strip().upper()
+            category = ticker_category.get(ticker)
+            if category in result:
+                incomes_total[category] += float(row["amount"] or 0.0)
+            income_index += 1
+
+        market_values = {key: 0.0 for key in result}
+        open_costs = {key: 0.0 for key in result}
+        for ticker, shares in shares_state.items():
+            if float(shares or 0.0) <= 0:
+                continue
+            category = ticker_category.get(ticker)
+            if category not in result:
+                continue
+            open_costs[category] += float(cost_state.get(ticker, 0.0) or 0.0)
+            price_levels = ticker_levels.get(ticker) or []
+            price = price_levels[month_idx] if month_idx < len(price_levels) else None
+            if price is None:
+                continue
+            market_values[category] += float(shares) * float(price)
+
+        for category, payload in result.items():
+            market_value = round(market_values[category], 2)
+            open_cost = round(open_costs[category], 2)
+            payload["value_values"].append(market_value)
+            payload["invested_values"].append(open_cost)
+            payload["pnl_values"].append(round(market_value - open_cost, 2))
+            payload["net_values"].append(
+                round(
+                    market_value
+                    + sells_total[category]
+                    + incomes_total[category]
+                    - buys_total[category],
+                    2,
+                )
+            )
+
+    return result
+
+
+def _fixed_income_monthly_by_type(items, month_keys):
+    grouped = {}
+    for raw_item in items or []:
+        item = dict(raw_item or {})
+        investment_type = _fixed_income_chart_group_label(item.get("investment_type"))
+        state = grouped.setdefault(
+            investment_type,
+            {
+                "label": investment_type,
+                "value_values": [0.0 for _ in month_keys],
+                "invested_values": [0.0 for _ in month_keys],
+                "pnl_values": [0.0 for _ in month_keys],
+                "net_values": [0.0 for _ in month_keys],
+            },
+        )
+        aporte_date = datetime.strptime(item["date_aporte"], "%Y-%m-%d").date()
+        maturity_date = datetime.strptime(item["maturity_date"], "%Y-%m-%d").date()
+        principal = float(item.get("aporte") or 0.0) + float(item.get("reinvested") or 0.0)
+        if principal <= 0:
+            continue
+
+        for idx, month_key in enumerate(month_keys):
+            month_start, month_end = _month_key_to_date_bounds(month_key)
+            if month_end < aporte_date:
+                continue
+            if month_start > maturity_date:
+                projected = _fixed_income_projection_at_date(item, maturity_date)
+                state["net_values"][idx] += float(projected.get("final_income", 0.0) or 0.0)
+                continue
+            reference_date = min(month_end, maturity_date, datetime.now().date())
+            projected = _fixed_income_projection_at_date(item, reference_date)
+            current_value = float(projected.get("current_gross_value", 0.0) or 0.0)
+            active_principal = float(projected.get("active_applied_value", 0.0) or 0.0)
+            current_income = float(projected.get("current_income", 0.0) or 0.0)
+            state["value_values"][idx] += current_value
+            state["invested_values"][idx] += active_principal
+            state["pnl_values"][idx] += current_income
+            state["net_values"][idx] += float(
+                projected.get("final_income", 0.0) if projected.get("is_matured") else current_income
+            )
+
+    for payload in grouped.values():
+        for key in ("value_values", "invested_values", "pnl_values", "net_values"):
+            payload[key] = [round(float(value), 2) if value else 0.0 for value in payload[key]]
+    return grouped
+
+
+def get_patrimony_open_pnl_by_type_series(portfolio_ids, range_key: str = "12m"):
+    normalized_range, months, period = _benchmark_range_config(range_key)
+    pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
+    month_keys = _month_keys_back(months)
+    labels = [_month_label(key) for key in month_keys]
+    snapshot = get_portfolio_snapshot(pids)
+    fixed_income_payload = get_fixed_income_payload_cached(pids, sort_by="date_aporte", sort_dir="desc")
+
+    variable_series_map = _portfolio_monthly_metrics_by_category(
+        pids,
+        month_keys,
+        period,
+    )
+    fixed_series_map = _fixed_income_monthly_by_type(fixed_income_payload.get("items") or [], month_keys)
+
+    def _to_datasets(series_map, family_key):
+        datasets = []
+        for key, payload in series_map.items():
+            if not any(abs(float(value or 0.0)) > 0 for value in payload.get("value_values", [])):
+                continue
+            datasets.append(
+                {
+                    "key": f"{family_key}:{key}",
+                    "label": payload["label"],
+                    "family": family_key,
+                    "value_values": payload["value_values"],
+                    "invested_values": payload["invested_values"],
+                    "pnl_values": payload["pnl_values"],
+                    "net_values": payload["net_values"],
+                }
+            )
+        datasets.sort(key=lambda item: item["label"].upper())
+        return datasets
+
+    return {
+        "labels": labels,
+        "range_key": normalized_range,
+        "datasets": _to_datasets(variable_series_map, "variavel") + _to_datasets(fixed_series_map, "fixa"),
+    }
 
 
 def get_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: str = "all"):

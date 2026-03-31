@@ -1451,6 +1451,10 @@ def get_variable_income_value_daily_series(portfolio_ids, range_key: str = "90d"
     return legacy.get_variable_income_value_daily_series(portfolio_ids, range_key=range_key)
 
 
+def get_patrimony_open_pnl_by_type_series(portfolio_ids, range_key: str = "12m"):
+    return legacy.get_patrimony_open_pnl_by_type_series(portfolio_ids, range_key=range_key)
+
+
 def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str = "asc"):
     return legacy.get_portfolio_snapshot(portfolio_ids, sort_by=sort_by, sort_dir=sort_dir)
 
@@ -1485,6 +1489,7 @@ __all__ = [
     "get_incomes",
     "get_monthly_class_summary",
     "get_monthly_ticker_summary",
+    "get_patrimony_open_pnl_by_type_series",
     "get_portfolio_snapshot",
     "get_portfolios",
     "get_sectors_summary",

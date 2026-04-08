@@ -131,6 +131,40 @@ class ServicesSplitExportsTest(unittest.TestCase):
             "br",
         )
 
+    def test_fixed_income_type_grouping_uses_normalized_type_keys(self):
+        self.assertEqual(_legacy._fixed_income_chart_group_label("CDB"), "Renda fixa c/ FGC")
+        self.assertEqual(_legacy._fixed_income_chart_group_label("LC"), "Renda fixa c/ FGC")
+        self.assertEqual(_legacy._fixed_income_chart_group_label("LCI/LCA"), "Renda fixa c/ FGC")
+        self.assertEqual(
+            _legacy._fixed_income_chart_group_label("LETRA DE CAMBIO"),
+            "Renda fixa c/ FGC",
+        )
+        self.assertEqual(_legacy._fixed_income_chart_group_label("CRI"), "Renda fixa s/ FGC")
+        self.assertEqual(_legacy._fixed_income_chart_group_label("CRA"), "Renda fixa s/ FGC")
+        self.assertEqual(
+            _legacy._fixed_income_chart_group_label("DEBEN INCENTIVADA"),
+            "Renda fixa s/ FGC",
+        )
+        self.assertEqual(
+            _legacy._fixed_income_chart_group_label("DEBENTURE"),
+            "Renda fixa s/ FGC",
+        )
+        self.assertEqual(_legacy._fixed_income_chart_group_label("TESOURO"), "Renda fixa s/ FGC")
+        self.assertTrue(_legacy._is_fixed_income_cri_cra_deb_type("DEBEN INCENTIVADA"))
+        self.assertFalse(_legacy._is_fixed_income_cri_cra_deb_type("TESOURO"))
+
+    def test_fixed_income_hybrid_legacy_rate_is_normalized(self):
+        fixed, ipca, cdi = _legacy._normalize_fixed_income_rate_components(
+            "FIXO+IPCA",
+            105.5,
+            105.5,
+            0.0,
+            0.0,
+        )
+        self.assertAlmostEqual(fixed, 5.5, places=6)
+        self.assertAlmostEqual(ipca, 100.0, places=6)
+        self.assertAlmostEqual(cdi, 0.0, places=6)
+
     def test_scanner_formula_validation_blocks_unsafe_name(self):
         with self.assertRaises(ValueError):
             scanner._validate_metric_formula_expression("__import__('os').system('id')")

@@ -171,7 +171,7 @@ class SyncHealthFeaturesTest(unittest.TestCase):
         finally:
             api_routes.get_variable_income_value_daily_series = original_chart_fn
 
-    def test_build_charts_core_payload_uses_open_pnl_for_cri_cra_deb(self):
+    def test_build_charts_core_payload_uses_current_income_for_cri_cra_deb(self):
         original_snapshot = api_routes.get_portfolio_snapshot
         original_fixed_income = api_routes.get_fixed_income_payload_cached
         original_monthly_summary = api_routes.get_monthly_class_summary
@@ -210,9 +210,15 @@ class SyncHealthFeaturesTest(unittest.TestCase):
                     'active_applied_value': 0.0,
                 },
                 {
-                    'investment_type': 'DEBENTURE',
+                    'investment_type': 'DEBEN INCENTIVADA',
                     'open_pnl_value': 250.0,
                     'current_income': 7000.0,
+                    'active_applied_value': 0.0,
+                },
+                {
+                    'investment_type': 'TESOURO',
+                    'open_pnl_value': 3333.0,
+                    'current_income': 8888.0,
                     'active_applied_value': 0.0,
                 },
                 {
@@ -229,7 +235,64 @@ class SyncHealthFeaturesTest(unittest.TestCase):
             payload = api_routes._build_charts_core_payload([1])
             self.assertEqual(
                 payload['result_by_category_chart']['values'],
-                [100.0, 200.0, 300.0, -50.0, 1750.0],
+                [100.0, 200.0, 300.0, -50.0, 16000.0],
+            )
+        finally:
+            api_routes.get_portfolio_snapshot = original_snapshot
+            api_routes.get_fixed_income_payload_cached = original_fixed_income
+            api_routes.get_monthly_class_summary = original_monthly_summary
+
+    def test_build_charts_core_payload_ignores_non_cri_cra_deb_fixed_income(self):
+        original_snapshot = api_routes.get_portfolio_snapshot
+        original_fixed_income = api_routes.get_fixed_income_payload_cached
+        original_monthly_summary = api_routes.get_monthly_class_summary
+
+        api_routes.get_portfolio_snapshot = lambda *args, **kwargs: {
+            'positions': [],
+            'grouped_positions': {
+                'br_stocks': [],
+                'us_stocks': [],
+                'fiis': [],
+                'crypto': [],
+            },
+            'group_totals': {
+                'br_stocks': 0.0,
+                'us_stocks': 0.0,
+                'fiis': 0.0,
+                'crypto': 0.0,
+            },
+            'group_summaries': {
+                'us_stocks': {'open_pnl_value': 0.0},
+                'fiis': {'open_pnl_value': 0.0},
+                'br_stocks': {'open_pnl_value': 0.0},
+                'crypto': {'open_pnl_value': 0.0},
+            },
+            'total_value': 0.0,
+            'invested_value': 0.0,
+            'total_incomes': 0.0,
+        }
+        api_routes.get_fixed_income_payload_cached = lambda *args, **kwargs: {
+            'summary': {'current_total': 0.0},
+            'items': [
+                {
+                    'investment_type': 'CRA',
+                    'current_income': 9000.0,
+                    'active_applied_value': 0.0,
+                },
+                {
+                    'investment_type': 'DEBEN INCENTIVADA',
+                    'current_income': 7000.0,
+                    'active_applied_value': 0.0,
+                },
+            ],
+        }
+        api_routes.get_monthly_class_summary = lambda *args, **kwargs: []
+
+        try:
+            payload = api_routes._build_charts_core_payload([1])
+            self.assertEqual(
+                payload['result_by_category_chart']['values'],
+                [0.0, 0.0, 0.0, 0.0, 16000.0],
             )
         finally:
             api_routes.get_portfolio_snapshot = original_snapshot

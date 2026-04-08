@@ -848,6 +848,30 @@ def ensure_schema_upgrades():
           AND ABS(rate_ipca) < 0.000001
         """
     )
+    db.execute(
+        """
+        UPDATE fixed_incomes
+        SET rate_fixed = annual_rate - 100,
+            rate_ipca = 100
+        WHERE rate_type = 'FIXO+IPCA'
+          AND annual_rate >= 100
+          AND ABS(rate_fixed - annual_rate) < 0.000001
+          AND ABS(rate_ipca) < 0.000001
+          AND ABS(rate_cdi) < 0.000001
+        """
+    )
+    db.execute(
+        """
+        UPDATE fixed_incomes
+        SET rate_fixed = annual_rate - 100,
+            rate_cdi = 100
+        WHERE rate_type = 'FIXO+CDI'
+          AND annual_rate >= 100
+          AND ABS(rate_fixed - annual_rate) < 0.000001
+          AND ABS(rate_cdi) < 0.000001
+          AND ABS(rate_ipca) < 0.000001
+        """
+    )
 
     db.execute(
         """

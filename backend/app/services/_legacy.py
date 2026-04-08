@@ -45,6 +45,7 @@ _BRAPI_QUOTE_RESULT_CACHE = {}
 _BRAPI_CIRCUIT = {"until": 0.0, "status_code": None}
 _PROVIDER_CIRCUIT_CACHE = {}
 _PROVIDER_USAGE_CACHE = {}
+FIXED_INCOME_PROJECTION_VERSION = 3
 _NON_FII_11_TICKERS = {
     "ALUP11",
     "BRSR11",
@@ -3563,6 +3564,35 @@ def _fixed_income_projection(item):
     return _fixed_income_projection_at_date(item, datetime.now().date())
 
 
+def _normalize_fixed_income_rate_components(rate_type, annual_rate, rate_fixed, rate_ipca, rate_cdi):
+    normalized_type = str(rate_type or "").strip().upper()
+    fixed = max(float(rate_fixed or 0.0), 0.0)
+    ipca = max(float(rate_ipca or 0.0), 0.0)
+    cdi = max(float(rate_cdi or 0.0), 0.0)
+    annual = max(float(annual_rate or 0.0), 0.0)
+
+    # Legacy hybrid records were migrated with the full annual_rate copied into
+    # rate_fixed and the benchmark leg left as zero. For values above 100 this
+    # usually means "100% do indexador + spread", not a literal 100%+ fixed rate.
+    if (
+        normalized_type == "FIXO+IPCA"
+        and fixed >= 100.0
+        and ipca <= 0.0
+        and cdi <= 0.0
+        and abs(fixed - annual) < 0.000001
+    ):
+        return max(fixed - 100.0, 0.0), 100.0, 0.0
+    if (
+        normalized_type == "FIXO+CDI"
+        and fixed >= 100.0
+        and cdi <= 0.0
+        and ipca <= 0.0
+        and abs(fixed - annual) < 0.000001
+    ):
+        return max(fixed - 100.0, 0.0), 0.0, 100.0
+    return fixed, ipca, cdi
+
+
 def _fixed_income_projection_at_date(item, reference_date):
     aporte_date = datetime.strptime(item["date_aporte"], "%Y-%m-%d").date()
     maturity_date = datetime.strptime(item["maturity_date"], "%Y-%m-%d").date()
@@ -3572,6 +3602,7 @@ def _fixed_income_projection_at_date(item, reference_date):
     total_days = max((maturity_date - aporte_date).days, 1)
     elapsed_days = max(min((today - aporte_date).days, total_days), 0)
 
+    annual_rate = max(float(item.get("annual_rate", 0.0)), 0.0)
     rate_fixed = max(float(item.get("rate_fixed", 0.0)), 0.0)
     rate_ipca = max(float(item.get("rate_ipca", 0.0)), 0.0)
     rate_cdi = max(float(item.get("rate_cdi", 0.0)), 0.0)
@@ -3579,7 +3610,7 @@ def _fixed_income_projection_at_date(item, reference_date):
 
     # Compatibilidade para registros antigos sem componentes separados.
     if rate_fixed == 0 and rate_ipca == 0 and rate_cdi == 0:
-        legacy_rate = max(float(item.get("annual_rate", 0.0)), 0.0)
+        legacy_rate = annual_rate
         if legacy_rate > 0:
             if rate_type == "FIXO":
                 rate_fixed = legacy_rate
@@ -3589,6 +3620,14 @@ def _fixed_income_projection_at_date(item, reference_date):
                 rate_ipca = legacy_rate
             elif rate_type in {"FIXO+IPCA", "FIXO+CDI"}:
                 rate_fixed = legacy_rate
+
+    rate_fixed, rate_ipca, rate_cdi = _normalize_fixed_income_rate_components(
+        rate_type,
+        annual_rate,
+        rate_fixed,
+        rate_ipca,
+        rate_cdi,
+    )
 
     def _fixed_factor(days: int):
         if days <= 0 or rate_fixed <= 0:
@@ -3668,10 +3707,15 @@ def _fixed_income_projection_at_date(item, reference_date):
     projected["is_matured"] = is_matured
     projected["current_gross_value"] = round(active_current_value, 2)
     projected["current_income"] = round(active_current_income, 2)
+    # Fixed income snapshots do not currently track mark-to-market PnL.
+    # Keep this field explicit so result-by-category charts do not fall back
+    # to accrued income and inflate the "ganho ou perda" comparison.
+    projected["open_pnl_value"] = 0.0
     projected["final_gross_value"] = round(final_value, 2)
     projected["final_income"] = round(final_value - principal, 2)
     projected["total_received"] = round(total_received, 2)
     projected["rendimento"] = round(rendimento, 2)
+    projected["projection_version"] = int(FIXED_INCOME_PROJECTION_VERSION)
     return projected
 
 
@@ -5263,31 +5307,47 @@ def _month_key_to_date_bounds(month_key: str):
 
 
 def _fixed_income_chart_group_label(investment_type):
-    normalized = _normalize_search_text(investment_type)
-    if not normalized:
-        return "Renda fixa"
-
-    with_fgc_markers = (
-        "cdb",
-        "lci",
-        "lca",
-        "letra de cambio",
-        "lc ",
-        "lc-",
-    )
-    without_fgc_markers = (
-        "tesouro",
-        "cri",
-        "cra",
-        "deb",
-        "debenture",
-    )
-
-    if any(marker in normalized for marker in with_fgc_markers):
+    if _is_fixed_income_with_fgc_type(investment_type):
         return "Renda fixa c/ FGC"
-    if any(marker in normalized for marker in without_fgc_markers):
+    if _is_fixed_income_without_fgc_type(investment_type):
         return "Renda fixa s/ FGC"
     return (investment_type or "Renda fixa").strip() or "Renda fixa"
+
+
+def _fixed_income_type_key(investment_type):
+    normalized = _normalize_search_text(investment_type)
+    if not normalized:
+        return ""
+
+    tokens = [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
+    if not tokens:
+        return normalized
+
+    first = tokens[0]
+    if first in {"tesouro", "cri", "cra", "cdb", "lci", "lca", "lc"}:
+        return first
+    if first in {"deb", "deben", "debenture", "debentures"}:
+        return "debenture"
+    if len(tokens) >= 3 and tokens[:3] == ["letra", "de", "cambio"]:
+        return "lc"
+
+    joined = "".join(tokens)
+    if joined.startswith("debenture") or joined.startswith("deben"):
+        return "debenture"
+
+    return normalized
+
+
+def _is_fixed_income_with_fgc_type(investment_type):
+    return _fixed_income_type_key(investment_type) in {"cdb", "lci", "lca", "lc"}
+
+
+def _is_fixed_income_without_fgc_type(investment_type):
+    return _fixed_income_type_key(investment_type) in {"tesouro", "cri", "cra", "debenture"}
+
+
+def _is_fixed_income_cri_cra_deb_type(investment_type):
+    return _fixed_income_type_key(investment_type) in {"cri", "cra", "debenture"}
 
 
 def _monthly_class_key_map(rows):

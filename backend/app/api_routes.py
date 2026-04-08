@@ -1619,12 +1619,11 @@ def _build_charts_core_payload(portfolio_ids):
         ],
     }
 
-    cri_keywords = ("CRI", "CRA", "DEB")
     cri_result = 0.0
     for item in fixed_income_items:
-        investment_name = (item.get("investment_type") or "").upper()
-        if any(key in investment_name for key in cri_keywords):
-            cri_result += float(item.get("open_pnl_value", item.get("current_income", 0.0)))
+        investment_name = item.get("investment_type")
+        if legacy_market._is_fixed_income_cri_cra_deb_type(investment_name):
+            cri_result += float(item.get("current_income", 0.0) or 0.0)
 
     result_by_category_chart = {
         "labels": ["US", "FIIs", "BR", "Cripto", "CRI/CRA/DEB"],

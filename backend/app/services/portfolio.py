@@ -1025,6 +1025,7 @@ def rebuild_fixed_income_snapshots(portfolio_ids=None):
 def get_fixed_income_payload_cached(portfolio_ids, sort_by: str = "date_aporte", sort_dir: str = "desc"):
     pids = normalize_portfolio_ids(portfolio_ids)
     max_age_seconds = int(current_app.config.get("FIXED_INCOME_SNAPSHOT_MAX_AGE_SECONDS", 900))
+    expected_projection_version = int(getattr(legacy, "FIXED_INCOME_PROJECTION_VERSION", 1) or 1)
     placeholders = ",".join(["?"] * len(pids))
     db = get_db()
 
@@ -1065,7 +1066,12 @@ def get_fixed_income_payload_cached(portfolio_ids, sort_by: str = "date_aporte",
             age = _snapshot_age_seconds(row["updated_at"])
             if age is None or age > max_age_seconds:
                 raise RuntimeError("snapshot_stale")
-            items.append(json.loads(row["payload_json"] or "{}"))
+            item = json.loads(row["payload_json"] or "{}")
+            if int(item.get("projection_version") or 0) < expected_projection_version:
+                raise RuntimeError("snapshot_projection_version")
+            if "open_pnl_value" not in item:
+                raise RuntimeError("snapshot_shape_miss")
+            items.append(item)
 
         summary = {
             "aporte_total": 0.0,

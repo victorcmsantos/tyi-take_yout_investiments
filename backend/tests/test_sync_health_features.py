@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app import create_app
 from app.auth import create_user_account
+from app.db import get_db
 from app.services import market_data
 import app.api_routes as api_routes
 
@@ -170,6 +171,58 @@ class SyncHealthFeaturesTest(unittest.TestCase):
                 self.assertEqual(calls[0]['range_key'], '90d')
         finally:
             api_routes.get_variable_income_value_daily_series = original_chart_fn
+
+    def test_income_update_endpoint_updates_record(self):
+        with self.app.app_context():
+            db = get_db()
+            portfolio_id = int(db.execute("SELECT id FROM portfolios LIMIT 1").fetchone()["id"])
+            db.execute(
+                """
+                INSERT INTO assets (ticker, name, sector, price)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("ITUB4", "Itau", "Financeiro", 10.0),
+            )
+            db.execute(
+                """
+                INSERT INTO incomes (portfolio_id, ticker, income_type, amount, date)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (portfolio_id, "ITUB4", "dividendo", 100.0, "2026-01-10"),
+            )
+            income_id = int(db.execute("SELECT MAX(id) AS id FROM incomes").fetchone()["id"])
+            db.commit()
+
+        with self.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess["user_id"] = int(self.user["id"])
+            response = client.patch(
+                f"/api/incomes/{income_id}",
+                json={
+                    "target_portfolio_id": str(portfolio_id),
+                    "ticker": "ITUB4",
+                    "income_type": "jcp",
+                    "amount": "150.75",
+                    "date": "2026-02-20",
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+
+        with self.app.app_context():
+            row = get_db().execute(
+                """
+                SELECT portfolio_id, ticker, income_type, amount, date
+                FROM incomes
+                WHERE id = ?
+                """,
+                (income_id,),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(int(row["portfolio_id"]), portfolio_id)
+            self.assertEqual(str(row["ticker"]), "ITUB4")
+            self.assertEqual(str(row["income_type"]), "jcp")
+            self.assertAlmostEqual(float(row["amount"]), 150.75, places=2)
+            self.assertEqual(str(row["date"]), "2026-02-20")
 
     def test_build_charts_core_payload_uses_current_income_for_cri_cra_deb(self):
         original_snapshot = api_routes.get_portfolio_snapshot

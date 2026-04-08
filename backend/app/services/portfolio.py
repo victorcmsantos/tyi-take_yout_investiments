@@ -64,10 +64,16 @@ def _transaction_exists(portfolio_id: int, ticker: str, tx_type: str, shares: fl
     return row is not None
 
 
-def _income_exists(portfolio_id: int, ticker: str, income_type: str, amount: float, date: str):
+def _income_exists(
+    portfolio_id: int,
+    ticker: str,
+    income_type: str,
+    amount: float,
+    date: str,
+    exclude_income_id=None,
+):
     db = get_db()
-    row = db.execute(
-        """
+    query = """
         SELECT id
         FROM incomes
         WHERE portfolio_id = ?
@@ -75,10 +81,13 @@ def _income_exists(portfolio_id: int, ticker: str, income_type: str, amount: flo
           AND income_type = ?
           AND ABS(amount - ?) < 0.000001
           AND date = ?
-        LIMIT 1
-        """,
-        (portfolio_id, ticker, income_type, amount, date),
-    ).fetchone()
+    """
+    params = [portfolio_id, ticker, income_type, amount, date]
+    if exclude_income_id is not None:
+        query += " AND id != ?"
+        params.append(int(exclude_income_id))
+    query += " LIMIT 1"
+    row = db.execute(query, tuple(params)).fetchone()
     return row is not None
 
 
@@ -638,6 +647,81 @@ def add_income(form_data: dict):
     db.commit()
     legacy.invalidate_chart_snapshots([portfolio_id])
     return True, "Provento registrado com sucesso."
+
+
+def update_income(income_id, form_data: dict):
+    try:
+        record_id = int(income_id)
+    except (TypeError, ValueError):
+        return False, "Registro de provento invalido."
+
+    db = get_db()
+    existing = db.execute(
+        """
+        SELECT id, portfolio_id
+        FROM incomes
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (record_id,),
+    ).fetchone()
+    if not existing or not _get_portfolio(int(existing["portfolio_id"])):
+        return False, "Registro de provento nao encontrado."
+
+    portfolio_id = resolve_portfolio_id(
+        form_data.get("target_portfolio_id")
+        or form_data.get("portfolio_id")
+        or int(existing["portfolio_id"])
+    )
+    ticker = (form_data.get("ticker") or "").strip().upper()
+    income_type = (form_data.get("income_type") or "").strip().lower()
+
+    if not ticker:
+        return False, "Ticker e obrigatorio."
+    if income_type not in {"dividendo", "jcp", "aluguel"}:
+        return False, "Tipo de provento invalido."
+
+    amount = _parse_float(form_data.get("amount"))
+    if amount is None or amount <= 0:
+        return False, "Valor do provento precisa ser numerico e maior que zero."
+    ok_conversion, converted_amount, conversion_error = legacy._convert_usd_to_brl_if_needed(ticker, amount)
+    if not ok_conversion:
+        return False, conversion_error
+    amount = converted_amount
+
+    income_date = _parse_date(form_data.get("date"))
+    if income_date is None:
+        return False, "Data invalida. Use o formato YYYY-MM-DD."
+
+    if _income_exists(
+        portfolio_id,
+        ticker,
+        income_type,
+        amount,
+        income_date,
+        exclude_income_id=record_id,
+    ):
+        return False, "Provento duplicado: ja existe um registro com esses mesmos dados."
+
+    from . import market_data
+
+    if not market_data.get_asset(ticker):
+        return False, "Ticker nao cadastrado. Lance uma transacao primeiro."
+
+    db.execute(
+        """
+        UPDATE incomes
+        SET portfolio_id = ?, ticker = ?, income_type = ?, amount = ?, date = ?
+        WHERE id = ?
+        """,
+        (portfolio_id, ticker, income_type, amount, income_date, record_id),
+    )
+    db.commit()
+    affected_portfolios = [int(existing["portfolio_id"])]
+    if portfolio_id not in affected_portfolios:
+        affected_portfolios.append(portfolio_id)
+    legacy.invalidate_chart_snapshots(affected_portfolios)
+    return True, "Provento atualizado com sucesso."
 
 
 def add_fixed_income(form_data: dict):
@@ -1386,6 +1470,7 @@ def get_incomes(portfolio_ids):
         """
         SELECT
             i.id,
+            i.portfolio_id,
             i.ticker,
             i.income_type,
             i.amount,
@@ -1677,5 +1762,6 @@ __all__ = [
     "rebuild_chart_snapshots",
     "rebuild_fixed_income_snapshots",
     "resolve_portfolio_id",
+    "update_income",
     "update_fixed_income",
 ]

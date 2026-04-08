@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
-import { apiDelete, apiGet, apiPost, apiPostForm } from '../api'
+import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm } from '../api'
 import { formatCurrencyBRL } from '../formatters'
 import { emitAppToast } from '../toast'
 
 const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
+const EMPTY_EDIT_FORM = {
+  target_portfolio_id: '',
+  ticker: '',
+  income_type: 'dividendo',
+  amount: '',
+  date: '',
+}
 
 function dateBr(value) {
   if (!value) return ''
@@ -20,6 +27,9 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
   const [loading, setLoading] = useState(true)
   const [selectedIncomeIds, setSelectedIncomeIds] = useState([])
   const [removingIncomes, setRemovingIncomes] = useState(false)
+  const [editingIncomeId, setEditingIncomeId] = useState(null)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [editForm, setEditForm] = useState(EMPTY_EDIT_FORM)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [importError, setImportError] = useState('')
@@ -76,6 +86,25 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
     ))
   }
 
+  const startEditIncome = (item) => {
+    setError('')
+    setMessage('')
+    setEditingIncomeId(item.id)
+    setEditForm({
+      target_portfolio_id: String(item.portfolio_id || ''),
+      ticker: String(item.ticker || ''),
+      income_type: String(item.income_type || 'dividendo').toLowerCase(),
+      amount: item.amount == null ? '' : String(item.amount),
+      date: String(item.date || ''),
+    })
+  }
+
+  const cancelEditIncome = () => {
+    setEditingIncomeId(null)
+    setSavingEdit(false)
+    setEditForm(EMPTY_EDIT_FORM)
+  }
+
   const onRemoveIncomes = async () => {
     if (selectedIncomeIds.length === 0) {
       setError('Selecione ao menos um provento para remover.')
@@ -92,6 +121,7 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
       )
       setMessage(`${Number(result.removed || 0)} provento(s) removido(s).`)
       await loadIncomes()
+      if (selectedIncomeIds.includes(editingIncomeId)) cancelEditIncome()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -125,6 +155,12 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
     setForm((current) => ({ ...current, [name]: normalizedValue }))
   }
 
+  const onEditChange = (event) => {
+    const { name, value } = event.target
+    const normalizedValue = name === 'ticker' ? String(value || '').toUpperCase() : value
+    setEditForm((current) => ({ ...current, [name]: normalizedValue }))
+  }
+
   const onSubmit = async (event) => {
     event.preventDefault()
     setError('')
@@ -137,6 +173,25 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
       await loadIncomes()
     } catch (err) {
       setError(err.message)
+    }
+  }
+
+  const onSubmitEdit = async (event) => {
+    event.preventDefault()
+    if (!editingIncomeId) return
+    setSavingEdit(true)
+    setError('')
+    setMessage('')
+    try {
+      const payload = { ...editForm, ticker: String(editForm.ticker || '').toUpperCase() }
+      const result = await apiPatch(`/api/incomes/${editingIncomeId}`, payload)
+      setMessage(result.message || 'Provento atualizado com sucesso.')
+      await loadIncomes()
+      cancelEditIncome()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSavingEdit(false)
     }
   }
 
@@ -223,6 +278,59 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
         </form>
       </article>
 
+      {editingIncomeId ? (
+        <article className="card form-card">
+          <h3>Editar provento</h3>
+          <form onSubmit={onSubmitEdit} className="form-grid">
+            <div>
+              <label htmlFor="edit-target_portfolio_id">Carteira destino</label>
+              <select id="edit-target_portfolio_id" name="target_portfolio_id" value={editForm.target_portfolio_id} onChange={onEditChange} required>
+                {portfolios.map((item) => (
+                  <option key={`edit-income-portfolio-${item.id}`} value={item.id}>{item.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="edit-ticker">Ticker</label>
+              <input
+                id="edit-ticker"
+                name="ticker"
+                type="text"
+                value={editForm.ticker}
+                onChange={onEditChange}
+                placeholder="Ex: ITUB4"
+                list="income-ticker-suggestions"
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="edit-income_type">Tipo</label>
+              <select id="edit-income_type" name="income_type" value={editForm.income_type} onChange={onEditChange} required>
+                <option value="dividendo">Dividendo</option>
+                <option value="jcp">JCP</option>
+                <option value="aluguel">Aluguel</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="edit-amount">Valor recebido (R$)</label>
+              <input id="edit-amount" name="amount" type="text" value={editForm.amount} onChange={onEditChange} required />
+            </div>
+            <div>
+              <label htmlFor="edit-date">Data</label>
+              <input id="edit-date" name="date" type="date" value={editForm.date} onChange={onEditChange} required />
+            </div>
+            <div className="form-actions">
+              <button type="submit" className="btn-primary" disabled={savingEdit}>
+                {savingEdit ? 'Salvando...' : 'Salvar alteracoes'}
+              </button>
+              <button type="button" className="btn-secondary" onClick={cancelEditIncome}>
+                Cancelar
+              </button>
+            </div>
+          </form>
+        </article>
+      ) : null}
+
       <article className="card form-card">
         <h3>Importar proventos por CSV</h3>
         <p className="subtitle">Use linhas com tipo: dividendo, jcp ou aluguel.</p>
@@ -264,6 +372,7 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
               <th>Tipo</th>
               <th>Valor</th>
               <th>Data</th>
+              <th>Acoes</th>
             </tr>
           </thead>
           <tbody>
@@ -281,16 +390,21 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
                 <td>{String(item.income_type || '').toUpperCase()}</td>
                 <td>{brl(item.amount)}</td>
                 <td>{dateBr(item.date)}</td>
+                <td>
+                  <button type="button" className="btn-secondary" onClick={() => startEditIncome(item)}>
+                    Editar
+                  </button>
+                </td>
               </tr>
             ))}
             {!loading && rows.length === 0 && (
               <tr>
-                <td colSpan={6}>Nenhum provento cadastrado ainda.</td>
+                <td colSpan={7}>Nenhum provento cadastrado ainda.</td>
               </tr>
             )}
             {loading && (
               <tr>
-                <td colSpan={6}>Carregando...</td>
+                <td colSpan={7}>Carregando...</td>
               </tr>
             )}
           </tbody>

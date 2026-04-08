@@ -64,6 +64,7 @@ from .services import (
     refresh_assets_market_data,
     refresh_asset_market_data,
     resolve_portfolio_id,
+    update_income,
     update_fixed_income,
     enrich_asset_with_openclaw,
     enrich_assets_with_openclaw_batch,
@@ -2592,6 +2593,15 @@ def incomes_upcoming():
     except (TypeError, ValueError):
         limit = 30
     return _json_ok(_build_upcoming_incomes_payload(portfolio_ids, limit=limit))
+
+
+@api_bp.route("/incomes/<int:income_id>", methods=["PATCH"])
+def income_update(income_id: int):
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    ok, message = update_income(income_id, payload)
+    if not ok:
+        return _json_error(message, status=400)
+    return _json_ok({"message": message, "income_id": income_id})
 
 
 @api_bp.route("/fixed-incomes", methods=["GET", "POST", "DELETE"])

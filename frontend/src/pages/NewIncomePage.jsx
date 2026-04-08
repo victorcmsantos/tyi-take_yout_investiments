@@ -220,6 +220,8 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
     }
   }
 
+  const editingItem = rows.find((item) => Number(item.id) === Number(editingIncomeId)) || null
+
   return (
     <section>
       <h1>Lancar provento</h1>
@@ -277,59 +279,6 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
           </div>
         </form>
       </article>
-
-      {editingIncomeId ? (
-        <article className="card form-card">
-          <h3>Editar provento</h3>
-          <form onSubmit={onSubmitEdit} className="form-grid">
-            <div>
-              <label htmlFor="edit-target_portfolio_id">Carteira destino</label>
-              <select id="edit-target_portfolio_id" name="target_portfolio_id" value={editForm.target_portfolio_id} onChange={onEditChange} required>
-                {portfolios.map((item) => (
-                  <option key={`edit-income-portfolio-${item.id}`} value={item.id}>{item.name}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label htmlFor="edit-ticker">Ticker</label>
-              <input
-                id="edit-ticker"
-                name="ticker"
-                type="text"
-                value={editForm.ticker}
-                onChange={onEditChange}
-                placeholder="Ex: ITUB4"
-                list="income-ticker-suggestions"
-                required
-              />
-            </div>
-            <div>
-              <label htmlFor="edit-income_type">Tipo</label>
-              <select id="edit-income_type" name="income_type" value={editForm.income_type} onChange={onEditChange} required>
-                <option value="dividendo">Dividendo</option>
-                <option value="jcp">JCP</option>
-                <option value="aluguel">Aluguel</option>
-              </select>
-            </div>
-            <div>
-              <label htmlFor="edit-amount">Valor recebido (R$)</label>
-              <input id="edit-amount" name="amount" type="text" value={editForm.amount} onChange={onEditChange} required />
-            </div>
-            <div>
-              <label htmlFor="edit-date">Data</label>
-              <input id="edit-date" name="date" type="date" value={editForm.date} onChange={onEditChange} required />
-            </div>
-            <div className="form-actions">
-              <button type="submit" className="btn-primary" disabled={savingEdit}>
-                {savingEdit ? 'Salvando...' : 'Salvar alteracoes'}
-              </button>
-              <button type="button" className="btn-secondary" onClick={cancelEditIncome}>
-                Cancelar
-              </button>
-            </div>
-          </form>
-        </article>
-      ) : null}
 
       <article className="card form-card">
         <h3>Importar proventos por CSV</h3>
@@ -392,7 +341,7 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
                 <td>{dateBr(item.date)}</td>
                 <td>
                   <button type="button" className="btn-secondary" onClick={() => startEditIncome(item)}>
-                    Editar
+                    {editingIncomeId === item.id ? 'Editando...' : 'Editar'}
                   </button>
                 </td>
               </tr>
@@ -415,6 +364,100 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
           </button>
         </div>
       </div>
+      {editingIncomeId && editingItem ? (
+        <div className="health-modal-backdrop" role="presentation" onClick={cancelEditIncome}>
+          <div
+            className="health-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Editar provento"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="health-modal-header">
+              <div>
+                <h3>Editar provento</h3>
+                <p className="subtitle">{editingItem.ticker} · {String(editingItem.income_type || '').toUpperCase()}</p>
+              </div>
+              <button type="button" className="btn-secondary" onClick={cancelEditIncome} disabled={savingEdit}>
+                Fechar
+              </button>
+            </div>
+            <form onSubmit={onSubmitEdit} className="form-grid">
+              <div>
+                <label htmlFor={`edit-target_portfolio_id-${editingItem.id}`}>Carteira destino</label>
+                <select
+                  id={`edit-target_portfolio_id-${editingItem.id}`}
+                  name="target_portfolio_id"
+                  value={editForm.target_portfolio_id}
+                  onChange={onEditChange}
+                  required
+                >
+                  {portfolios.map((item) => (
+                    <option key={`edit-income-portfolio-${item.id}`} value={item.id}>{item.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor={`edit-ticker-${editingItem.id}`}>Ticker</label>
+                <input
+                  id={`edit-ticker-${editingItem.id}`}
+                  name="ticker"
+                  type="text"
+                  value={editForm.ticker}
+                  onChange={onEditChange}
+                  placeholder="Ex: ITUB4"
+                  list="income-ticker-suggestions"
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor={`edit-income_type-${editingItem.id}`}>Tipo</label>
+                <select
+                  id={`edit-income_type-${editingItem.id}`}
+                  name="income_type"
+                  value={editForm.income_type}
+                  onChange={onEditChange}
+                  required
+                >
+                  <option value="dividendo">Dividendo</option>
+                  <option value="jcp">JCP</option>
+                  <option value="aluguel">Aluguel</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor={`edit-amount-${editingItem.id}`}>Valor recebido (R$)</label>
+                <input
+                  id={`edit-amount-${editingItem.id}`}
+                  name="amount"
+                  type="text"
+                  value={editForm.amount}
+                  onChange={onEditChange}
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor={`edit-date-${editingItem.id}`}>Data</label>
+                <input
+                  id={`edit-date-${editingItem.id}`}
+                  name="date"
+                  type="date"
+                  value={editForm.date}
+                  onChange={onEditChange}
+                  required
+                />
+              </div>
+              <div className="form-actions">
+                <button type="submit" className="btn-primary" disabled={savingEdit}>
+                  {savingEdit ? 'Salvando...' : 'Salvar edicao'}
+                </button>
+                <button type="button" className="btn-secondary" onClick={cancelEditIncome} disabled={savingEdit}>
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }

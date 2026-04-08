@@ -49,6 +49,7 @@ from .portfolio import (
     rebuild_chart_snapshots,
     rebuild_fixed_income_snapshots,
     resolve_portfolio_id,
+    update_fixed_income,
 )
 from .scanner import get_metric_formulas_catalog, update_metric_formula
 
@@ -97,6 +98,7 @@ __all__ = [
     "refresh_asset_market_data",
     "refresh_stale_assets_market_data",
     "resolve_portfolio_id",
+    "update_fixed_income",
     "update_metric_formula",
 ]
 

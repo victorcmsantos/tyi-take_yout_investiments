@@ -552,7 +552,7 @@ function ChartsPage({ selectedPortfolioIds }) {
     labels: fixedIssuerChart.labels || [],
     datasets: [
       {
-        label: 'investimento',
+        label: 'aplicação',
         data: fixedIssuerChart.investment_values || [],
         backgroundColor: '#1f6feb',
         stack: 'fixed-issuer',
@@ -852,7 +852,7 @@ function ChartsPage({ selectedPortfolioIds }) {
       label: item.title,
       description: 'Distribuição interna por agrupamento em barra horizontal.',
     })),
-    { key: 'fixedInvestment', label: 'Investimento renda fixa', description: 'Volume aplicado por recorte do book fixo.' },
+    { key: 'fixedInvestment', label: 'Aplicação renda fixa', description: 'Volume aplicado por recorte do book fixo.' },
     { key: 'fixedDistributor', label: 'Distribuidor renda fixa', description: 'Concentração da distribuição da carteira.' },
     { key: 'fixedIssuer', label: 'Emissor renda fixa', description: 'Principal e rendimento por emissor.' },
     { key: 'ledgerAnual', label: 'Ledger anual', description: 'Tabela comparativa por ano e mês.' },
@@ -1322,7 +1322,7 @@ function ChartsPage({ selectedPortfolioIds }) {
           <div className="charts-grid charts-grid-fixed">
             {isVisible('fixedInvestment') ? (
               <ChartPanel
-                title="Investimento Renda Fixa"
+                title="Aplicação Renda Fixa"
                 subtitle="Volume aplicado por recorte do book fixo."
                 actions={makeChartActions('fixedInvestment', 'investimento-renda-fixa', fixedInvestmentData)}
               >

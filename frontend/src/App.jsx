@@ -519,7 +519,7 @@ function App({ themeMode, onToggleTheme }) {
               />
               <Route
                 path="/renda-fixa"
-                element={isAdminUser ? <Navigate to="/admin" replace /> : <FixedIncomePage selectedPortfolioIds={selectedPortfolioIds} />}
+                element={isAdminUser ? <Navigate to="/admin" replace /> : <FixedIncomePage selectedPortfolioIds={selectedPortfolioIds} portfolios={portfolios} />}
               />
               <Route
                 path="/graficos"

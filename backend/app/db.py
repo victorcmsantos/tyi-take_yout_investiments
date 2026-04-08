@@ -747,7 +747,7 @@ def ensure_schema_upgrades():
           rate_ipca REAL NOT NULL DEFAULT 0 CHECK(rate_ipca >= 0),
           rate_cdi REAL NOT NULL DEFAULT 0 CHECK(rate_cdi >= 0),
           date_aporte TEXT NOT NULL,
-          aporte REAL NOT NULL CHECK(aporte > 0),
+          aporte REAL NOT NULL CHECK(aporte >= 0),
           reinvested REAL NOT NULL DEFAULT 0 CHECK(reinvested >= 0),
           maturity_date TEXT NOT NULL,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -766,57 +766,66 @@ def ensure_schema_upgrades():
         or "rate_fixed" not in fi_sql
         or "rate_ipca" not in fi_sql
         or "rate_cdi" not in fi_sql
+        or "CHECK(aporte >= 0)" not in fi_sql
     )
     if needs_recreate:
-        db.execute(
-            """
-            CREATE TABLE fixed_incomes_new (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              portfolio_id INTEGER NOT NULL,
-              distributor TEXT NOT NULL,
-              issuer TEXT NOT NULL,
-              investment_type TEXT NOT NULL,
-              rate_type TEXT NOT NULL CHECK(rate_type IN ('FIXO', 'FIXO+IPCA', 'IPCA', 'CDI', 'FIXO+CDI')),
-              annual_rate REAL NOT NULL CHECK(annual_rate >= 0),
-              rate_fixed REAL NOT NULL DEFAULT 0 CHECK(rate_fixed >= 0),
-              rate_ipca REAL NOT NULL DEFAULT 0 CHECK(rate_ipca >= 0),
-              rate_cdi REAL NOT NULL DEFAULT 0 CHECK(rate_cdi >= 0),
-              date_aporte TEXT NOT NULL,
-              aporte REAL NOT NULL CHECK(aporte > 0),
-              reinvested REAL NOT NULL DEFAULT 0 CHECK(reinvested >= 0),
-              maturity_date TEXT NOT NULL,
-              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
+        # Snapshot tables reference fixed_incomes; relax FKs only for this table swap.
+        db.commit()
+        db.execute("PRAGMA foreign_keys = OFF")
+        db.commit()
+        try:
+            db.execute(
+                """
+                CREATE TABLE fixed_incomes_new (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  portfolio_id INTEGER NOT NULL,
+                  distributor TEXT NOT NULL,
+                  issuer TEXT NOT NULL,
+                  investment_type TEXT NOT NULL,
+                  rate_type TEXT NOT NULL CHECK(rate_type IN ('FIXO', 'FIXO+IPCA', 'IPCA', 'CDI', 'FIXO+CDI')),
+                  annual_rate REAL NOT NULL CHECK(annual_rate >= 0),
+                  rate_fixed REAL NOT NULL DEFAULT 0 CHECK(rate_fixed >= 0),
+                  rate_ipca REAL NOT NULL DEFAULT 0 CHECK(rate_ipca >= 0),
+                  rate_cdi REAL NOT NULL DEFAULT 0 CHECK(rate_cdi >= 0),
+                  date_aporte TEXT NOT NULL,
+                  aporte REAL NOT NULL CHECK(aporte >= 0),
+                  reinvested REAL NOT NULL DEFAULT 0 CHECK(reinvested >= 0),
+                  maturity_date TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
+                )
+                """
             )
-            """
-        )
-        db.execute(
-            """
-            INSERT INTO fixed_incomes_new (
-                id, portfolio_id, distributor, issuer, investment_type, rate_type,
-                annual_rate, rate_fixed, rate_ipca, rate_cdi, date_aporte, aporte, reinvested, maturity_date, created_at
+            db.execute(
+                """
+                INSERT INTO fixed_incomes_new (
+                    id, portfolio_id, distributor, issuer, investment_type, rate_type,
+                    annual_rate, rate_fixed, rate_ipca, rate_cdi, date_aporte, aporte, reinvested, maturity_date, created_at
+                )
+                SELECT
+                    id, portfolio_id, distributor, issuer, investment_type, rate_type,
+                    annual_rate,
+                    CASE
+                      WHEN rate_type IN ('FIXO', 'FIXO+IPCA', 'FIXO+CDI') THEN annual_rate
+                      ELSE 0
+                    END AS rate_fixed,
+                    CASE
+                      WHEN rate_type = 'IPCA' THEN annual_rate
+                      ELSE 0
+                    END AS rate_ipca,
+                    CASE
+                      WHEN rate_type = 'CDI' THEN annual_rate
+                      ELSE 0
+                    END AS rate_cdi,
+                    date_aporte, aporte, reinvested, maturity_date, created_at
+                FROM fixed_incomes
+                """
             )
-            SELECT
-                id, portfolio_id, distributor, issuer, investment_type, rate_type,
-                annual_rate,
-                CASE
-                  WHEN rate_type IN ('FIXO', 'FIXO+IPCA', 'FIXO+CDI') THEN annual_rate
-                  ELSE 0
-                END AS rate_fixed,
-                CASE
-                  WHEN rate_type = 'IPCA' THEN annual_rate
-                  ELSE 0
-                END AS rate_ipca,
-                CASE
-                  WHEN rate_type = 'CDI' THEN annual_rate
-                  ELSE 0
-                END AS rate_cdi,
-                date_aporte, aporte, reinvested, maturity_date, created_at
-            FROM fixed_incomes
-            """
-        )
-        db.execute("DROP TABLE fixed_incomes")
-        db.execute("ALTER TABLE fixed_incomes_new RENAME TO fixed_incomes")
+            db.execute("DROP TABLE fixed_incomes")
+            db.execute("ALTER TABLE fixed_incomes_new RENAME TO fixed_incomes")
+            db.commit()
+        finally:
+            db.execute("PRAGMA foreign_keys = ON")
 
     # Corrige legados onde taxa hibrida foi salva em dobro por migracao antiga.
     db.execute(

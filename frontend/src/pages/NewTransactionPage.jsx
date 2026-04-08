@@ -493,7 +493,7 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
             <input id="issuer" name="issuer" type="text" value={fixedForm.issuer} onChange={onFixedChange} required />
           </div>
           <div>
-            <label htmlFor="investment_type">Investimento</label>
+            <label htmlFor="investment_type">Aplicação</label>
             <select
               id="investment_type"
               name="investment_type"
@@ -566,7 +566,7 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
 
       <article className="card form-card">
         <h3>Importar renda fixa por CSV</h3>
-        <p className="subtitle">Ordem padrao: Distribuidor, Emissor, Investimento, tipo, data aporte, aporte, Reinvestido, data final, Juros Fixo, IPCA, CDI.</p>
+        <p className="subtitle">Ordem padrao: Distribuidor, Emissor, Aplicação, tipo, data aporte, aporte, Reinvestido, data final, Juros Fixo, IPCA, CDI.</p>
         {!!fixedImportError && <p className="notice-warn">{fixedImportError}</p>}
         {!!fixedImportMessage && <p className="notice-ok">{fixedImportMessage}</p>}
         {fixedImportWarnings.length > 0 && (

@@ -276,7 +276,7 @@ CREATE TABLE IF NOT EXISTS fixed_incomes (
   rate_ipca REAL NOT NULL DEFAULT 0 CHECK(rate_ipca >= 0),
   rate_cdi REAL NOT NULL DEFAULT 0 CHECK(rate_cdi >= 0),
   date_aporte TEXT NOT NULL,
-  aporte REAL NOT NULL CHECK(aporte > 0),
+  aporte REAL NOT NULL CHECK(aporte >= 0),
   reinvested REAL NOT NULL DEFAULT 0 CHECK(reinvested >= 0),
   maturity_date TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

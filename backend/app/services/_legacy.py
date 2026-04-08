@@ -4243,9 +4243,7 @@ def _build_monthly_class_summary(portfolio_ids):
         aporte_month = _month_key(item["date_aporte"])
         if aporte_month:
             _ensure_month_entry(aporte_month)
-            rows_map[aporte_month]["fixa_invested"] += float(item.get("aporte") or 0.0) + float(
-                item.get("reinvested") or 0.0
-            )
+            rows_map[aporte_month]["fixa_invested"] += float(item.get("aporte") or 0.0)
 
         maturity_month = _month_key(item["maturity_date"])
         if maturity_month:

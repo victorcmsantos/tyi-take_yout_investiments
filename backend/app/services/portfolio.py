@@ -96,10 +96,10 @@ def _fixed_income_exists(
     aporte: float,
     reinvested: float,
     maturity_date: str,
+    exclude_fixed_income_id=None,
 ):
     db = get_db()
-    row = db.execute(
-        """
+    query = """
         SELECT id
         FROM fixed_incomes
         WHERE portfolio_id = ?
@@ -115,25 +115,132 @@ def _fixed_income_exists(
           AND ABS(aporte - ?) < 0.000001
           AND ABS(reinvested - ?) < 0.000001
           AND maturity_date = ?
-        LIMIT 1
-        """,
-        (
-            portfolio_id,
-            distributor,
-            issuer,
-            investment_type,
-            rate_type,
-            annual_rate,
-            rate_fixed,
-            rate_ipca,
-            rate_cdi,
-            date_aporte,
-            aporte,
-            reinvested,
-            maturity_date,
-        ),
-    ).fetchone()
+    """
+    params = [
+        portfolio_id,
+        distributor,
+        issuer,
+        investment_type,
+        rate_type,
+        annual_rate,
+        rate_fixed,
+        rate_ipca,
+        rate_cdi,
+        date_aporte,
+        aporte,
+        reinvested,
+        maturity_date,
+    ]
+    if exclude_fixed_income_id is not None:
+        query += " AND id != ?"
+        params.append(int(exclude_fixed_income_id))
+    query += " LIMIT 1"
+    row = db.execute(query, tuple(params)).fetchone()
     return row is not None
+
+
+def _normalize_fixed_income_form_data(form_data: dict, current_portfolio_id=None):
+    portfolio_id = resolve_portfolio_id(
+        form_data.get("target_portfolio_id")
+        or form_data.get("portfolio_id")
+        or current_portfolio_id
+    )
+    distributor = (form_data.get("distributor") or "").strip()
+    issuer = (form_data.get("issuer") or "").strip()
+    investment_type = (form_data.get("investment_type") or "").strip().upper()
+    rate_type = (form_data.get("rate_type") or "").strip().upper()
+    annual_rate_legacy = _parse_float(form_data.get("annual_rate"))
+    rate_fixed = _parse_float(form_data.get("juros_fixo"))
+    rate_ipca = _parse_float(form_data.get("ipca"))
+    rate_cdi = _parse_float(form_data.get("cdi"))
+    rate_fixed = 0.0 if rate_fixed is None else rate_fixed
+    rate_ipca = 0.0 if rate_ipca is None else rate_ipca
+    rate_cdi = 0.0 if rate_cdi is None else rate_cdi
+    date_aporte = _parse_date(form_data.get("date_aporte"))
+    maturity_date = _parse_date(form_data.get("maturity_date"))
+    aporte = _parse_float(form_data.get("aporte"))
+    reinvested = _parse_float(form_data.get("reinvested"))
+
+    if not portfolio_id or not _get_portfolio(portfolio_id):
+        return False, "Carteira invalida."
+    if not distributor:
+        return False, "Distribuidor e obrigatorio."
+    if not issuer:
+        return False, "Emissor e obrigatorio."
+    if not investment_type:
+        return False, "Investimento e obrigatorio."
+    if rate_type not in {"FIXO", "FIXO+IPCA", "IPCA", "CDI", "FIXO+CDI"}:
+        return False, "Tipo de taxa invalido."
+
+    expected_sets = {
+        "FIXO": {"FIXO"},
+        "IPCA": {"IPCA"},
+        "CDI": {"CDI"},
+        "FIXO+IPCA": {"FIXO", "IPCA"},
+        "FIXO+CDI": {"FIXO", "CDI"},
+    }
+    positive_set = set()
+    if rate_fixed > 0:
+        positive_set.add("FIXO")
+    if rate_ipca > 0:
+        positive_set.add("IPCA")
+    if rate_cdi > 0:
+        positive_set.add("CDI")
+
+    expected = expected_sets[rate_type]
+    annual_rate = None
+    if positive_set:
+        if positive_set != expected:
+            if annual_rate_legacy is not None and annual_rate_legacy >= 0 and positive_set.issubset(expected):
+                annual_rate = annual_rate_legacy
+            else:
+                return (
+                    False,
+                    (
+                        f"Para o tipo {rate_type}, preencha somente: "
+                        f"{', '.join(sorted(expected))}."
+                    ),
+                )
+        else:
+            component_rates = {"FIXO": rate_fixed, "IPCA": rate_ipca, "CDI": rate_cdi}
+            annual_rate = sum(component_rates[key] for key in expected)
+    else:
+        if annual_rate_legacy is None or annual_rate_legacy < 0:
+            return False, "Taxa anual invalida."
+        annual_rate = annual_rate_legacy
+
+    if annual_rate is None or annual_rate < 0:
+        return False, "Taxa anual invalida."
+    if aporte is None or aporte < 0:
+        return False, "Aporte invalido."
+    if reinvested is None:
+        reinvested = 0.0
+    if reinvested < 0:
+        return False, "Reinvestido nao pode ser negativo."
+    if (aporte + reinvested) <= 0:
+        return False, "Informe um valor maior que zero entre aporte e reinvestido."
+    if not date_aporte:
+        return False, "Data de aporte invalida."
+    if not maturity_date:
+        return False, "Data final invalida."
+    if maturity_date < date_aporte:
+        return False, "Data final nao pode ser menor que data de aporte."
+
+    return True, {
+        "portfolio_id": portfolio_id,
+        "distributor": distributor,
+        "issuer": issuer,
+        "investment_type": investment_type,
+        "rate_type": rate_type,
+        "annual_rate": annual_rate,
+        "rate_fixed": rate_fixed,
+        "rate_ipca": rate_ipca,
+        "rate_cdi": rate_cdi,
+        "date_aporte": date_aporte,
+        "aporte": aporte,
+        "reinvested": reinvested,
+        "maturity_date": maturity_date,
+    }
 
 
 def get_portfolios():
@@ -534,82 +641,23 @@ def add_income(form_data: dict):
 
 
 def add_fixed_income(form_data: dict):
-    portfolio_id = resolve_portfolio_id(
-        form_data.get("target_portfolio_id") or form_data.get("portfolio_id")
-    )
-    distributor = (form_data.get("distributor") or "").strip()
-    issuer = (form_data.get("issuer") or "").strip()
-    investment_type = (form_data.get("investment_type") or "").strip().upper()
-    rate_type = (form_data.get("rate_type") or "").strip().upper()
-    annual_rate_legacy = _parse_float(form_data.get("annual_rate"))
-    rate_fixed = _parse_float(form_data.get("juros_fixo"))
-    rate_ipca = _parse_float(form_data.get("ipca"))
-    rate_cdi = _parse_float(form_data.get("cdi"))
-    rate_fixed = 0.0 if rate_fixed is None else rate_fixed
-    rate_ipca = 0.0 if rate_ipca is None else rate_ipca
-    rate_cdi = 0.0 if rate_cdi is None else rate_cdi
-    date_aporte = _parse_date(form_data.get("date_aporte"))
-    maturity_date = _parse_date(form_data.get("maturity_date"))
-    aporte = _parse_float(form_data.get("aporte"))
-    reinvested = _parse_float(form_data.get("reinvested"))
+    ok, normalized = _normalize_fixed_income_form_data(form_data)
+    if not ok:
+        return False, normalized
 
-    if not distributor:
-        return False, "Distribuidor e obrigatorio."
-    if not issuer:
-        return False, "Emissor e obrigatorio."
-    if not investment_type:
-        return False, "Investimento e obrigatorio."
-    if rate_type not in {"FIXO", "FIXO+IPCA", "IPCA", "CDI", "FIXO+CDI"}:
-        return False, "Tipo de taxa invalido."
-    expected_sets = {
-        "FIXO": {"FIXO"},
-        "IPCA": {"IPCA"},
-        "CDI": {"CDI"},
-        "FIXO+IPCA": {"FIXO", "IPCA"},
-        "FIXO+CDI": {"FIXO", "CDI"},
-    }
-    positive_set = set()
-    if rate_fixed > 0:
-        positive_set.add("FIXO")
-    if rate_ipca > 0:
-        positive_set.add("IPCA")
-    if rate_cdi > 0:
-        positive_set.add("CDI")
-
-    expected = expected_sets[rate_type]
-    annual_rate = None
-    if positive_set:
-        if positive_set != expected:
-            return (
-                False,
-                (
-                    f"Para o tipo {rate_type}, preencha somente: "
-                    f"{', '.join(sorted(expected))}."
-                ),
-            )
-        component_rates = {"FIXO": rate_fixed, "IPCA": rate_ipca, "CDI": rate_cdi}
-        annual_rate = sum(component_rates[key] for key in expected)
-    else:
-        if rate_type in {"FIXO+IPCA", "FIXO+CDI"}:
-            return False, f"Para o tipo {rate_type}, informe os percentuais de cada componente."
-        if annual_rate_legacy is None or annual_rate_legacy < 0:
-            return False, "Taxa anual invalida."
-        annual_rate = annual_rate_legacy
-
-    if annual_rate is None or annual_rate < 0:
-        return False, "Taxa anual invalida."
-    if aporte is None or aporte <= 0:
-        return False, "Aporte invalido."
-    if reinvested is None:
-        reinvested = 0.0
-    if reinvested < 0:
-        return False, "Reinvestido nao pode ser negativo."
-    if not date_aporte:
-        return False, "Data de aporte invalida."
-    if not maturity_date:
-        return False, "Data final invalida."
-    if maturity_date < date_aporte:
-        return False, "Data final nao pode ser menor que data de aporte."
+    portfolio_id = normalized["portfolio_id"]
+    distributor = normalized["distributor"]
+    issuer = normalized["issuer"]
+    investment_type = normalized["investment_type"]
+    rate_type = normalized["rate_type"]
+    annual_rate = normalized["annual_rate"]
+    rate_fixed = normalized["rate_fixed"]
+    rate_ipca = normalized["rate_ipca"]
+    rate_cdi = normalized["rate_cdi"]
+    date_aporte = normalized["date_aporte"]
+    aporte = normalized["aporte"]
+    reinvested = normalized["reinvested"]
+    maturity_date = normalized["maturity_date"]
     if _fixed_income_exists(
         portfolio_id,
         distributor,
@@ -656,6 +704,108 @@ def add_fixed_income(form_data: dict):
     invalidate_fixed_income_snapshot([portfolio_id])
     legacy.invalidate_chart_snapshots([portfolio_id])
     return True, "Renda fixa cadastrada com sucesso."
+
+
+def update_fixed_income(fixed_income_id, form_data: dict):
+    try:
+        record_id = int(fixed_income_id)
+    except (TypeError, ValueError):
+        return False, "Registro de renda fixa invalido."
+
+    db = get_db()
+    existing = db.execute(
+        """
+        SELECT id, portfolio_id
+        FROM fixed_incomes
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (record_id,),
+    ).fetchone()
+    if not existing or not _get_portfolio(int(existing["portfolio_id"])):
+        return False, "Registro de renda fixa nao encontrado."
+
+    ok, normalized = _normalize_fixed_income_form_data(
+        form_data,
+        current_portfolio_id=int(existing["portfolio_id"]),
+    )
+    if not ok:
+        return False, normalized
+
+    portfolio_id = normalized["portfolio_id"]
+    distributor = normalized["distributor"]
+    issuer = normalized["issuer"]
+    investment_type = normalized["investment_type"]
+    rate_type = normalized["rate_type"]
+    annual_rate = normalized["annual_rate"]
+    rate_fixed = normalized["rate_fixed"]
+    rate_ipca = normalized["rate_ipca"]
+    rate_cdi = normalized["rate_cdi"]
+    date_aporte = normalized["date_aporte"]
+    aporte = normalized["aporte"]
+    reinvested = normalized["reinvested"]
+    maturity_date = normalized["maturity_date"]
+    if _fixed_income_exists(
+        portfolio_id,
+        distributor,
+        issuer,
+        investment_type,
+        rate_type,
+        annual_rate,
+        rate_fixed,
+        rate_ipca,
+        rate_cdi,
+        date_aporte,
+        aporte,
+        reinvested,
+        maturity_date,
+        exclude_fixed_income_id=record_id,
+    ):
+        return False, "Registro duplicado: ja existe uma renda fixa com os mesmos dados."
+
+    db.execute(
+        """
+        UPDATE fixed_incomes
+        SET
+            portfolio_id = ?,
+            distributor = ?,
+            issuer = ?,
+            investment_type = ?,
+            rate_type = ?,
+            annual_rate = ?,
+            rate_fixed = ?,
+            rate_ipca = ?,
+            rate_cdi = ?,
+            date_aporte = ?,
+            aporte = ?,
+            reinvested = ?,
+            maturity_date = ?
+        WHERE id = ?
+        """,
+        (
+            portfolio_id,
+            distributor,
+            issuer,
+            investment_type,
+            rate_type,
+            annual_rate,
+            rate_fixed,
+            rate_ipca,
+            rate_cdi,
+            date_aporte,
+            aporte,
+            reinvested,
+            maturity_date,
+            record_id,
+        ),
+    )
+    db.commit()
+    affected_portfolios = [int(existing["portfolio_id"])]
+    if portfolio_id not in affected_portfolios:
+        affected_portfolios.append(portfolio_id)
+    invalidate_fixed_income_snapshot(affected_portfolios)
+    legacy.invalidate_chart_snapshots(affected_portfolios)
+    return True, "Renda fixa atualizada com sucesso."
 
 
 def delete_fixed_incomes(fixed_income_ids, portfolio_ids):
@@ -779,6 +929,8 @@ def get_fixed_income_summary(portfolio_ids):
 def get_fixed_income_summary_from_items(items):
     items = items or []
     return {
+        "aporte_total": round(sum(float(item.get("aporte", 0.0) or 0.0) for item in items), 2),
+        "reinvested_total": round(sum(float(item.get("reinvested", 0.0) or 0.0) for item in items), 2),
         "applied_total": round(sum(item["active_applied_value"] for item in items), 2),
         "current_total": round(sum(item["current_gross_value"] for item in items), 2),
         "income_total": round(sum(item["current_income"] for item in items), 2),
@@ -916,6 +1068,8 @@ def get_fixed_income_payload_cached(portfolio_ids, sort_by: str = "date_aporte",
             items.append(json.loads(row["payload_json"] or "{}"))
 
         summary = {
+            "aporte_total": 0.0,
+            "reinvested_total": 0.0,
             "applied_total": 0.0,
             "current_total": 0.0,
             "income_total": 0.0,
@@ -924,8 +1078,13 @@ def get_fixed_income_payload_cached(portfolio_ids, sort_by: str = "date_aporte",
             "rendimento_recebido_total": 0.0,
             "count": 0,
         }
+        legacy_summary_shape = False
         for pid in pids:
             part = summary_map.get(int(pid), {})
+            if "aporte_total" not in part or "reinvested_total" not in part:
+                legacy_summary_shape = True
+            summary["aporte_total"] += float(part.get("aporte_total", 0.0))
+            summary["reinvested_total"] += float(part.get("reinvested_total", 0.0))
             summary["applied_total"] += float(part.get("applied_total", 0.0))
             summary["current_total"] += float(part.get("current_total", 0.0))
             summary["income_total"] += float(part.get("income_total", 0.0))
@@ -934,6 +1093,8 @@ def get_fixed_income_payload_cached(portfolio_ids, sort_by: str = "date_aporte",
             summary["rendimento_recebido_total"] += float(part.get("rendimento_recebido_total", 0.0))
             summary["count"] += int(part.get("count", 0))
         for key in (
+            "aporte_total",
+            "reinvested_total",
             "applied_total",
             "current_total",
             "income_total",
@@ -942,6 +1103,15 @@ def get_fixed_income_payload_cached(portfolio_ids, sort_by: str = "date_aporte",
             "rendimento_recebido_total",
         ):
             summary[key] = round(summary[key], 2)
+        if legacy_summary_shape:
+            summary["aporte_total"] = round(
+                sum(float(item.get("aporte", 0.0) or 0.0) for item in items),
+                2,
+            )
+            summary["reinvested_total"] = round(
+                sum(float(item.get("reinvested", 0.0) or 0.0) for item in items),
+                2,
+            )
 
         return {
             "items": _sort_fixed_income_items(items, sort_by=sort_by, sort_dir=sort_dir),
@@ -1501,4 +1671,5 @@ __all__ = [
     "rebuild_chart_snapshots",
     "rebuild_fixed_income_snapshots",
     "resolve_portfolio_id",
+    "update_fixed_income",
 ]

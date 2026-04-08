@@ -206,7 +206,7 @@ Acesse em `http://127.0.0.1:8000`.
 
 ### Usuarios e admin bootstrap
 
-- O acesso agora e feito por login de usuario na propria aplicacao.
+- O acesso agora e feito por login de usuario na propria aplicação.
 - No primeiro boot, o backend garante a existencia de um usuario `admin`.
 - A senha inicial do `admin` e gerada aleatoriamente e fica disponivel dentro do container em `/app_vol/admin-bootstrap.txt`.
 - Para consultar:

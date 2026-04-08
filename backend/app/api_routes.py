@@ -64,6 +64,7 @@ from .services import (
     refresh_assets_market_data,
     refresh_asset_market_data,
     resolve_portfolio_id,
+    update_fixed_income,
     enrich_asset_with_openclaw,
     enrich_assets_with_openclaw_batch,
     update_metric_formula,
@@ -1623,7 +1624,7 @@ def _build_charts_core_payload(portfolio_ids):
     for item in fixed_income_items:
         investment_name = (item.get("investment_type") or "").upper()
         if any(key in investment_name for key in cri_keywords):
-            cri_result += float(item.get("current_income", 0.0))
+            cri_result += float(item.get("open_pnl_value", item.get("current_income", 0.0)))
 
     result_by_category_chart = {
         "labels": ["US", "FIIs", "BR", "Cripto", "CRI/CRA/DEB"],
@@ -2616,6 +2617,15 @@ def fixed_incomes():
     if removed <= 0:
         return _json_error("Nenhum registro removido.", status=400)
     return _json_ok({"removed": removed})
+
+
+@api_bp.route("/fixed-incomes/<int:fixed_income_id>", methods=["PATCH"])
+def fixed_income_update(fixed_income_id: int):
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    ok, message = update_fixed_income(fixed_income_id, payload)
+    if not ok:
+        return _json_error(message, status=400)
+    return _json_ok({"message": message, "fixed_income_id": fixed_income_id})
 
 
 @api_bp.route("/imports/transactions-csv", methods=["POST"])

@@ -46,6 +46,47 @@ function RouteFallback({ title = 'Carregando pagina...' }) {
   )
 }
 
+const COUNTDOWN_TARGET = new Date(2027, 11, 31, 23, 59, 0)
+
+function shiftDateByMonths(baseDate, monthsToAdd) {
+  const next = new Date(baseDate)
+  const day = next.getDate()
+  next.setDate(1)
+  next.setMonth(next.getMonth() + monthsToAdd)
+  const lastDayOfMonth = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate()
+  next.setDate(Math.min(day, lastDayOfMonth))
+  return next
+}
+
+function getCountdownParts(now = new Date(), target = COUNTDOWN_TARGET) {
+  if (!(target instanceof Date) || Number.isNaN(target.getTime()) || now >= target) {
+    return { years: 0, months: 0, days: 0 }
+  }
+
+  let cursor = new Date(now)
+  let years = 0
+  let months = 0
+
+  while (true) {
+    const nextYear = shiftDateByMonths(cursor, 12)
+    if (nextYear > target) break
+    cursor = nextYear
+    years += 1
+  }
+
+  while (true) {
+    const nextMonth = shiftDateByMonths(cursor, 1)
+    if (nextMonth > target) break
+    cursor = nextMonth
+    months += 1
+  }
+
+  const msPerDay = 1000 * 60 * 60 * 24
+  const days = Math.max(0, Math.floor((target.getTime() - cursor.getTime()) / msPerDay))
+
+  return { years, months, days }
+}
+
 function App({ themeMode, onToggleTheme }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -58,6 +99,7 @@ function App({ themeMode, onToggleTheme }) {
   const [assetSearch, setAssetSearch] = useState('')
   const [assetSuggestions, setAssetSuggestions] = useState([])
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [headerCountdown, setHeaderCountdown] = useState(() => getCountdownParts())
   const [toastState, setToastState] = useState({
     open: false,
     message: '',
@@ -167,6 +209,13 @@ function App({ themeMode, onToggleTheme }) {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [sidebarOpen])
+
+  useEffect(() => {
+    const updateCountdown = () => setHeaderCountdown(getCountdownParts())
+    updateCountdown()
+    const intervalId = window.setInterval(updateCountdown, 60000)
+    return () => window.clearInterval(intervalId)
+  }, [])
 
   useEffect(() => {
     const handleToast = (event) => {
@@ -385,6 +434,14 @@ function App({ themeMode, onToggleTheme }) {
               <Typography variant="body2" className="app-v2-header-portfolios" title={activePortfolioNames}>
                 {currentUser.username}{isAdminUser ? ' · Admin' : isViewerUser ? ' · Viewer' : ` · ${activePortfolioNames}`}
               </Typography>
+              <div className="app-v2-header-countdown" aria-label="Contagem regressiva até 31 de dezembro de 2027 às 23:59">
+                <span className="app-v2-header-countdown-label">Até 31/12/2027 · 23:59</span>
+                <div className="app-v2-header-countdown-values">
+                  <span className="app-v2-header-countdown-value"><strong>{headerCountdown.years}</strong><small>anos</small></span>
+                  <span className="app-v2-header-countdown-value"><strong>{headerCountdown.months}</strong><small>meses</small></span>
+                  <span className="app-v2-header-countdown-value"><strong>{headerCountdown.days}</strong><small>dias</small></span>
+                </div>
+              </div>
               <Button
                 color="inherit"
                 variant="outlined"

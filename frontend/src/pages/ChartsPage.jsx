@@ -22,6 +22,46 @@ const MONTH_ORDER = [
   ['NOV', 'nov'],
   ['DEZ', 'dez'],
 ]
+const COUNTDOWN_TARGET = new Date(2027, 11, 31, 23, 59, 0)
+
+function shiftDateByMonths(baseDate, monthsToAdd) {
+  const next = new Date(baseDate)
+  const day = next.getDate()
+  next.setDate(1)
+  next.setMonth(next.getMonth() + monthsToAdd)
+  const lastDayOfMonth = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate()
+  next.setDate(Math.min(day, lastDayOfMonth))
+  return next
+}
+
+function getCountdownParts(now = new Date(), target = COUNTDOWN_TARGET) {
+  if (!(target instanceof Date) || Number.isNaN(target.getTime()) || now >= target) {
+    return { years: 0, months: 0, days: 0 }
+  }
+
+  let cursor = new Date(now)
+  let years = 0
+  let months = 0
+
+  while (true) {
+    const nextYear = shiftDateByMonths(cursor, 12)
+    if (nextYear > target) break
+    cursor = nextYear
+    years += 1
+  }
+
+  while (true) {
+    const nextMonth = shiftDateByMonths(cursor, 1)
+    if (nextMonth > target) break
+    cursor = nextMonth
+    months += 1
+  }
+
+  const msPerDay = 1000 * 60 * 60 * 24
+  const days = Math.max(0, Math.floor((target.getTime() - cursor.getTime()) / msPerDay))
+
+  return { years, months, days }
+}
 
 ChartJS.register(ChartDataLabels)
 
@@ -1047,7 +1087,7 @@ function ChartsPage({ selectedPortfolioIds }) {
             <h1>Graficos</h1>
             <p className="subtitle">Comparativos, alocação, benchmark e ledgers históricos em leitura operacional.</p>
           </div>
-          <div className="dashboard-hero-actions">
+          <div className="dashboard-hero-actions charts-terminal-sidepanel">
             <button type="button" className="icon-btn" onClick={() => setShowLayoutControls((current) => !current)}>
               {showLayoutControls ? 'Fechar layout' : 'Personalizar paineis'}
             </button>

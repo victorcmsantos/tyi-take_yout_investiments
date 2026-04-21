@@ -45,10 +45,22 @@ def _current_shares(ticker: str, portfolio_id: int):
     return float(row["shares"] or 0.0)
 
 
-def _transaction_exists(portfolio_id: int, ticker: str, tx_type: str, shares: float, price: float, date: str):
+def _transaction_effect(tx_type: str, shares: float):
+    value = float(shares or 0.0)
+    return value if str(tx_type) == "buy" else -value
+
+
+def _transaction_exists(
+    portfolio_id: int,
+    ticker: str,
+    tx_type: str,
+    shares: float,
+    price: float,
+    date: str,
+    exclude_transaction_id=None,
+):
     db = get_db()
-    row = db.execute(
-        """
+    query = """
         SELECT id
         FROM transactions
         WHERE portfolio_id = ?
@@ -57,10 +69,13 @@ def _transaction_exists(portfolio_id: int, ticker: str, tx_type: str, shares: fl
           AND ABS(shares - ?) < 0.000000001
           AND ABS(price - ?) < 0.000001
           AND date = ?
-        LIMIT 1
-        """,
-        (portfolio_id, ticker, tx_type, shares, price, date),
-    ).fetchone()
+    """
+    params = [portfolio_id, ticker, tx_type, shares, price, date]
+    if exclude_transaction_id is not None:
+        query += " AND id != ?"
+        params.append(int(exclude_transaction_id))
+    query += " LIMIT 1"
+    row = db.execute(query, tuple(params)).fetchone()
     return row is not None
 
 
@@ -188,6 +203,7 @@ def _normalize_fixed_income_form_data(form_data: dict, current_portfolio_id=None
         "FIXO+IPCA": {"FIXO", "IPCA"},
         "FIXO+CDI": {"FIXO", "CDI"},
     }
+
     positive_set = set()
     if rate_fixed > 0:
         positive_set.add("FIXO")
@@ -249,6 +265,50 @@ def _normalize_fixed_income_form_data(form_data: dict, current_portfolio_id=None
         "aporte": aporte,
         "reinvested": reinvested,
         "maturity_date": maturity_date,
+    }
+
+
+def _normalize_transaction_form_data(form_data: dict, current_portfolio_id=None):
+    portfolio_id = resolve_portfolio_id(
+        form_data.get("target_portfolio_id")
+        or form_data.get("portfolio_id")
+        or current_portfolio_id
+    )
+    ticker = (form_data.get("ticker") or "").strip().upper()
+    tx_type = (form_data.get("tx_type") or "").strip().lower()
+
+    if not portfolio_id or not _get_portfolio(portfolio_id):
+        return False, "Carteira invalida."
+    if not ticker:
+        return False, "Ticker e obrigatorio."
+    if tx_type not in {"buy", "sell"}:
+        return False, "Tipo de transacao invalido."
+
+    shares = _parse_float(form_data.get("shares"))
+    if shares is None:
+        return False, "Quantidade precisa ser numerica."
+    if shares <= 0:
+        return False, "Quantidade precisa ser maior que zero."
+
+    price = _parse_float(form_data.get("price"))
+    if price is None or price <= 0:
+        return False, "Preco precisa ser numerico e maior que zero."
+    ok_conversion, converted_price, conversion_error = legacy._convert_usd_to_brl_if_needed(ticker, price)
+    if not ok_conversion:
+        return False, conversion_error
+    price = converted_price
+
+    transaction_date = _parse_date(form_data.get("date"))
+    if transaction_date is None:
+        return False, "Data invalida. Use o formato YYYY-MM-DD."
+
+    return True, {
+        "portfolio_id": portfolio_id,
+        "ticker": ticker,
+        "tx_type": tx_type,
+        "shares": shares,
+        "price": price,
+        "date": transaction_date,
     }
 
 
@@ -410,44 +470,8 @@ def delete_portfolio(portfolio_id):
     return True, portfolio["name"]
 
 
-def add_transaction(form_data: dict):
-    portfolio_id = resolve_portfolio_id(
-        form_data.get("target_portfolio_id") or form_data.get("portfolio_id")
-    )
-    ticker = (form_data.get("ticker") or "").strip().upper()
-    tx_type = (form_data.get("tx_type") or "").strip().lower()
-
-    if not ticker:
-        return False, "Ticker e obrigatorio."
-    if tx_type not in {"buy", "sell"}:
-        return False, "Tipo de transacao invalido."
-
-    shares = _parse_float(form_data.get("shares"))
-    if shares is None:
-        return False, "Quantidade precisa ser numerica."
-    if shares <= 0:
-        return False, "Quantidade precisa ser maior que zero."
-
-    price = _parse_float(form_data.get("price"))
-    if price is None or price <= 0:
-        return False, "Preco precisa ser numerico e maior que zero."
-    ok_conversion, converted_price, conversion_error = legacy._convert_usd_to_brl_if_needed(ticker, price)
-    if not ok_conversion:
-        return False, conversion_error
-    price = converted_price
-
-    transaction_date = _parse_date(form_data.get("date"))
-    if transaction_date is None:
-        return False, "Data invalida. Use o formato YYYY-MM-DD."
-
-    if _transaction_exists(portfolio_id, ticker, tx_type, shares, price, transaction_date):
-        return False, "Transacao duplicada: ja existe um registro com esses mesmos dados."
-
+def _ensure_transaction_asset(ticker: str, tx_type: str, price: float, form_data: dict):
     db = get_db()
-    if tx_type == "sell":
-        if shares - _current_shares(ticker, portfolio_id) > 0.000000001:
-            return False, "Venda maior que a quantidade em carteira."
-
     from . import market_data
 
     asset = market_data.get_asset(ticker)
@@ -475,6 +499,32 @@ def add_transaction(form_data: dict):
                 "UPDATE assets SET name = ?, sector = ? WHERE ticker = ?",
                 (name, sector, ticker),
             )
+    return True, None
+
+
+def add_transaction(form_data: dict):
+    ok, normalized = _normalize_transaction_form_data(form_data)
+    if not ok:
+        return False, normalized
+
+    portfolio_id = normalized["portfolio_id"]
+    ticker = normalized["ticker"]
+    tx_type = normalized["tx_type"]
+    shares = normalized["shares"]
+    price = normalized["price"]
+    transaction_date = normalized["date"]
+
+    if _transaction_exists(portfolio_id, ticker, tx_type, shares, price, transaction_date):
+        return False, "Transacao duplicada: ja existe um registro com esses mesmos dados."
+
+    db = get_db()
+    if tx_type == "sell":
+        if shares - _current_shares(ticker, portfolio_id) > 0.000000001:
+            return False, "Venda maior que a quantidade em carteira."
+
+    ok_asset, asset_error = _ensure_transaction_asset(ticker, tx_type, price, form_data)
+    if not ok_asset:
+        return False, asset_error
 
     db.execute(
         """
@@ -487,6 +537,83 @@ def add_transaction(form_data: dict):
     legacy.invalidate_chart_snapshots([portfolio_id])
 
     return True, "Transacao registrada com sucesso."
+
+
+def update_transaction(transaction_id, form_data: dict):
+    try:
+        record_id = int(transaction_id)
+    except (TypeError, ValueError):
+        return False, "Transacao invalida."
+
+    db = get_db()
+    current = db.execute(
+        """
+        SELECT id, portfolio_id, ticker, tx_type, shares, price, date
+        FROM transactions
+        WHERE id = ?
+        """,
+        (record_id,),
+    ).fetchone()
+    if not current or not _get_portfolio(int(current["portfolio_id"])):
+        return False, "Transacao nao encontrada."
+
+    ok, normalized = _normalize_transaction_form_data(
+        form_data,
+        current_portfolio_id=current["portfolio_id"],
+    )
+    if not ok:
+        return False, normalized
+
+    portfolio_id = normalized["portfolio_id"]
+    ticker = normalized["ticker"]
+    tx_type = normalized["tx_type"]
+    shares = normalized["shares"]
+    price = normalized["price"]
+    transaction_date = normalized["date"]
+
+    if _transaction_exists(
+        portfolio_id,
+        ticker,
+        tx_type,
+        shares,
+        price,
+        transaction_date,
+        exclude_transaction_id=record_id,
+    ):
+        return False, "Transacao duplicada: ja existe um registro com esses mesmos dados."
+
+    affected_positions = {
+        (int(current["portfolio_id"]), str(current["ticker"])),
+        (int(portfolio_id), ticker),
+    }
+    for affected_portfolio_id, affected_ticker in affected_positions:
+        final_shares = _current_shares(affected_ticker, affected_portfolio_id)
+        if int(current["portfolio_id"]) == affected_portfolio_id and str(current["ticker"]) == affected_ticker:
+            final_shares -= _transaction_effect(current["tx_type"], current["shares"])
+        if int(portfolio_id) == affected_portfolio_id and ticker == affected_ticker:
+            final_shares += _transaction_effect(tx_type, shares)
+        if final_shares < -0.000000001:
+            return False, "Edicao deixaria venda maior que a quantidade em carteira."
+
+    ok_asset, asset_error = _ensure_transaction_asset(ticker, tx_type, price, form_data)
+    if not ok_asset:
+        return False, asset_error
+
+    db.execute(
+        """
+        UPDATE transactions
+        SET portfolio_id = ?, ticker = ?, tx_type = ?, shares = ?, price = ?, date = ?
+        WHERE id = ?
+        """,
+        (portfolio_id, ticker, tx_type, shares, price, transaction_date, record_id),
+    )
+    db.commit()
+    affected_portfolios = [int(current["portfolio_id"])]
+    if int(portfolio_id) not in affected_portfolios:
+        affected_portfolios.append(int(portfolio_id))
+    legacy.invalidate_chart_snapshots(affected_portfolios)
+
+    return True, "Transacao atualizada com sucesso."
 
 
 def import_transactions_csv(file_bytes, target_portfolio_id: int):
@@ -1408,6 +1535,7 @@ def get_transactions(portfolio_ids):
         """
         SELECT
             t.id,
+            t.portfolio_id,
             t.ticker,
             t.tx_type,
             t.shares,
@@ -1764,4 +1892,5 @@ __all__ = [
     "resolve_portfolio_id",
     "update_income",
     "update_fixed_income",
+    "update_transaction",
 ]

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { apiDelete, apiGet, apiPost, apiPostForm } from '../api'
+import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm } from '../api'
 import { formatCurrencyBRL, formatQuantity } from '../formatters'
 import { emitAppToast } from '../toast'
 
@@ -17,6 +17,14 @@ const FIXED_INVESTMENT_TYPE_OPTIONS = [
   'COE',
 ]
 const FIXED_INVESTMENT_TYPE_SET = new Set(FIXED_INVESTMENT_TYPE_OPTIONS)
+const EMPTY_EDIT_FORM = {
+  target_portfolio_id: '',
+  tx_type: 'buy',
+  ticker: '',
+  shares: '',
+  price: '',
+  date: '',
+}
 
 function dateBr(value) {
   if (!value) return ''
@@ -33,6 +41,9 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
   const [loading, setLoading] = useState(true)
   const [selectedTxIds, setSelectedTxIds] = useState([])
   const [removingTx, setRemovingTx] = useState(false)
+  const [editingTxId, setEditingTxId] = useState(null)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [editForm, setEditForm] = useState(EMPTY_EDIT_FORM)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [form, setForm] = useState({
@@ -97,6 +108,7 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
   const fixedInvestmentTypeSelectValue = FIXED_INVESTMENT_TYPE_SET.has(fixedForm.investment_type)
     ? fixedForm.investment_type
     : (fixedForm.investment_type ? 'OUTRO' : '')
+  const editingTx = rows.find((tx) => Number(tx.id) === Number(editingTxId)) || null
 
   const loadTransactions = async () => {
     setLoading(true)
@@ -118,6 +130,55 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
     ))
   }
 
+  const startEditTx = (tx) => {
+    setError('')
+    setMessage('')
+    setEditingTxId(tx.id)
+    setEditForm({
+      target_portfolio_id: String(tx.portfolio_id || ''),
+      tx_type: String(tx.tx_type || 'buy').toLowerCase(),
+      ticker: String(tx.ticker || ''),
+      shares: tx.shares == null ? '' : String(tx.shares),
+      price: tx.price == null ? '' : String(tx.price),
+      date: String(tx.date || ''),
+    })
+  }
+
+  const cancelEditTx = () => {
+    setEditingTxId(null)
+    setSavingEdit(false)
+    setEditForm(EMPTY_EDIT_FORM)
+  }
+
+  const onEditChange = (event) => {
+    const { name, value } = event.target
+    setEditForm((current) => ({
+      ...current,
+      [name]: name === 'ticker' ? String(value || '').toUpperCase() : value,
+    }))
+  }
+
+  const onSubmitEdit = async (event) => {
+    event.preventDefault()
+    if (!editingTxId) return
+    setSavingEdit(true)
+    setError('')
+    setMessage('')
+    try {
+      const result = await apiPatch(`/api/transactions/${editingTxId}`, {
+        ...editForm,
+        ticker: editForm.ticker.toUpperCase(),
+      })
+      setMessage(result.message || 'Transacao atualizada com sucesso.')
+      await loadTransactions()
+      cancelEditTx()
+    } catch (err) {
+      setError(err.message || 'Falha ao atualizar transacao.')
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
   const onRemoveTransactions = async () => {
     if (selectedTxIds.length === 0) {
       setError('Selecione ao menos uma transacao para remover.')
@@ -134,6 +195,7 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
       )
       setMessage(`${Number(result.removed || 0)} transacao(oes) removida(s).`)
       await loadTransactions()
+      if (selectedTxIds.includes(editingTxId)) cancelEditTx()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -427,6 +489,7 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
                   <th>Preco</th>
                   <th>Total</th>
                   <th>Data</th>
+                  <th>Acoes</th>
                 </tr>
               </thead>
               <tbody>
@@ -446,16 +509,21 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
                     <td>{brl(tx.price)}</td>
                     <td>{brl(tx.total_value)}</td>
                     <td>{dateBr(tx.date)}</td>
+                    <td>
+                      <button type="button" className="btn-secondary" onClick={() => startEditTx(tx)}>
+                        {editingTxId === tx.id ? 'Editando...' : 'Editar'}
+                      </button>
+                    </td>
                   </tr>
                 ))}
                 {!loading && rows.length === 0 && (
                   <tr>
-                    <td colSpan={8}>Sem transacoes para as carteiras selecionadas.</td>
+                    <td colSpan={9}>Sem transacoes para as carteiras selecionadas.</td>
                   </tr>
                 )}
                 {loading && (
                   <tr>
-                    <td colSpan={8}>Carregando...</td>
+                    <td colSpan={9}>Carregando...</td>
                   </tr>
                 )}
               </tbody>
@@ -468,6 +536,113 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
           </div>
         </div>
       </details>
+
+      {editingTx && (
+        <div className="health-modal-backdrop" role="presentation" onClick={cancelEditTx}>
+          <div
+            className="health-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Editar transacao"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="health-modal-header">
+              <div>
+                <h3>Editar transacao</h3>
+                <p className="subtitle">{editingTx.portfolio_name} • {editingTx.ticker} • {editingTx.tx_type === 'buy' ? 'Compra' : 'Venda'}</p>
+              </div>
+              <button type="button" className="btn-secondary" onClick={cancelEditTx} disabled={savingEdit}>
+                Fechar
+              </button>
+            </div>
+            <form onSubmit={onSubmitEdit} className="form-grid">
+              <div>
+                <label htmlFor={`edit-target_portfolio_id-${editingTx.id}`}>Carteira destino</label>
+                <select
+                  id={`edit-target_portfolio_id-${editingTx.id}`}
+                  name="target_portfolio_id"
+                  value={editForm.target_portfolio_id}
+                  onChange={onEditChange}
+                  required
+                >
+                  {portfolios.map((item) => (
+                    <option key={`edit-tx-portfolio-${item.id}`} value={item.id}>{item.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor={`edit-tx_type-${editingTx.id}`}>Tipo</label>
+                <select
+                  id={`edit-tx_type-${editingTx.id}`}
+                  name="tx_type"
+                  value={editForm.tx_type}
+                  onChange={onEditChange}
+                  required
+                >
+                  <option value="buy">Compra</option>
+                  <option value="sell">Venda</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor={`edit-ticker-${editingTx.id}`}>Ticker</label>
+                <input
+                  id={`edit-ticker-${editingTx.id}`}
+                  name="ticker"
+                  type="text"
+                  value={editForm.ticker}
+                  onChange={onEditChange}
+                  placeholder="Ex: BBAS3"
+                  list="transaction-ticker-suggestions"
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor={`edit-shares-${editingTx.id}`}>Quantidade</label>
+                <input
+                  id={`edit-shares-${editingTx.id}`}
+                  name="shares"
+                  type="number"
+                  min="0.00000001"
+                  step="any"
+                  value={editForm.shares}
+                  onChange={onEditChange}
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor={`edit-price-${editingTx.id}`}>Preco da operacao (R$)</label>
+                <input
+                  id={`edit-price-${editingTx.id}`}
+                  name="price"
+                  type="text"
+                  value={editForm.price}
+                  onChange={onEditChange}
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor={`edit-date-${editingTx.id}`}>Data da transacao</label>
+                <input
+                  id={`edit-date-${editingTx.id}`}
+                  name="date"
+                  type="date"
+                  value={editForm.date}
+                  onChange={onEditChange}
+                  required
+                />
+              </div>
+              <div className="form-actions">
+                <button type="submit" className="btn-primary" disabled={savingEdit}>
+                  {savingEdit ? 'Salvando...' : 'Salvar edicao'}
+                </button>
+                <button type="button" className="btn-secondary" onClick={cancelEditTx} disabled={savingEdit}>
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       <h2 style={{ marginTop: 16 }}>Lancar renda fixa</h2>
       <p className="subtitle">Cadastre CDB/LCI/LCA e outros titulos.</p>

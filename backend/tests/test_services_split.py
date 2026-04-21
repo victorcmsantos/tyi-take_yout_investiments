@@ -48,6 +48,7 @@ class ServicesSplitExportsTest(unittest.TestCase):
             "refresh_all_assets_market_data",
             "refresh_asset_market_data",
             "resolve_portfolio_id",
+            "update_transaction",
             "update_metric_formula",
         ]
         for name in expected:
@@ -61,6 +62,7 @@ class ServicesSplitExportsTest(unittest.TestCase):
         self.assertEqual(portfolio.normalize_portfolio_ids.__module__, "app.services.portfolio")
         self.assertEqual(portfolio.get_transactions.__module__, "app.services.portfolio")
         self.assertEqual(portfolio.delete_transactions.__module__, "app.services.portfolio")
+        self.assertEqual(portfolio.update_transaction.__module__, "app.services.portfolio")
         self.assertEqual(portfolio.get_incomes.__module__, "app.services.portfolio")
         self.assertEqual(portfolio.delete_incomes.__module__, "app.services.portfolio")
         self.assertEqual(portfolio.add_transaction.__module__, "app.services.portfolio")

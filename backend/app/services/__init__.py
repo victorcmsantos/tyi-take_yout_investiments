@@ -51,6 +51,7 @@ from .portfolio import (
     resolve_portfolio_id,
     update_income,
     update_fixed_income,
+    update_transaction,
 )
 from .scanner import get_metric_formulas_catalog, update_metric_formula
 
@@ -101,6 +102,7 @@ __all__ = [
     "resolve_portfolio_id",
     "update_income",
     "update_fixed_income",
+    "update_transaction",
     "update_metric_formula",
 ]
 

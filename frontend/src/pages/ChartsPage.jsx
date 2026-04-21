@@ -268,6 +268,7 @@ function ChartsPage({ selectedPortfolioIds }) {
   const [tickerSortMetric, setTickerSortMetric] = usePersistedState('charts.ticker-sort-metric.v1', 'incomes')
   const [tickerSortMonthKey, setTickerSortMonthKey] = usePersistedState('charts.ticker-sort-month.v1', 'total')
   const [tickerSortDir, setTickerSortDir] = usePersistedState('charts.ticker-sort-dir.v1', 'desc')
+  const [tickerAssetFilter, setTickerAssetFilter] = usePersistedState('charts.ticker-asset-filter.v1', 'all')
   const [patrimonyTypeRange, setPatrimonyTypeRange] = usePersistedState('charts.patrimony-type-range.v1', '12m')
   const [patrimonyTypeMetric, setPatrimonyTypeMetric] = usePersistedState('charts.patrimony-type-metric.v2', 'net')
   const [hiddenBlocks, setHiddenBlocks] = usePersistedState('charts.hidden-blocks.v1', [])
@@ -284,6 +285,7 @@ function ChartsPage({ selectedPortfolioIds }) {
   const tickerSortMetricValue = normalizeChoice(tickerSortMetric, ['invested', 'incomes'], 'incomes')
   const tickerSortMonthKeyValue = typeof tickerSortMonthKey === 'string' ? tickerSortMonthKey : 'total'
   const tickerSortDirValue = normalizeChoice(tickerSortDir, ['asc', 'desc'], 'desc')
+  const tickerAssetFilterValue = normalizeChoice(tickerAssetFilter, ['all', 'stocks', 'fiis'], 'all')
   const patrimonyTypeRangeValue = normalizeChoice(patrimonyTypeRange, ['6m', '12m', '24m', '60m'], '12m')
   const patrimonyTypeMetricValue = normalizeChoice(patrimonyTypeMetric, ['value', 'pnl', 'net'], 'net')
   const hiddenBlocksValue = Array.isArray(hiddenBlocks) ? hiddenBlocks.filter((item) => typeof item === 'string') : []
@@ -481,7 +483,13 @@ function ChartsPage({ selectedPortfolioIds }) {
     return `${label} ${tickerSortDirValue === 'asc' ? '↑' : '↓'}`
   }
 
-  const sortedTickerRows = [...(monthlyTickerSummary.rows || [])]
+  const filteredTickerRows = (monthlyTickerSummary.rows || []).filter((row) => {
+    if (tickerAssetFilterValue === 'all') return true
+    const category = String(row.category || '').toLowerCase()
+    if (tickerAssetFilterValue === 'fiis') return category === 'fiis'
+    return category === 'br_stocks' || category === 'us_stocks'
+  })
+  const sortedTickerRows = [...filteredTickerRows]
   sortedTickerRows.sort((left, right) => {
     const factor = tickerSortDirValue === 'asc' ? 1 : -1
     if (tickerSortByValue === 'ticker') {
@@ -501,6 +509,18 @@ function ChartsPage({ selectedPortfolioIds }) {
     if (a === b) return String(left.ticker || '').localeCompare(String(right.ticker || ''), 'pt-BR')
     return (a - b) * factor
   })
+  const tickerDisplayTotals = monthlyTickerSummary.months.map((month) => (
+    sortedTickerRows.reduce((acc, row) => {
+      const values = row.months?.[month.key] || { invested: 0, incomes: 0 }
+      acc.invested += Number(values.invested || 0)
+      acc.incomes += Number(values.incomes || 0)
+      return acc
+    }, { month_key: month.key, invested: 0, incomes: 0 })
+  )).map((total) => ({
+    ...total,
+    invested: Number(total.invested.toFixed(2)),
+    incomes: Number(total.incomes.toFixed(2)),
+  }))
 
   const classesTotal = (classesChart.values || []).reduce((acc, value) => acc + Number(value || 0), 0)
   const categoryTotal = (categoryChart.values || []).reduce((acc, value) => acc + Number(value || 0), 0)
@@ -1031,6 +1051,14 @@ function ChartsPage({ selectedPortfolioIds }) {
   const tickerFilterControls = (
     <div className="inline-filters chart-inline-controls">
       <label>
+        Tipo
+        <select value={tickerAssetFilterValue} onChange={(e) => setTickerAssetFilter(e.target.value)}>
+          <option value="all">Todos</option>
+          <option value="stocks">Ações</option>
+          <option value="fiis">FIIs</option>
+        </select>
+      </label>
+      <label>
         Ordenar por
         <select value={tickerSortMetricValue} onChange={(e) => setTickerSortMetric(e.target.value)}>
           <option value="invested">investidos</option>
@@ -1475,12 +1503,12 @@ function ChartsPage({ selectedPortfolioIds }) {
                 </tr>
               </thead>
               <tbody>
-                {monthlyTickerSummary.totals.length > 0 && (
+                {tickerDisplayTotals.length > 0 && (
                   <tr className="ticker-month-total-row">
                     <td className="ticker-month-sticky">
                       <strong>Total</strong>
                     </td>
-                    {monthlyTickerSummary.totals.map((total) => (
+                    {tickerDisplayTotals.map((total) => (
                       <Fragment key={`totals-${total.month_key}`}>
                         <td><strong>{brl(total.invested)}</strong></td>
                         <td><strong>{brl(total.incomes)}</strong></td>

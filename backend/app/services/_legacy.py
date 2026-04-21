@@ -3803,6 +3803,11 @@ def delete_transactions(transaction_ids, portfolio_ids):
 
     return portfolio_services.delete_transactions(transaction_ids, portfolio_ids)
 
+def update_transaction(transaction_id, form_data: dict):
+    from . import portfolio as portfolio_services
+
+    return portfolio_services.update_transaction(transaction_id, form_data)
+
 def get_incomes(portfolio_ids):
     from . import portfolio as portfolio_services
 
@@ -4381,6 +4386,7 @@ def _build_monthly_ticker_summary(portfolio_ids, months=24):
     month_totals = {}
     month_set = set()
     ticker_name_map = {}
+    ticker_category_map = {}
 
     def _ensure_values(month_map, month_key):
         if month_key not in month_map:
@@ -4393,7 +4399,8 @@ def _build_monthly_ticker_summary(portfolio_ids, months=24):
             t.ticker,
             t.tx_type,
             (t.shares * t.price) AS amount,
-            a.name
+            a.name,
+            a.sector
         FROM transactions t
         LEFT JOIN assets a ON a.ticker = t.ticker
         WHERE t.portfolio_id IN ("""
@@ -4416,6 +4423,7 @@ def _build_monthly_ticker_summary(portfolio_ids, months=24):
 
         amount = float(row["amount"] or 0.0)
         ticker_name_map[ticker] = (row["name"] or ticker).strip() or ticker
+        ticker_category_map[ticker] = _position_category(ticker, row["name"], row["sector"])
 
         ticker_values = ticker_month_map.setdefault(ticker, {})
         _ensure_values(ticker_values, month_key)
@@ -4431,7 +4439,8 @@ def _build_monthly_ticker_summary(portfolio_ids, months=24):
             i.date,
             i.ticker,
             i.amount,
-            a.name
+            a.name,
+            a.sector
         FROM incomes i
         LEFT JOIN assets a ON a.ticker = i.ticker
         WHERE i.portfolio_id IN ("""
@@ -4452,6 +4461,7 @@ def _build_monthly_ticker_summary(portfolio_ids, months=24):
 
         amount = float(row["amount"] or 0.0)
         ticker_name_map[ticker] = (row["name"] or ticker).strip() or ticker
+        ticker_category_map[ticker] = _position_category(ticker, row["name"], row["sector"])
 
         ticker_values = ticker_month_map.setdefault(ticker, {})
         _ensure_values(ticker_values, month_key)
@@ -4512,6 +4522,7 @@ def _build_monthly_ticker_summary(portfolio_ids, months=24):
             {
                 "ticker": ticker,
                 "name": ticker_name_map.get(ticker, ticker),
+                "category": ticker_category_map.get(ticker, ""),
                 "total_invested": round(row_invested, 2),
                 "total_incomes": round(row_incomes, 2),
                 "months": month_values,
@@ -4664,6 +4675,7 @@ def _trim_monthly_ticker_summary(payload, months=8):
             {
                 "ticker": row.get("ticker", ""),
                 "name": row.get("name", row.get("ticker", "")),
+                "category": row.get("category", ""),
                 "total_invested": round(total_invested, 2),
                 "total_incomes": round(total_incomes, 2),
                 "months": per_month,
@@ -4699,8 +4711,15 @@ def _combine_monthly_ticker_summaries(parts, months=8):
                 continue
             state = ticker_rows.setdefault(
                 ticker,
-                {"ticker": ticker, "name": row.get("name", ticker), "months": {}},
+                {
+                    "ticker": ticker,
+                    "name": row.get("name", ticker),
+                    "category": row.get("category", ""),
+                    "months": {},
+                },
             )
+            if not state.get("category") and row.get("category"):
+                state["category"] = row.get("category")
             for month_key, values in (row.get("months") or {}).items():
                 month_state = state["months"].setdefault(month_key, {"invested": 0.0, "incomes": 0.0})
                 month_state["invested"] += float(values.get("invested", 0.0) or 0.0)
@@ -4725,6 +4744,7 @@ def _combine_monthly_ticker_summaries(parts, months=8):
             {
                 "ticker": ticker,
                 "name": row.get("name", ticker),
+                "category": row.get("category", ""),
                 "months": {
                     key: {
                         "invested": round(float(values.get("invested", 0.0) or 0.0), 2),
@@ -4851,7 +4871,10 @@ def get_monthly_ticker_summary(portfolio_ids, months=8):
             age = _snapshot_age_seconds(row["updated_at"])
             if age is None or age > max_age_seconds:
                 raise RuntimeError("snapshot_stale")
-            parts.append(json.loads(row["payload_json"] or "{}"))
+            payload = json.loads(row["payload_json"] or "{}")
+            if any("category" not in item for item in (payload.get("rows") or [])):
+                raise RuntimeError("snapshot_missing_category")
+            parts.append(payload)
         return _combine_monthly_ticker_summaries(parts, months=months)
     except Exception:
         return _build_monthly_ticker_summary(pids, months=months)

@@ -4,6 +4,7 @@ import 'chart.js/auto'
 import { Line } from 'react-chartjs-2'
 import StatePanel from '../components/StatePanel'
 import { useApiQuery } from '../hooks/useApiQuery'
+import { formatQuantity } from '../formatters'
 
 const CATEGORY_META = [
   { key: 'br_stocks', label: 'Acoes BR' },
@@ -14,6 +15,9 @@ const CATEGORY_META = [
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const marketStatusLabel = (item) => (item?.market_data?.is_stale ? 'Desatualizado' : 'Atualizado')
+const quantityDigitsByCategory = (categoryKey) => (
+  categoryKey === 'br_stocks' || categoryKey === 'fiis' ? 0 : 4
+)
 const FII_TYPE_BY_TICKER = {
   BRCO11: 'Galpao',
   BTLG11: 'Galpao',
@@ -419,7 +423,7 @@ function PortfolioPage({ selectedPortfolioIds }) {
                               </div>
                             </td>
                             <td>{item.name}</td>
-                            <td>{Number(item.shares || 0).toFixed(4)}</td>
+                            <td>{formatQuantity(item.shares, { maxDigits: quantityDigitsByCategory(meta.key), fallback: '0' })}</td>
                             <td>{brl(item.price)}</td>
                             <td>{brl(item.avg_price)}</td>
                             <td>{brl(item.invested_value)}</td>

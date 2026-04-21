@@ -66,6 +66,7 @@ from .services import (
     resolve_portfolio_id,
     update_income,
     update_fixed_income,
+    update_transaction,
     enrich_asset_with_openclaw,
     enrich_assets_with_openclaw_batch,
     update_metric_formula,
@@ -2560,6 +2561,15 @@ def transactions():
     if removed <= 0:
         return _json_error("Nenhuma transacao removida.", status=400)
     return _json_ok({"removed": removed})
+
+
+@api_bp.route("/transactions/<int:transaction_id>", methods=["PATCH"])
+def transaction_update(transaction_id: int):
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    ok, message = update_transaction(transaction_id, payload)
+    if not ok:
+        return _json_error(message, status=400)
+    return _json_ok({"message": message, "transaction_id": transaction_id})
 
 
 @api_bp.route("/incomes", methods=["GET", "POST", "DELETE"])

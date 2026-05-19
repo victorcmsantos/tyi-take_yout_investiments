@@ -1621,20 +1621,13 @@ def _build_charts_core_payload(portfolio_ids):
         ],
     }
 
-    cri_result = 0.0
-    for item in fixed_income_items:
-        investment_name = item.get("investment_type")
-        if legacy_market._is_fixed_income_cri_cra_deb_type(investment_name):
-            cri_result += float(item.get("current_income", 0.0) or 0.0)
-
     result_by_category_chart = {
-        "labels": ["US", "FIIs", "BR", "Cripto", "CRI/CRA/DEB"],
+        "labels": ["US", "FIIs", "BR", "Cripto"],
         "values": [
             round(float(portfolio["group_summaries"]["us_stocks"]["open_pnl_value"]), 2),
             round(float(portfolio["group_summaries"]["fiis"]["open_pnl_value"]), 2),
             round(float(portfolio["group_summaries"]["br_stocks"]["open_pnl_value"]), 2),
             round(float(portfolio["group_summaries"]["crypto"]["open_pnl_value"]), 2),
-            round(float(cri_result), 2),
         ],
     }
 

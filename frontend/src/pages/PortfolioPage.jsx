@@ -3,8 +3,10 @@ import { Link } from 'react-router-dom'
 import 'chart.js/auto'
 import { Line } from 'react-chartjs-2'
 import StatePanel from '../components/StatePanel'
+import { buildExportFilename, exportRowsAsCsv, exportTableAsPdf } from '../exporters'
 import { useApiQuery } from '../hooks/useApiQuery'
 import { formatQuantity } from '../formatters'
+import { emitAppToast } from '../toast'
 
 const CATEGORY_META = [
   { key: 'br_stocks', label: 'Acoes BR' },
@@ -86,6 +88,23 @@ const DAILY_RANGE_OPTIONS = [
   { key: '1y', label: '1 ano' },
 ]
 
+function buildVariableIncomeExportRows(items, categoryKey) {
+  return items.map((item) => ([
+    item.ticker,
+    item.name,
+    formatQuantity(item.shares, { maxDigits: quantityDigitsByCategory(categoryKey), fallback: '0' }),
+    brl(item.price),
+    brl(item.avg_price),
+    brl(item.invested_value),
+    brl(item.value),
+    brl(item.total_incomes),
+    brl(item.open_pnl_value),
+    `${Number(item.open_pnl_pct || 0).toFixed(2)}%`,
+    `${Number(item.weight || 0).toFixed(2)}%`,
+    categoryKey === 'fiis' ? fiiTypeLabel(item) : marketStatusLabel(item),
+  ]))
+}
+
 function PortfolioPage({ selectedPortfolioIds }) {
   const [dailyRange, setDailyRange] = useState('90d')
   const [sortBy, setSortBy] = useState('name')
@@ -128,6 +147,65 @@ function PortfolioPage({ selectedPortfolioIds }) {
   const sortLabel = (label, field) => {
     if (sortBy !== field) return label
     return `${label} ${sortDir === 'asc' ? '↑' : '↓'}`
+  }
+
+  const exportVariableGroupCsv = (meta, items) => {
+    exportRowsAsCsv(
+      buildExportFilename('renda-variavel', meta.label, 'csv'),
+      [
+        'Ticker',
+        'Nome',
+        'Qtd',
+        'Preco',
+        'Preco medio',
+        'Investido',
+        'Total',
+        'Proventos',
+        'Aberto (R$)',
+        'Aberto (%)',
+        'Peso',
+        meta.key === 'fiis' ? 'Tipo' : 'Status mercado',
+      ],
+      buildVariableIncomeExportRows(items, meta.key),
+    )
+  }
+
+  const exportVariableGroupPdf = (meta, items, summary, groupWeight) => {
+    const opened = exportTableAsPdf({
+      documentTitle: buildExportFilename('renda-variavel', meta.label, 'pdf'),
+      sectionTitle: `Renda variavel - ${meta.label}`,
+      subtitle: `${items.length} ativo(s) exportado(s).`,
+      summary: [
+        { label: 'Patrimonio', value: brl(summary.total_value) },
+        { label: 'Investido', value: brl(summary.invested_value) },
+        { label: 'Aberto (R$)', value: brl(summary.open_pnl_value) },
+        { label: 'Aberto (%)', value: `${Number(summary.open_pnl_pct || 0).toFixed(2)}%` },
+        { label: 'Proventos mes atual', value: brl(summary.incomes_current_month) },
+        { label: 'Proventos 3 meses', value: brl(summary.incomes_3m) },
+        { label: 'Proventos 12 meses', value: brl(summary.incomes_12m) },
+        { label: 'Proventos total', value: brl(summary.total_incomes) },
+        { label: '% na carteira', value: `${Number(groupWeight || 0).toFixed(2)}%` },
+      ],
+      headers: [
+        'Ticker',
+        'Nome',
+        'Qtd',
+        'Preco',
+        'Preco medio',
+        'Investido',
+        'Total',
+        'Proventos',
+        'Aberto (R$)',
+        'Aberto (%)',
+        'Peso',
+        meta.key === 'fiis' ? 'Tipo' : 'Status mercado',
+      ],
+      rows: buildVariableIncomeExportRows(items, meta.key),
+    })
+
+    if (!opened) {
+      emitAppToast({ severity: 'error', message: 'Nao foi possivel abrir a janela de impressao para exportar o PDF.' })
+    }
   }
 
   const toggleGroup = (key) => {
@@ -377,6 +455,14 @@ function PortfolioPage({ selectedPortfolioIds }) {
 
               {isOpen && (
                 <>
+                  <div className="group-export-actions">
+                    <button type="button" className="icon-btn" onClick={() => exportVariableGroupCsv(meta, items)}>
+                      Exportar CSV
+                    </button>
+                    <button type="button" className="icon-btn" onClick={() => exportVariableGroupPdf(meta, items, summary, groupWeight)}>
+                      Exportar PDF
+                    </button>
+                  </div>
                   <div className="cards">
                     <article className="card"><h3>Patrimonio</h3><p>{brl(summary.total_value)}</p></article>
                     <article className="card"><h3>Investido</h3><p>{brl(summary.invested_value)}</p></article>

@@ -1276,6 +1276,14 @@ table tbody tr:hover td {
   margin-top: 10px;
 }
 
+.group-export-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+
 .ticker-month-table {
   min-width: 1200px;
 }

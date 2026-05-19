@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { apiDelete, apiGet, apiPatch } from '../api'
+import { buildExportFilename, exportRowsAsCsv, exportTableAsPdf } from '../exporters'
 import StatePanel from '../components/StatePanel'
 import { useApiQuery } from '../hooks/useApiQuery'
+import { emitAppToast } from '../toast'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const FIXED_INVESTMENT_TYPE_OPTIONS = [
@@ -75,6 +77,27 @@ function groupSummary(items) {
   }
 }
 
+function buildFixedIncomeExportRows(items) {
+  return items.map((item) => ([
+    item.portfolio_name,
+    item.distributor,
+    item.issuer,
+    item.investment_type,
+    formatRateType(item),
+    dateBr(item.date_aporte),
+    dateBr(item.maturity_date),
+    brl(item.aporte),
+    brl(item.reinvested),
+    brl(item.active_applied_value),
+    Number(item.elapsed_days || 0),
+    Number(item.total_days || 0),
+    brl(item.current_gross_value),
+    brl(item.total_received),
+    brl(item.rendimento),
+    brl(item.final_gross_value),
+  ]))
+}
+
 function FixedIncomePage({ selectedPortfolioIds, portfolios = [] }) {
   const [message, setMessage] = useState('')
   const [actionError, setActionError] = useState('')
@@ -125,6 +148,72 @@ function FixedIncomePage({ selectedPortfolioIds, portfolios = [] }) {
   const sortLabel = (label, field) => {
     if (sortBy !== field) return label
     return `${label} ${sortDir === 'asc' ? '↑' : '↓'}`
+  }
+
+  const exportFixedGroupCsv = (group) => {
+    const headers = [
+      'Carteira',
+      'Distribuidor',
+      'Emissor',
+      'Aplicacao',
+      'Taxa',
+      'Data aporte',
+      'Data final',
+      'Aporte',
+      'Reinvestido',
+      'Aplicado',
+      'Dias',
+      'Total dias',
+      'Atual bruto',
+      'Total recebido',
+      'Rendimento recebido',
+      'Valor final',
+    ]
+    exportRowsAsCsv(
+      buildExportFilename('renda-fixa', group.label, 'csv'),
+      headers,
+      buildFixedIncomeExportRows(group.items),
+    )
+  }
+
+  const exportFixedGroupPdf = (group, sum) => {
+    const opened = exportTableAsPdf({
+      documentTitle: buildExportFilename('renda-fixa', group.label, 'pdf'),
+      sectionTitle: `Renda fixa - ${group.label}`,
+      subtitle: `${sum.count} registro(s) exportado(s).`,
+      summary: [
+        { label: 'Total aporte', value: brl(sum.aporte) },
+        { label: 'Total reinvestido', value: brl(sum.reinvested) },
+        { label: 'Total aplicado', value: brl(sum.applied) },
+        { label: 'Valor atual bruto', value: brl(sum.current) },
+        { label: 'Valor final estimado', value: brl(sum.final) },
+        { label: 'Rendimento bruto', value: brl(sum.income) },
+        { label: 'Total recebido', value: brl(sum.totalReceived) },
+      ],
+      headers: [
+        'Carteira',
+        'Distribuidor',
+        'Emissor',
+        'Aplicacao',
+        'Taxa',
+        'Data aporte',
+        'Data final',
+        'Aporte',
+        'Reinvestido',
+        'Aplicado',
+        'Dias',
+        'Total dias',
+        'Atual bruto',
+        'Total recebido',
+        'Rendimento recebido',
+        'Valor final',
+      ],
+      rows: buildFixedIncomeExportRows(group.items),
+    })
+
+    if (!opened) {
+      emitAppToast({ severity: 'error', message: 'Nao foi possivel abrir a janela de impressao para exportar o PDF.' })
+    }
   }
 
   const toggleGroup = (key) => {
@@ -315,6 +404,14 @@ function FixedIncomePage({ selectedPortfolioIds, portfolios = [] }) {
 
               {isOpen && (
                 <>
+              <div className="group-export-actions">
+                <button type="button" className="icon-btn" onClick={() => exportFixedGroupCsv(group)}>
+                  Exportar CSV
+                </button>
+                <button type="button" className="icon-btn" onClick={() => exportFixedGroupPdf(group, sum)}>
+                  Exportar PDF
+                </button>
+              </div>
               <div className="cards">
                 <article className="card"><h3>Total aporte</h3><p>{brl(sum.aporte)}</p></article>
                 <article className="card"><h3>Total reinvestido</h3><p>{brl(sum.reinvested)}</p></article>

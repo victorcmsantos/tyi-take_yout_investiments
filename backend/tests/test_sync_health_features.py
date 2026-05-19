@@ -224,7 +224,7 @@ class SyncHealthFeaturesTest(unittest.TestCase):
             self.assertAlmostEqual(float(row["amount"]), 150.75, places=2)
             self.assertEqual(str(row["date"]), "2026-02-20")
 
-    def test_build_charts_core_payload_uses_current_income_for_cri_cra_deb(self):
+    def test_build_charts_core_payload_excludes_fixed_income_from_result_by_category(self):
         original_snapshot = api_routes.get_portfolio_snapshot
         original_fixed_income = api_routes.get_fixed_income_payload_cached
         original_monthly_summary = api_routes.get_monthly_class_summary
@@ -287,15 +287,19 @@ class SyncHealthFeaturesTest(unittest.TestCase):
         try:
             payload = api_routes._build_charts_core_payload([1])
             self.assertEqual(
+                payload['result_by_category_chart']['labels'],
+                ['US', 'FIIs', 'BR', 'Cripto'],
+            )
+            self.assertEqual(
                 payload['result_by_category_chart']['values'],
-                [100.0, 200.0, 300.0, -50.0, 16000.0],
+                [100.0, 200.0, 300.0, -50.0],
             )
         finally:
             api_routes.get_portfolio_snapshot = original_snapshot
             api_routes.get_fixed_income_payload_cached = original_fixed_income
             api_routes.get_monthly_class_summary = original_monthly_summary
 
-    def test_build_charts_core_payload_ignores_non_cri_cra_deb_fixed_income(self):
+    def test_build_charts_core_payload_result_by_category_only_uses_variable_income_groups(self):
         original_snapshot = api_routes.get_portfolio_snapshot
         original_fixed_income = api_routes.get_fixed_income_payload_cached
         original_monthly_summary = api_routes.get_monthly_class_summary
@@ -329,12 +333,20 @@ class SyncHealthFeaturesTest(unittest.TestCase):
             'items': [
                 {
                     'investment_type': 'CRA',
+                    'open_pnl_value': 100.0,
                     'current_income': 9000.0,
                     'active_applied_value': 0.0,
                 },
                 {
                     'investment_type': 'DEBEN INCENTIVADA',
+                    'open_pnl_value': 50.0,
                     'current_income': 7000.0,
+                    'active_applied_value': 0.0,
+                },
+                {
+                    'investment_type': 'TESOURO',
+                    'open_pnl_value': 99999.0,
+                    'current_income': 12345.0,
                     'active_applied_value': 0.0,
                 },
             ],
@@ -344,8 +356,12 @@ class SyncHealthFeaturesTest(unittest.TestCase):
         try:
             payload = api_routes._build_charts_core_payload([1])
             self.assertEqual(
+                payload['result_by_category_chart']['labels'],
+                ['US', 'FIIs', 'BR', 'Cripto'],
+            )
+            self.assertEqual(
                 payload['result_by_category_chart']['values'],
-                [0.0, 0.0, 0.0, 0.0, 16000.0],
+                [0.0, 0.0, 0.0, 0.0],
             )
         finally:
             api_routes.get_portfolio_snapshot = original_snapshot

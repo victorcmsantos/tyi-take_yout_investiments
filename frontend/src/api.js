@@ -1,4 +1,26 @@
-async function requestJson(path, { method = 'GET', params = {}, body } = {}) {
+// Default per-request timeout. A hung backend (the chart endpoints can stall)
+// would otherwise leave fetch pending forever and keep the UI in an infinite
+// loading/skeleton state. Aborting surfaces an error the hooks can show + retry.
+const DEFAULT_TIMEOUT_MS = 30000
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      const timeoutError = new Error('Tempo de resposta esgotado. Tente novamente.')
+      timeoutError.status = 408
+      throw timeoutError
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function requestJson(path, { method = 'GET', params = {}, body, timeoutMs } = {}) {
   const url = new URL(path, window.location.origin)
   Object.entries(params || {}).forEach(([key, value]) => {
     if (Array.isArray(value)) {
@@ -10,12 +32,12 @@ async function requestJson(path, { method = 'GET', params = {}, body } = {}) {
     }
   })
 
-  const response = await fetch(url.toString(), {
+  const response = await fetchWithTimeout(url.toString(), {
     method,
     credentials: 'same-origin',
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
-  })
+  }, timeoutMs)
   const payload = await response.json().catch(() => ({}))
   if (!response.ok || !payload.ok) {
     const error = new Error(payload?.error || 'Falha na requisicao da API')

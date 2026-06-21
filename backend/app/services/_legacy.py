@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import time
 import unicodedata
 from datetime import date, datetime, timedelta
@@ -3761,6 +3762,105 @@ def _clear_benchmark_cache():
     _BENCHMARK_CACHE.clear()
 
 
+# --- DB-backed read-through cache for heavy chart series -----------------------
+# Shared across gunicorn workers and persisted across restarts (table
+# chart_series_cache). Common portfolio combinations are kept warm by the
+# periodic rebuild_chart_snapshots job; uncommon combinations are served stale
+# while a single background thread refreshes them (stale-while-revalidate).
+
+_CHART_SERIES_REFRESH_INFLIGHT = set()
+_CHART_SERIES_REFRESH_LOCK = threading.Lock()
+
+
+def _chart_series_cache_key(name, pids, range_key, scope_key=None):
+    pid_part = ",".join(str(pid) for pid in sorted(normalize_portfolio_ids(pids)))
+    parts = [str(name), pid_part, str(range_key or "")]
+    if scope_key is not None:
+        parts.append(str(scope_key))
+    return "|".join(parts)
+
+
+def _chart_series_cache_read(cache_key):
+    """Return (payload, age_seconds) for a cache key, or None when absent."""
+    try:
+        row = get_db().execute(
+            "SELECT payload_json, updated_at FROM chart_series_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row["payload_json"])
+    except (TypeError, ValueError):
+        return None
+    return payload, _snapshot_age_seconds(row["updated_at"])
+
+
+def _chart_series_cache_write(cache_key, payload):
+    try:
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO chart_series_cache (cache_key, payload_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+              payload_json = excluded.payload_json,
+              updated_at = excluded.updated_at
+            """,
+            (cache_key, json.dumps(payload, ensure_ascii=False), _snapshot_now()),
+        )
+        db.commit()
+    except Exception:
+        try:
+            get_db().rollback()
+        except Exception:
+            pass
+
+
+def _chart_series_refresh_async(app, cache_key, pids, compute_fn):
+    """Recompute a chart series in the background and store it. One per key."""
+    with _CHART_SERIES_REFRESH_LOCK:
+        if cache_key in _CHART_SERIES_REFRESH_INFLIGHT:
+            return
+        _CHART_SERIES_REFRESH_INFLIGHT.add(cache_key)
+
+    def _worker():
+        try:
+            with app.app_context():
+                payload = compute_fn(pids)
+                _chart_series_cache_write(cache_key, payload)
+        except Exception:
+            app.logger.exception("Falha ao atualizar chart_series_cache %s", cache_key)
+        finally:
+            with _CHART_SERIES_REFRESH_LOCK:
+                _CHART_SERIES_REFRESH_INFLIGHT.discard(cache_key)
+
+    threading.Thread(target=_worker, name="chart-series-refresh", daemon=True).start()
+
+
+def _cached_chart_series(name, pids, range_key, compute_fn, scope_key=None):
+    """Read-through cache. compute_fn takes pids and returns the payload.
+
+    Fresh hit -> return immediately. Stale hit -> return stale and refresh in
+    the background. Miss -> compute inline once and persist.
+    """
+    max_age = int(current_app.config.get("CHART_SERIES_CACHE_MAX_AGE_SECONDS", 900))
+    cache_key = _chart_series_cache_key(name, pids, range_key, scope_key)
+    cached = _chart_series_cache_read(cache_key)
+    if cached is not None:
+        payload, age = cached
+        if age is not None and age > max_age and has_app_context():
+            _chart_series_refresh_async(
+                current_app._get_current_object(), cache_key, pids, compute_fn
+            )
+        return payload
+    payload = compute_fn(pids)
+    _chart_series_cache_write(cache_key, payload)
+    return payload
+
+
 def invalidate_fixed_income_snapshot(portfolio_ids):
     pids = normalize_portfolio_ids(portfolio_ids)
     placeholders = ",".join(["?"] * len(pids))
@@ -4770,6 +4870,10 @@ def invalidate_chart_snapshots(portfolio_ids):
             "DELETE FROM chart_snapshot_monthly_ticker WHERE portfolio_id IN (" + placeholders + ")",
             tuple(pids),
         )
+        # Heavy series are cached by portfolio-combination, so a change to any
+        # single portfolio can affect multi-portfolio keys; clear them all and
+        # let the periodic job / next request rewarm.
+        db.execute("DELETE FROM chart_series_cache")
         db.commit()
     except Exception:
         db.rollback()
@@ -4814,7 +4918,52 @@ def rebuild_chart_snapshots(portfolio_ids=None):
             db.rollback()
             raise
     db.commit()
+
+    _warm_heavy_chart_series(pids)
     return {"portfolios": len(pids)}
+
+
+def _warm_heavy_chart_series(pids):
+    """Precompute the heavy chart series for the combinations users hit most:
+    each single portfolio and the full "all selected" combo. Keeps the
+    chart_series_cache fresh so requests take the fast read-through path."""
+    pids = list(normalize_portfolio_ids(pids))
+    if not pids:
+        return
+    combos = [(pid,) for pid in pids]
+    if len(pids) > 1:
+        combos.append(tuple(pids))
+
+    jobs = [
+        ("patrimony_open_pnl_by_type", ("12m", "24m"),
+         lambda combo, rng: _compute_patrimony_open_pnl_by_type_series(combo, rng)),
+        ("variable_income_value_daily", ("90d",),
+         lambda combo, rng: _compute_variable_income_value_daily_series(combo, rng)),
+    ]
+    for combo in combos:
+        for name, ranges, compute in jobs:
+            for rng in ranges:
+                try:
+                    payload = compute(combo, rng)
+                    _chart_series_cache_write(
+                        _chart_series_cache_key(name, combo, rng), payload
+                    )
+                except Exception:
+                    current_app.logger.exception(
+                        "Falha ao pre-aquecer %s combo=%s range=%s", name, combo, rng
+                    )
+        # Benchmark is the dashboard default (12m / scope all) and hits the
+        # network, so warm just that combination here.
+        try:
+            payload = _compute_benchmark_comparison(combo, "12m", "all")
+            _chart_series_cache_write(
+                _chart_series_cache_key("benchmark_comparison", combo, "12m", "all"),
+                payload,
+            )
+        except Exception:
+            current_app.logger.exception(
+                "Falha ao pre-aquecer benchmark combo=%s", combo
+            )
 
 
 def get_monthly_class_summary(portfolio_ids):
@@ -5632,6 +5781,17 @@ def _fixed_income_monthly_by_type(items, month_keys):
 
 
 def get_patrimony_open_pnl_by_type_series(portfolio_ids, range_key: str = "12m"):
+    normalized_range, _months, _period = _benchmark_range_config(range_key)
+    pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
+    return _cached_chart_series(
+        "patrimony_open_pnl_by_type",
+        pids,
+        normalized_range,
+        lambda inner_pids: _compute_patrimony_open_pnl_by_type_series(inner_pids, normalized_range),
+    )
+
+
+def _compute_patrimony_open_pnl_by_type_series(portfolio_ids, range_key: str = "12m"):
     normalized_range, months, period = _benchmark_range_config(range_key)
     pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
     month_keys = _month_keys_back(months)
@@ -5673,16 +5833,24 @@ def get_patrimony_open_pnl_by_type_series(portfolio_ids, range_key: str = "12m")
 
 
 def get_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: str = "all"):
+    normalized_range, _months, _period = _benchmark_range_config(range_key)
+    valid_scopes = {"all", "br", "us", "fiis", "crypto"}
+    normalized_scope = scope_key if scope_key in valid_scopes else "all"
+    pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
+    return _cached_chart_series(
+        "benchmark_comparison",
+        pids,
+        normalized_range,
+        lambda inner_pids: _compute_benchmark_comparison(inner_pids, normalized_range, normalized_scope),
+        scope_key=normalized_scope,
+    )
+
+
+def _compute_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: str = "all"):
     normalized_range, months, period = _benchmark_range_config(range_key)
     valid_scopes = {"all", "br", "us", "fiis", "crypto"}
     normalized_scope = scope_key if scope_key in valid_scopes else "all"
     pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
-    cache_ttl = int(current_app.config.get("BENCHMARK_CACHE_TTL_SECONDS", 900))
-    cache_key = (pids, normalized_range, normalized_scope)
-    cached = _memory_cache_get(_BENCHMARK_CACHE, cache_key)
-    if cached is not None:
-        return cached
-
     month_keys = _month_keys_back(months)
     labels = [_month_label(key) for key in month_keys]
     snapshot = get_portfolio_snapshot(pids)
@@ -5717,19 +5885,23 @@ def get_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: s
         "range_key": normalized_range,
         "scope_key": normalized_scope,
     }
-    _memory_cache_set(_BENCHMARK_CACHE, cache_key, result, cache_ttl)
     return result
 
 
 def get_variable_income_value_daily_series(portfolio_ids, range_key: str = "90d"):
+    normalized_range, _days, _period = _portfolio_daily_range_config(range_key)
+    pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
+    return _cached_chart_series(
+        "variable_income_value_daily",
+        pids,
+        normalized_range,
+        lambda inner_pids: _compute_variable_income_value_daily_series(inner_pids, normalized_range),
+    )
+
+
+def _compute_variable_income_value_daily_series(portfolio_ids, range_key: str = "90d"):
     normalized_range, days, period = _portfolio_daily_range_config(range_key)
     pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
-    cache_ttl = int(current_app.config.get("PORTFOLIO_DAILY_VALUE_CACHE_TTL_SECONDS", 900))
-    cache_key = (pids, normalized_range)
-    cached = _memory_cache_get(_PORTFOLIO_DAILY_VALUE_CACHE, cache_key)
-    if cached is not None:
-        return cached
-
     snapshot = get_portfolio_snapshot(pids)
     day_keys = _day_keys_back(days)
     series_payload = _portfolio_daily_value_series(snapshot, day_keys, period)
@@ -5744,5 +5916,4 @@ def get_variable_income_value_daily_series(portfolio_ids, range_key: str = "90d"
         "current_total_value": round(float((snapshot or {}).get("total_value") or 0.0), 2),
         "generated_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
     }
-    _memory_cache_set(_PORTFOLIO_DAILY_VALUE_CACHE, cache_key, result, cache_ttl)
     return result

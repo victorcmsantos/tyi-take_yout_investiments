@@ -8,6 +8,9 @@ services:
     networks:
       - invest-net
     environment:
+      GUNICORN_WORKERS: "${GUNICORN_WORKERS:-4}"
+      GUNICORN_THREADS: "${GUNICORN_THREADS:-4}"
+      GUNICORN_TIMEOUT: "${GUNICORN_TIMEOUT:-120}"
       ALPHA_VANTAGE_API_KEY: "${ALPHA_VANTAGE_API_KEY:-}"
       BRAPI_TOKEN: "${BRAPI_TOKEN:-}"
       BRAPI_QUOTE_CACHE_TTL_SECONDS: "${BRAPI_QUOTE_CACHE_TTL_SECONDS:-120}"
@@ -79,6 +82,7 @@ services:
       context: ./market-scanner
       dockerfile: Dockerfile
     image: market-scanner
+    container_name: market-scanner
     networks:
       - invest-net
     environment:
@@ -99,6 +103,7 @@ services:
 
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    container_name: openclaw-gateway
     networks:
       - invest-net
     environment:
@@ -156,6 +161,7 @@ services:
 
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    container_name: openclaw-cli
     profiles: ["cli"]
     network_mode: "service:openclaw-gateway"
     cap_drop:

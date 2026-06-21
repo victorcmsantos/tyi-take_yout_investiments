@@ -313,3 +313,12 @@ CREATE TABLE IF NOT EXISTS chart_snapshot_monthly_ticker (
   updated_at TEXT NOT NULL,
   FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
 );
+
+-- Read-through cache for heavy chart series keyed by the (sorted portfolio
+-- ids + range/scope) combination. Shared across workers, warmed by the
+-- periodic chart-snapshot job.
+CREATE TABLE IF NOT EXISTS chart_series_cache (
+  cache_key TEXT PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);

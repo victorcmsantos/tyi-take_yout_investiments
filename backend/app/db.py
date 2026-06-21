@@ -288,6 +288,11 @@ def init_app(app):
     app.config.setdefault("DATABASE", str(configured_db_path))
     db_path = Path(app.config["DATABASE"])
     app.config.setdefault("SQLITE_TIMEOUT_SECONDS", float(os.getenv("SQLITE_TIMEOUT_SECONDS", "30")))
+    # Annual rates assumed when the BCB index series is unavailable, so a fixed
+    # income tied to "% do CDI/IPCA" still projects a sane value (% of index,
+    # not the coefficient used as an absolute annual rate).
+    app.config.setdefault("CDI_ANNUAL_FALLBACK_PCT", float(os.getenv("CDI_ANNUAL_FALLBACK_PCT", "10.5")))
+    app.config.setdefault("IPCA_ANNUAL_FALLBACK_PCT", float(os.getenv("IPCA_ANNUAL_FALLBACK_PCT", "4.5")))
     app.config.setdefault(
         "BACKGROUND_JOBS_LOCK_FILE",
         os.getenv("BACKGROUND_JOBS_LOCK_FILE", str(db_path.parent / ".background-jobs.lock")),
@@ -938,6 +943,19 @@ def ensure_schema_upgrades():
           cache_key TEXT PRIMARY KEY,
           payload_json TEXT NOT NULL,
           updated_at TEXT NOT NULL
+        )
+        """
+    )
+    # Last-good cache of BCB/SGS index observations, so a transient BCB outage
+    # does not break fixed-income projections tied to CDI/IPCA.
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bcb_series_observations (
+          series_code INTEGER NOT NULL,
+          obs_date TEXT NOT NULL,
+          value REAL NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (series_code, obs_date)
         )
         """
     )

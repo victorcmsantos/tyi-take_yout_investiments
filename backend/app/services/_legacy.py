@@ -46,7 +46,10 @@ _BRAPI_QUOTE_RESULT_CACHE = {}
 _BRAPI_CIRCUIT = {"until": 0.0, "status_code": None}
 _PROVIDER_CIRCUIT_CACHE = {}
 _PROVIDER_USAGE_CACHE = {}
-FIXED_INCOME_PROJECTION_VERSION = 3
+# v4: fixed the CDI/IPCA fallback to treat the stored rate as "% of index"
+# instead of an absolute annual rate; bumped to invalidate cached snapshots
+# built with the inflated projection.
+FIXED_INCOME_PROJECTION_VERSION = 4
 _NON_FII_11_TICKERS = {
     "ALUP11",
     "BRSR11",
@@ -2689,6 +2692,49 @@ def _prefetch_brapi_market_data_for_tickers(tickers):
     return legacy_compat._prefetch_brapi_market_data_for_tickers(tickers)
 
 
+def _bcb_series_store(series_code: int, parsed):
+    """Persist fetched BCB observations as last-good cache (upsert per day)."""
+    if not parsed or not has_app_context():
+        return
+    try:
+        db = get_db()
+        stamp = _snapshot_now()
+        db.executemany(
+            """
+            INSERT INTO bcb_series_observations (series_code, obs_date, value, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(series_code, obs_date) DO UPDATE SET
+              value = excluded.value,
+              updated_at = excluded.updated_at
+            """,
+            [(int(series_code), d, float(v), stamp) for d, v in parsed],
+        )
+        db.commit()
+    except Exception:
+        try:
+            get_db().rollback()
+        except Exception:
+            pass
+
+
+def _bcb_series_load(series_code: int, date_start: str, date_end: str):
+    """Load last-good BCB observations for a window from the DB cache."""
+    if not has_app_context():
+        return []
+    try:
+        rows = get_db().execute(
+            """
+            SELECT obs_date, value FROM bcb_series_observations
+            WHERE series_code = ? AND obs_date BETWEEN ? AND ?
+            ORDER BY obs_date
+            """,
+            (int(series_code), date_start, date_end),
+        ).fetchall()
+    except Exception:
+        return []
+    return [(row["obs_date"], float(row["value"])) for row in rows]
+
+
 def _fetch_bcb_series(series_code: int, date_start: str, date_end: str):
     cache_key = (int(series_code), date_start, date_end)
     if cache_key in _BCB_SERIES_CACHE:
@@ -2716,8 +2762,18 @@ def _fetch_bcb_series(series_code: int, date_start: str, date_end: str):
             continue
         parsed.append((date_value, float(numeric)))
 
-    _BCB_SERIES_CACHE[cache_key] = parsed
-    return parsed
+    if parsed:
+        # Live fetch succeeded: refresh the last-good cache and memoize.
+        _bcb_series_store(series_code, parsed)
+        _BCB_SERIES_CACHE[cache_key] = parsed
+        return parsed
+
+    # Live fetch failed/empty (e.g. BCB 502): fall back to last-good DB cache.
+    # Do not memoize the empty result so the next call can retry the live API.
+    cached = _bcb_series_load(series_code, date_start, date_end)
+    if cached:
+        _BCB_SERIES_CACHE[cache_key] = cached
+    return cached
 
 
 def _compound_from_bcb_series(
@@ -3561,6 +3617,26 @@ def import_fixed_incomes_csv(file_bytes, target_portfolio_id: int):
     return portfolio_services.import_fixed_incomes_csv(file_bytes, target_portfolio_id)
 
 
+_CDI_ANNUAL_FALLBACK_DEFAULT = 10.5
+_IPCA_ANNUAL_FALLBACK_DEFAULT = 4.5
+
+
+def _index_annual_fallback_pct(kind: str) -> float:
+    """Assumed annual rate (%) for an index when its BCB series is unavailable."""
+    if kind == "cdi":
+        key, default = "CDI_ANNUAL_FALLBACK_PCT", _CDI_ANNUAL_FALLBACK_DEFAULT
+    else:
+        key, default = "IPCA_ANNUAL_FALLBACK_PCT", _IPCA_ANNUAL_FALLBACK_DEFAULT
+    if has_app_context():
+        try:
+            value = float(current_app.config.get(key, default))
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
 def _fixed_income_projection(item):
     return _fixed_income_projection_at_date(item, datetime.now().date())
 
@@ -3652,8 +3728,11 @@ def _fixed_income_projection_at_date(item, reference_date):
         )
         if has_data:
             return factor
+        # Fallback: rate_cdi is a PERCENTAGE OF the CDI index (e.g. 113 = 113%
+        # of CDI), not an absolute annual rate. Apply it to an assumed CDI.
         days = max((end_date - start_date).days, 0)
-        return _annualized_factor(rate_cdi, days)
+        effective_annual = (rate_cdi / 100.0) * _index_annual_fallback_pct("cdi")
+        return _annualized_factor(effective_annual, days)
 
     def _ipca_factor(start_date, end_date):
         if rate_ipca <= 0 or start_date > end_date:
@@ -3667,8 +3746,12 @@ def _fixed_income_projection_at_date(item, reference_date):
         )
         if has_data:
             return factor
+        # Fallback: rate_ipca is a PERCENTAGE OF the IPCA index (e.g. 100 = 100%
+        # of IPCA), not an absolute annual rate. The fixed spread is handled
+        # separately by _fixed_factor for FIXO+IPCA records.
         days = max((end_date - start_date).days, 0)
-        return _annualized_factor(rate_ipca, days)
+        effective_annual = (rate_ipca / 100.0) * _index_annual_fallback_pct("ipca")
+        return _annualized_factor(effective_annual, days)
 
     def _factor_for_period(start_date, end_date, days: int):
         fixed_factor = _fixed_factor(days)

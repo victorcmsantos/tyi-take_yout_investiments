@@ -322,3 +322,14 @@ CREATE TABLE IF NOT EXISTS chart_series_cache (
   payload_json TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- Last-good cache of BCB/SGS index observations (CDI=11, IPCA=433, ...), one
+-- row per (series, day), so a transient BCB 502 falls back to stored data
+-- instead of a broken projection.
+CREATE TABLE IF NOT EXISTS bcb_series_observations (
+  series_code INTEGER NOT NULL,
+  obs_date TEXT NOT NULL,
+  value REAL NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (series_code, obs_date)
+);

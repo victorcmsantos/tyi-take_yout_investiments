@@ -12,8 +12,13 @@ from flask import Blueprint, current_app, jsonify, request
 
 pierre_bp = Blueprint("pierre", __name__)
 
-# Read-only endpoints we allow forwarding to pierre-service.
-_ALLOWED = {"status", "accounts", "balance", "transactions", "bills", "installments", "cashflow", "overview"}
+# Read-only data endpoints (GET only) and the writable overrides endpoint.
+_ALLOWED = {
+    "status", "accounts", "balance", "transactions", "bills", "installments",
+    "cashflow", "overview", "ledger", "overrides",
+    "manual-accounts", "manual-transactions", "recurring-items", "settings",
+}
+_WRITABLE = {"overrides", "manual-accounts", "manual-transactions", "recurring-items", "settings"}
 
 
 def _service_url():
@@ -30,7 +35,12 @@ def _timeout():
 def _proxy(endpoint):
     qs = request.query_string.decode()
     url = f"{_service_url()}/{endpoint}" + (f"?{qs}" if qs else "")
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    headers = {"Accept": "application/json"}
+    data = None
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        data = request.get_data() or b""
+        headers["Content-Type"] = request.headers.get("Content-Type", "application/json")
+    req = urllib.request.Request(url, data=data, method=request.method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=_timeout()) as response:
             body = response.read()
@@ -43,8 +53,10 @@ def _proxy(endpoint):
     return current_app.response_class(body, status=status, mimetype="application/json")
 
 
-@pierre_bp.route("/<endpoint>", methods=["GET"])
+@pierre_bp.route("/<endpoint>", methods=["GET", "POST", "DELETE"])
 def proxy(endpoint):
     if endpoint not in _ALLOWED:
         return jsonify({"ok": False, "error": "Endpoint Pierre desconhecido."}), 404
+    if request.method != "GET" and endpoint not in _WRITABLE:
+        return jsonify({"ok": False, "error": "Operação não permitida."}), 405
     return _proxy(endpoint)

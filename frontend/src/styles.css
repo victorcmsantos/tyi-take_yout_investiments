@@ -5625,3 +5625,134 @@ html[data-theme='dark'] .asset-table tbody tr:hover .sticky-col-ticker {
   .fin2-cats .fin2-cat-list li { grid-template-columns: 1.4fr auto auto; }
   .fin2-cats .fin2-cat-bar, .fin2-cat-prev { display: none; }
 }
+
+/* categorias clicáveis: linha-botão + detalhe expansível + pontinho */
+.fin2-cats .fin2-cat-list li { display: block; }
+.fin2-cat-row {
+  display: grid;
+  grid-template-columns: 1.6fr 0.9fr 1.4fr 0.9fr 0.8fr;
+  gap: 12px; align-items: center; width: 100%;
+  background: transparent; border: 0; color: inherit; font: inherit;
+  text-align: left; cursor: pointer; padding: 9px 8px; border-radius: 10px;
+}
+.fin2-cat-row:hover { background: rgba(255,255,255,0.03); }
+.fin2-cats .fin2-cat-list li.open .fin2-cat-row { background: rgba(255,255,255,0.05); }
+.fin2-cat-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.fin2-cat-dot.tone-red { background: #f0563f; }
+.fin2-cat-dot.tone-yellow { background: #e0b341; }
+.fin2-cat-dot.tone-green { background: #2fd47e; }
+.fin2-cat-dot.tone-gray { background: #6b7480; }
+.fin2-cat-detail { padding: 6px 8px 14px 40px; display: grid; gap: 9px; }
+.fin2-cat-tx { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--fin-line); padding-top: 9px; }
+.fin2-cat-tx > div { display: flex; flex-direction: column; min-width: 0; }
+.fin2-cat-tx strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fin2-cat-tx small { color: var(--fin-muted); font-size: 11px; }
+.fin2-cat-tx > span { font-weight: 700; white-space: nowrap; }
+@media (max-width: 900px) {
+  .fin2-cat-row { grid-template-columns: 1.4fr auto auto; }
+  .fin2-cats .fin2-cat-bar, .fin2-cat-prev { display: none; }
+}
+
+/* abas Cartões / Transações */
+.fin2-span2 { grid-column: 1 / -1; }
+.fin2-cardbig-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.fin2-cardbig-head img { width: 38px; height: 38px; border-radius: 10px; background: #fff; }
+.fin2-cardbig-head > div { display: flex; flex-direction: column; }
+.fin2-cardbig-head small { color: var(--fin-muted); font-size: 12px; }
+.fin2-cardbig .fin2-bignum { margin-top: 4px; }
+.fin2-cardbig-add { margin-top: 16px; border-top: 1px solid var(--fin-line); padding-top: 12px; }
+.fin2-cardbig-add > div { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.fin2-addchip { font-size: 12px; font-weight: 700; color: var(--fin-muted); background: var(--fin-card2); border: 1px solid var(--fin-line); border-radius: 8px; padding: 3px 9px; letter-spacing: 0.03em; }
+
+.fin2-ledger-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.fin2-ledger-filters { display: flex; gap: 8px; }
+.fin2-chip { border: 1px solid var(--fin-line); background: var(--fin-card2); color: var(--fin-muted); border-radius: 999px; padding: 6px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+.fin2-chip.active { color: var(--fin-green); border-color: rgba(47,212,126,0.4); background: rgba(47,212,126,0.08); }
+.fin2-search { flex: 1; min-width: 220px; height: 38px; border-radius: 10px; border: 1px solid var(--fin-line); background: var(--fin-card2); color: var(--fin-txt); padding: 0 14px; font: inherit; }
+.fin2-search::placeholder { color: var(--fin-muted); }
+.fin2-ledger li { border-top: 1px solid var(--fin-line); padding-top: 11px; }
+.fin2-ledger li:first-child { border-top: 0; padding-top: 0; }
+
+/* logo do banco/cartão na transação */
+.fin2-tx-logo { width: 26px; height: 26px; border-radius: 7px; object-fit: cover; background: #fff; flex: 0 0 auto; }
+.fin2-tx-logo.fallback { background: var(--fin-card2); border: 1px solid var(--fin-line); display: inline-flex; align-items: center; justify-content: center; font-size: 13px; }
+.fin2-tx-list li > div, .fin2-cat-tx > div { flex: 1 1 auto; min-width: 0; }
+.fin2-tx-list li strong, .fin2-cat-tx strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+
+/* cartão expansível com suas compras */
+.fin2-cardbig-btn { width: 100%; background: transparent; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; padding: 0; }
+.fin2-cardbig-head { width: 100%; }
+.fin2-cardbig-chevron { margin-left: auto; color: var(--fin-muted); font-size: 20px; line-height: 1; }
+.fin2-cardbig.open .fin2-cardbig-chevron { color: var(--fin-green); }
+.fin2-cardbig-txs { margin-top: 16px; border-top: 1px solid var(--fin-line); padding-top: 14px; max-height: 320px; overflow-y: auto; }
+.fin2-cardbig-txs li { border-top: 1px solid var(--fin-line); padding-top: 10px; }
+.fin2-cardbig-txs li:first-child { border-top: 0; padding-top: 0; }
+
+/* extrato: linha clicável + editor de categoria */
+.fin2-ledger li { display: block; }
+.fin2-ledger-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; background: transparent; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; padding: 11px 6px; border-radius: 8px; }
+.fin2-ledger-row:hover { background: rgba(255,255,255,0.03); }
+.fin2-ledger li.open .fin2-ledger-row { background: rgba(255,255,255,0.05); }
+.fin2-ledger-row > div { flex: 1 1 auto; min-width: 0; }
+.fin2-tx-editor { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; padding: 10px 8px 16px; border-bottom: 1px solid var(--fin-line); }
+.fin2-tx-editor label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: var(--fin-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.fin2-tx-editor input, .fin2-tx-editor select { height: 36px; border-radius: 9px; border: 1px solid var(--fin-line); background: var(--fin-card2); color: var(--fin-txt); padding: 0 12px; font: inherit; min-width: 200px; }
+.fin2-tx-editor button { height: 36px; cursor: pointer; }
+.fin2-tx-editor button:disabled { opacity: 0.5; cursor: default; }
+
+/* aba Manual: contas e lançamentos */
+.fin2-manual-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+.fin2-manual-form input, .fin2-manual-form select {
+  height: 38px; border-radius: 9px; border: 1px solid var(--fin-line);
+  background: var(--fin-card2); color: var(--fin-txt); padding: 0 12px; font: inherit;
+}
+.fin2-manual-form input[placeholder="Descrição"] { flex: 1; min-width: 160px; }
+.fin2-manual-form input[type="number"] { width: 120px; }
+.fin2-manual-form button { height: 38px; cursor: pointer; }
+.fin2-manual-form button:disabled { opacity: 0.5; cursor: default; }
+.fin2-manual-acc-head { display: flex; align-items: center; gap: 12px; }
+.fin2-manual-acc-head > div { flex: 1; display: flex; flex-direction: column; }
+.fin2-manual-acc-head small { color: var(--fin-muted); font-size: 12px; }
+.fin2-manual-txs { margin-top: 16px; border-top: 1px solid var(--fin-line); padding-top: 14px; max-height: 280px; overflow-y: auto; }
+.fin2-manual-txs li { border-top: 1px solid var(--fin-line); padding-top: 10px; }
+.fin2-manual-txs li:first-child { border-top: 0; padding-top: 0; }
+.fin2-icon-btn { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--fin-line); background: var(--fin-card2); color: var(--fin-muted); cursor: pointer; flex: 0 0 auto; font-size: 13px; }
+.fin2-icon-btn:hover { color: var(--fin-red); border-color: rgba(240,86,63,0.4); }
+
+/* seletor de logo e logo da conta manual */
+.fin2-logo-picker { display: flex; gap: 8px; align-items: center; }
+.fin2-logo-opt { width: 40px; height: 40px; border-radius: 10px; border: 2px solid var(--fin-line); background: #fff; padding: 4px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.fin2-logo-opt img { width: 100%; height: 100%; object-fit: contain; }
+.fin2-logo-opt.active { border-color: var(--fin-green); }
+.fin2-manual-logo { width: 34px; height: 34px; border-radius: 9px; background: #fff; object-fit: contain; padding: 3px; flex: 0 0 auto; }
+
+/* edição de lançamento manual */
+.fin2-manual-txs li.editing { background: rgba(47,212,126,0.06); border-radius: 8px; }
+.fin2-manual-txs li.editing strong { color: var(--fin-green); }
+
+/* Fluxo do mês: realizado x planejado */
+.fin2-fluxo { margin-top: 6px; }
+.fin2-fluxo-row { display: grid; grid-template-columns: 1.4fr 1fr 1.1fr; gap: 12px; align-items: center; padding: 9px 4px; }
+.fin2-fluxo-row .r { text-align: right; font-weight: 700; }
+.fin2-fluxo-head { font-size: 11px; color: var(--fin-muted); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--fin-line); }
+.fin2-fluxo-head .r, .fin2-fluxo-head span { font-weight: 600; }
+.fin2-fluxo-sobra { border-top: 1px solid var(--fin-line); margin-top: 4px; font-size: 17px; }
+.fin2-fluxo-sobra span:first-child { font-weight: 800; }
+.fin2-fluxo-foot { margin-top: 12px; padding: 10px 12px; background: rgba(240,86,63,0.08); border-radius: 10px; font-size: 13px; color: var(--fin-txt); }
+
+/* lista de recorrentes */
+.fin2-recur-list { margin-top: 14px; }
+.fin2-recur-list li { display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--fin-line); padding-top: 11px; }
+.fin2-recur-list li:first-child { border-top: 0; padding-top: 0; }
+.fin2-recur-list li > div { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.fin2-recur-list small { color: var(--fin-muted); font-size: 11px; }
+.fin2-recur-list li.editing { background: rgba(47,212,126,0.06); border-radius: 8px; }
+.financas-tag { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.financas-tag-receita { background: rgba(47,212,126,0.16); color: var(--fin-green); }
+.financas-tag-cartao { background: rgba(31,111,235,0.18); color: #6f9bff; }
+.financas-tag-fixa { background: rgba(196,139,45,0.18); color: #d6a24a; }
+.financas-tag-avulsa { background: rgba(240,86,63,0.16); color: #f5897a; }
+
+/* ciclo da fatura (toolbar Cartões) */
+.fin2-cards-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.fin2-day-input { width: 64px; height: 36px; border-radius: 9px; border: 1px solid var(--fin-line); background: var(--fin-card2); color: var(--fin-txt); padding: 0 10px; font: inherit; text-align: center; }

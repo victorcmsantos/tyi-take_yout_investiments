@@ -39,8 +39,11 @@ DEFAULT_INBOUND_IGNORE_CATEGORIES = {
     "Transferência - PIX",
     "Transferências",
 }
-# Description keywords that mark an inbound transfer as real income.
-DEFAULT_INCOME_SOURCES = {"VCMS", "ECS"}
+# Description keywords that mark an inbound transfer as real income. Income is
+# now captured at the source (the VCMS/ECS PJ accounts), so transfers FROM them
+# into the personal accounts are internal, not new income. Override via
+# PIERRE_INCOME_SOURCES if some inbound transfer really is external income.
+DEFAULT_INCOME_SOURCES = set()
 # Credit-card bill settlement (the spend is already counted as purchases).
 DEFAULT_CARD_PAYMENT_CATEGORIES = {"Pagamento de cartão de crédito"}
 

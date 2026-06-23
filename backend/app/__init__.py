@@ -1,6 +1,7 @@
 from flask import Flask, g, request
 
 from .api_routes import api_bp
+from .pierre_routes import pierre_bp
 from .auth import can_user_write, configure_auth, get_current_user, is_auth_exempt_path, is_viewer_write_exempt_path
 from .chart_sync import start_chart_sync
 from .db import init_app as init_db_app
@@ -17,6 +18,7 @@ def create_app() -> Flask:
     init_db_app(app)
     configure_auth(app)
     app.register_blueprint(api_bp, url_prefix="/api")
+    app.register_blueprint(pierre_bp, url_prefix="/api/pierre")
     start_market_sync(app)
     start_fixed_income_sync(app)
     start_chart_sync(app)

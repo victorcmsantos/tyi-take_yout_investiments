@@ -293,6 +293,10 @@ def init_app(app):
     # not the coefficient used as an absolute annual rate).
     app.config.setdefault("CDI_ANNUAL_FALLBACK_PCT", float(os.getenv("CDI_ANNUAL_FALLBACK_PCT", "10.5")))
     app.config.setdefault("IPCA_ANNUAL_FALLBACK_PCT", float(os.getenv("IPCA_ANNUAL_FALLBACK_PCT", "4.5")))
+    # Pierre Finance integration runs in a separate internal service; the
+    # backend only proxies to it (auth stays here, the API key stays there).
+    app.config.setdefault("PIERRE_SERVICE_URL", os.getenv("PIERRE_SERVICE_URL", "http://pierre-service:8000"))
+    app.config.setdefault("PIERRE_TIMEOUT_SECONDS", float(os.getenv("PIERRE_TIMEOUT_SECONDS", "20")))
     app.config.setdefault(
         "BACKGROUND_JOBS_LOCK_FILE",
         os.getenv("BACKGROUND_JOBS_LOCK_FILE", str(db_path.parent / ".background-jobs.lock")),

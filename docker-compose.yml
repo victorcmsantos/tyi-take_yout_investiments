@@ -11,6 +11,7 @@ services:
       GUNICORN_WORKERS: "${GUNICORN_WORKERS:-4}"
       GUNICORN_THREADS: "${GUNICORN_THREADS:-4}"
       GUNICORN_TIMEOUT: "${GUNICORN_TIMEOUT:-120}"
+      PIERRE_SERVICE_URL: "${PIERRE_SERVICE_URL:-http://pierre-service:8000}"
       ALPHA_VANTAGE_API_KEY: "${ALPHA_VANTAGE_API_KEY:-}"
       BRAPI_TOKEN: "${BRAPI_TOKEN:-}"
       BRAPI_QUOTE_CACHE_TTL_SECONDS: "${BRAPI_QUOTE_CACHE_TTL_SECONDS:-120}"
@@ -75,6 +76,26 @@ services:
       - "8000:80"
     depends_on:
       - backend
+
+  pierre-service:
+    build:
+      context: ./pierre-service
+      dockerfile: Dockerfile
+    image: pierre-service
+    container_name: pierre-service
+    networks:
+      - invest-net
+    environment:
+      PIERRE_API_KEY: "${PIERRE_API_KEY:-}"
+      PIERRE_BASE_URL: "${PIERRE_BASE_URL:-https://www.pierre.finance}"
+      PIERRE_CACHE_TTL_SECONDS: "${PIERRE_CACHE_TTL_SECONDS:-300}"
+      PIERRE_TIMEOUT_SECONDS: "${PIERRE_TIMEOUT_SECONDS:-15}"
+      PIERRE_CACHE_DB: "/data/pierre_cache.db"
+    volumes:
+      - /srv/tyi-take_yout_investiments/pierre_data:/data
+    restart: unless-stopped
+    # Internal only: no host port mapping. Reached via backend at
+    # http://pierre-service:8000 on the invest-net network.
 
   market-scanner:
     profiles: ["scanner"]

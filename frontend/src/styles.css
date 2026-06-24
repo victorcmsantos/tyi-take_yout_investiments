@@ -5529,6 +5529,15 @@ html[data-theme='dark'] .asset-table tbody tr:hover .sticky-col-ticker {
 .fin2-muted { color: var(--fin-muted); }
 .fin2-pos { color: var(--fin-green); }
 .fin2-neg { color: var(--fin-red); }
+.fin2-tx-adjust { opacity: 0.78; font-style: italic; border-top: 1px dashed var(--fin-border, rgba(255,255,255,0.12)); }
+.fin2-tx-adjust strong { font-weight: 600; }
+.fin2-badge-partial {
+  display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 6px;
+  font-size: 10px; font-weight: 800; font-style: normal; letter-spacing: 0.04em;
+  color: #ffb84d; background: rgba(255,150,40,0.14); border: 1px solid rgba(255,150,40,0.45);
+  vertical-align: middle;
+}
+.fin2-bignum-partial { color: #ffb84d; }
 .fin2-soon { text-align: center; padding: 60px 22px; }
 .fin2-soon p { color: var(--fin-muted); }
 

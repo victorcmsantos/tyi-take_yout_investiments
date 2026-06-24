@@ -1,8 +1,14 @@
 """Small key/value settings store (same SQLite as the rest)."""
 
+import json
 import os
 import sqlite3
 import threading
+import unicodedata
+
+# Closing day varies by bank (the day the statement closes). These defaults are
+# overridden by the "card_closing_days" setting (a JSON map connector->day).
+DEFAULT_CLOSING_DAYS = {"itau": 22, "santander": 25}
 
 DB_PATH = os.getenv("PIERRE_CACHE_DB", "/data/pierre_cache.db")
 _LOCK = threading.Lock()
@@ -42,9 +48,30 @@ def all_settings():
 
 
 def card_closing_day():
-    """Day the card invoice closes. <=1 means use calendar month (no cycle)."""
+    """Default day the card invoice closes. <=1 means calendar month (no cycle)."""
     raw = get("card_closing_day", os.getenv("PIERRE_CARD_CLOSING_DAY", "25"))
     try:
         return max(1, min(28, int(raw)))
     except (TypeError, ValueError):
         return 25
+
+
+def card_closing_days():
+    """Map of connector substring -> closing day (overrides the global default)."""
+    raw = get("card_closing_days")
+    if raw:
+        try:
+            return {str(k).lower(): max(1, min(28, int(v))) for k, v in json.loads(raw).items()}
+        except Exception:
+            pass
+    return dict(DEFAULT_CLOSING_DAYS)
+
+
+def closing_for(connector):
+    """Closing day for a card, matched by its connector/bank name; falls back to
+    the global default when the bank isn't in the per-connector map."""
+    name = unicodedata.normalize("NFKD", str(connector or "")).encode("ascii", "ignore").decode().lower()
+    for key, day in card_closing_days().items():
+        if key and key in name:
+            return day
+    return card_closing_day()

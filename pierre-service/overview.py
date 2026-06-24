@@ -28,6 +28,18 @@ def _norm(text):
     return unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode().lower()
 
 
+def _amt(it):
+    """BRL value of a transaction: effectiveAmount is the converted amount for
+    international purchases; amount may be in the foreign currency."""
+    v = it.get("effectiveAmount")
+    if v is None:
+        v = it.get("amount")
+    try:
+        return abs(float(v or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _acc_list(accounts_raw):
     acc = (accounts_raw or {}).get("data")
     if isinstance(acc, dict):
@@ -67,6 +79,22 @@ def _prev_month(year, month):
     return (year - 1, 12) if month == 1 else (year, month - 1)
 
 
+def _invoice_window(year, month, closing=None):
+    """Purchase window for the statement DUE in month M. A statement paid on the
+    1st of M closes in M-1 (on the given closing day), so its purchases span from
+    the day after the M-2 closing through the M-1 closing. ``closing`` defaults to
+    the global setting; closing <= 1 falls back to the previous calendar month."""
+    if closing is None:
+        closing = settings.card_closing_day()
+    ccy, ccm = _prev_month(year, month)
+    start, end, _ = _month_bounds(ccy, ccm)
+    if closing >= 2:
+        cpy, cpm = _prev_month(ccy, ccm)
+        end = date(ccy, ccm, min(closing, calendar.monthrange(ccy, ccm)[1])).isoformat()
+        start = (date(cpy, cpm, min(closing, calendar.monthrange(cpy, cpm)[1])) + timedelta(days=1)).isoformat()
+    return start, end
+
+
 def _summary(payload):
     data = (payload or {}).get("data") or {}
     return data.get("summary") or {}
@@ -93,7 +121,7 @@ def _spend_by_category(accounts_tx, ym, collect=False, logo_fn=None):
             cat = it.get("category")
             if cat in HIDDEN_SPEND_CATEGORIES:
                 continue
-            value = abs(float(it.get("amount") or 0.0))
+            value = _amt(it)
             agg[cat] = agg.get(cat, 0.0) + value
             if collect:
                 items_by_cat.setdefault(cat, []).append({
@@ -130,25 +158,45 @@ def _cumulative(by_day, year, month, days_in_month):
 
 
 def build_ledger(year, month):
-    """Flat, date-sorted list of the month's transactions for the Transações
-    tab: incoming (conta), bank debits (conta) and card purchases (cartão)."""
+    """Flat, date-sorted list of the month's transactions for the Transações tab.
+    Account movements (conta) follow the CALENDAR month; card purchases (cartão)
+    follow the INVOICE that is due in month M (so they match the Cartões tab and
+    the cash-flow model: purchases land in the month their statement is paid)."""
     start, end, _ = _month_bounds(year, month)
-    tx = manual.inject(overrides.apply(pierre.get_transactions(start_date=start, end_date=end)), start, end)
-    accounts = ((tx.get("data") or {}).get("transactions") or {}).get("accounts") or {}
-    logo_fn = _make_logo_fn(_acc_list(pierre.get_accounts()))
+    acc_raw = _acc_list(pierre.get_accounts())
+    logo_fn = _make_logo_fn(acc_raw)
+    card_by_id = {}
+    for a in acc_raw:
+        if a.get("type") == "CREDIT":
+            cd = a.get("creditData") or {}
+            card_by_id[a.get("id")] = (str(cd.get("brand") or "").upper(),
+                                       str(cd.get("level") or "").upper(), a.get("connectorName"))
 
-    def row(it, source, flow):
+    # Each card's invoice closes on its own day (Itaú 22, Santander 25...).
+    _win_cache = {}
+
+    def _win_for(connector):
+        cl = settings.closing_for(connector)
+        if cl not in _win_cache:
+            _win_cache[cl] = _invoice_window(year, month, cl)
+        return _win_cache[cl]
+
+    def row(it, source, flow, date_override=None):
         return {
-            "date": it.get("date"),
+            "date": date_override or it.get("date"),
             "description": it.get("description") or it.get("merchant") or it.get("category"),
             "category": it.get("category"),
-            "amount": round(abs(float(it.get("amount") or 0.0)), 2),
+            "amount": round(_amt(it), 2),
             "source": source,
             "flow": flow,
             "logo": logo_fn(it),
         }
 
     rows = []
+
+    # Account movements: calendar month.
+    tx = manual.inject(overrides.apply(pierre.get_transactions(start_date=start, end_date=end)), start, end)
+    accounts = ((tx.get("data") or {}).get("transactions") or {}).get("accounts") or {}
     for a in accounts.values():
         if not isinstance(a, dict):
             continue
@@ -156,10 +204,56 @@ def build_ledger(year, month):
             rows.append(row(it, "conta", "in"))
         for it in a.get("bank_transfer") or []:
             rows.append(row(it, "conta", "out"))
+
+    # Card purchases: the invoice due in month M (cycle that closes in M-1) =
+    # upfront purchases in the window + installment portions due in the window,
+    # each card using its own bank's closing day.
+    _wins = [_win_for(a.get("connectorName")) for a in acc_raw if a.get("type") == "CREDIT"]
+    fetch_start = min((w[0] for w in _wins), default=_invoice_window(year, month)[0])
+    fetch_end = max((w[1] for w in _wins), default=_invoice_window(year, month)[1])
+    cyc = overrides.apply(pierre.get_transactions(start_date=fetch_start, end_date=fetch_end, account_type="CREDIT"))
+    cyc_accounts = ((cyc.get("data") or {}).get("transactions") or {}).get("accounts") or {}
+    for a in cyc_accounts.values():
+        if not isinstance(a, dict):
+            continue
         for cv in (a.get("credit_cards") or {}).values():
-            if isinstance(cv, dict):
-                for it in cv.get("purchases") or []:
-                    rows.append(row(it, "cartao", "out"))
+            if not isinstance(cv, dict):
+                continue
+            for it in cv.get("purchases") or []:
+                if it.get("installment_due_date"):
+                    continue  # installment -> from /installments below
+                ws, we = _win_for((it.get("account_info") or {}).get("name"))
+                if not (ws <= (it.get("date") or "") <= we):
+                    continue
+                rows.append(row(it, "cartao", "out"))
+
+    # Parcelas follow the monthly schedule: a parcela due in calendar month M-1 is
+    # billed on the statement paid the 1st of M (see build_overview for the why).
+    py, pm = _prev_month(year, month)
+    prev_ym, prev_end = f"{py:04d}-{pm:02d}", _month_bounds(py, pm)[1]
+    try:
+        inst_raw = pierre.get_installments(start_date=f"{year - 2}-01-01", end_date=prev_end)
+        inst_purchases = ((inst_raw.get("data") or {}).get("purchases")) or []
+    except Exception:
+        inst_purchases = []
+    for p in inst_purchases:
+        bl = card_by_id.get(p.get("accountId"))
+        if not bl:
+            continue
+        for inst in p.get("installments") or []:
+            due = str(inst.get("dueDate") or "")[:10]
+            if due[:7] != prev_ym:
+                continue
+            rows.append({
+                "date": due,
+                "description": f"{p.get('description')} {inst.get('installmentNumber')}/{inst.get('totalInstallments')}",
+                "category": inst.get("category") or "Parcelamento",
+                "amount": round(abs(float(inst.get("amount") or 0.0)), 2),
+                "source": "cartao",
+                "flow": "out",
+                "logo": "",
+            })
+
     rows.sort(key=lambda r: r["date"] or "", reverse=True)
     return {"month": f"{year:04d}-{month:02d}", "transactions": rows}
 
@@ -179,26 +273,35 @@ def build_overview(year, month):
 
     cur_accounts_tx = ((cur_tx.get("data") or {}).get("transactions") or {}).get("accounts") or {}
 
-    # Card id -> (brand, level), to map installments (which carry accountId) to
-    # the physical card.
+    # Card id -> (brand, level, connector), to map installments (which carry
+    # accountId) to the physical card and its bank (for the closing day).
     card_by_id = {}
     for a in _acc_list(accounts_raw):
         if a.get("type") == "CREDIT":
             cd = a.get("creditData") or {}
-            card_by_id[a.get("id")] = (str(cd.get("brand") or "").upper(), str(cd.get("level") or "").upper())
+            card_by_id[a.get("id")] = (str(cd.get("brand") or "").upper(),
+                                       str(cd.get("level") or "").upper(), a.get("connectorName"))
 
-    # Cards follow the invoice cycle (closes on day D): month M = day D+1 of M-1
-    # through day D of M. Bank/cash stay calendar. Closing <= 1 = calendar month.
-    closing = settings.card_closing_day()
-    card_accounts_tx = cur_accounts_tx
-    card_win_start, card_win_end = cur_start, cur_end
-    if closing >= 2:
-        close_this = date(year, month, min(closing, calendar.monthrange(year, month)[1]))
-        close_prev = date(py, pm, min(closing, calendar.monthrange(py, pm)[1]))
-        card_win_start = (close_prev + timedelta(days=1)).isoformat()
-        card_win_end = close_this.isoformat()
-        cycle_tx = overrides.apply(pierre.get_transactions(start_date=card_win_start, end_date=card_win_end))
-        card_accounts_tx = ((cycle_tx.get("data") or {}).get("transactions") or {}).get("accounts") or {}
+    # A card statement DUE in month M closes in M-1 (purchases made up to the
+    # closing day of the previous month, paid on the 1st business day of M). The
+    # exact total comes from the bank's CLOSED bill (get-bills, below); here we
+    # build the approximate line items for that cycle, since Pierre does not tag
+    # which bill a transaction belongs to. The closing day VARIES BY BANK (Itaú
+    # 22, Santander 25...), so each card uses its own window.
+    _win_cache = {}
+
+    def _win_for(connector):
+        cl = settings.closing_for(connector)
+        if cl not in _win_cache:
+            _win_cache[cl] = _invoice_window(year, month, cl)
+        return _win_cache[cl]
+
+    _wins = [_win_for(a.get("connectorName")) for a in _acc_list(accounts_raw) if a.get("type") == "CREDIT"]
+    fetch_start = min((w[0] for w in _wins), default=_invoice_window(year, month)[0])
+    fetch_end = max((w[1] for w in _wins), default=_invoice_window(year, month)[1])
+    card_win_end = fetch_end  # upper bound for the installments fetch
+    cycle_tx = overrides.apply(pierre.get_transactions(start_date=fetch_start, end_date=fetch_end))
+    card_accounts_tx = ((cycle_tx.get("data") or {}).get("transactions") or {}).get("accounts") or {}
 
     # The invoice for the window = upfront purchases made in the window + the
     # installment PORTIONS due in the window (at the installment value, from
@@ -218,12 +321,13 @@ def build_overview(year, month):
             for it in cv.get("purchases") or []:
                 if it.get("installment_due_date"):
                     continue  # installment -> from /installments below
-                d = it.get("date") or ""
-                if not (card_win_start <= d <= card_win_end):
-                    continue
                 ai = it.get("account_info") or {}
+                ws, we = _win_for(ai.get("name"))
+                d = it.get("date") or ""
+                if not (ws <= d <= we):
+                    continue
                 key = (_norm(ai.get("name")), str(ai.get("brand") or "").upper(), str(ai.get("level") or "").upper())
-                value = abs(float(it.get("amount") or 0.0))
+                value = _amt(it)
                 card_spend[key] = card_spend.get(key, 0.0) + value
                 if it.get("category") not in internal_cats:
                     cartao_total += value
@@ -235,9 +339,15 @@ def build_overview(year, month):
                     "source": "cartao",
                 })
 
-    # 2) installment portions due in the window
+    # 2) installment portions billed in this statement. Unlike upfront purchases
+    # (which follow the closing-day window), a parcela follows the bank's monthly
+    # schedule: a parcela DUE in calendar month M-1 is billed on the statement paid
+    # on the 1st of M. So we match by the previous calendar month, not the cycle
+    # window — this keeps the final parcela on its real invoice (e.g. VINILICOS
+    # 2/2 due 27/05 lands on the June bill, not July's).
+    prev_ym = f"{py:04d}-{pm:02d}"
     try:
-        inst_raw = pierre.get_installments(start_date=f"{year - 2}-01-01", end_date=card_win_end)
+        inst_raw = pierre.get_installments(start_date=f"{year - 2}-01-01", end_date=prev_end)
         inst_purchases = ((inst_raw.get("data") or {}).get("purchases")) or []
     except Exception:
         inst_purchases = []
@@ -245,11 +355,11 @@ def build_overview(year, month):
         bl = card_by_id.get(p.get("accountId"))
         if not bl:
             continue
-        brand, level = bl
+        brand, level, conn = bl
         key = (_norm(p.get("accountName")), brand, level)
         for inst in p.get("installments") or []:
             due = str(inst.get("dueDate") or "")[:10]
-            if not (card_win_start <= due <= card_win_end):
+            if due[:7] != prev_ym:
                 continue
             amt = abs(float(inst.get("amount") or 0.0))
             card_spend[key] = card_spend.get(key, 0.0) + amt
@@ -262,6 +372,29 @@ def build_overview(year, month):
                 "source": "cartao",
             })
 
+    # Exact statement totals from the bank's CLOSED bills (get-bills), keyed to
+    # the DUE month. This is the source of truth for the headline per-card total
+    # and the "Cartão" cash-flow bucket; the cycle sum above is only a fallback
+    # for months whose bill hasn't closed yet (e.g. the current open month).
+    month_key = f"{year:04d}-{month:02d}"
+    bill_by_acct = {}
+    try:
+        bills_raw = pierre.get_bills()
+        bdata = (bills_raw or {}).get("data")
+        if isinstance(bdata, dict):
+            bdata = bdata.get("data")
+        for b in bdata or []:
+            if str(b.get("dueDate") or "")[:7] != month_key:
+                continue
+            aid = b.get("accountId")
+            slot = bill_by_acct.setdefault(aid, {"total": 0.0, "min": 0.0, "due": str(b.get("dueDate") or "")[:10]})
+            slot["total"] += float(b.get("totalAmount") or 0.0)
+            slot["min"] += float(b.get("minimumPaymentAmount") or 0.0)
+    except Exception:
+        bill_by_acct = {}
+
+    if bill_by_acct:
+        cartao_total = sum(v["total"] for v in bill_by_acct.values())
     buckets["cartao"] = round(cartao_total, 2)
     buckets["sobra"] = round(buckets["receita"] - buckets["despfixa"] - buckets["cartao"] - buckets["despavulsa"], 2)
 
@@ -283,16 +416,44 @@ def build_overview(year, month):
             brand = str(credit_data.get("brand") or "").upper()
             level = str(credit_data.get("level") or "").upper()
             conn = _norm(a.get("connectorName"))
-            spent = sum(
-                v for (nm, b, l), v in card_spend.items()
-                if b == brand and l == level and conn and conn in nm
-            )
+            # Headline total = the bank's closed bill (exact). Fall back to the
+            # cycle sum only when no bill is due in this month yet.
+            bill = bill_by_acct.get(a.get("id"))
+            if bill:
+                spent = bill["total"]
+                invoice_due = bill["due"]
+                invoice_min = round(bill["min"], 2)
+            else:
+                spent = sum(
+                    v for (nm, b, l), v in card_spend.items()
+                    if b == brand and l == level and conn and conn in nm
+                )
+                # Open (not-yet-closed) invoice: it will be paid on the 1st of M.
+                invoice_due = f"{year:04d}-{month:02d}-01"
+                invoice_min = None
             card_txs = []
             for (nm, b, l), items in card_purchases.items():
                 if b == brand and l == level and conn and conn in nm:
                     card_txs.extend(items)
             card_txs.sort(key=lambda x: x["date"] or "", reverse=True)
             card_txs = [dict(x, logo=logo) for x in card_txs[:120]]
+            # Reconciliation: the cycle line items can't sum exactly to the bank's
+            # closed bill (purchase-date vs posting-date at the cycle boundary, and
+            # Pierre tags no billId). Add an explicit adjustment row so the list
+            # always totals the exact invoice. Positive = unlisted spend (shown as
+            # an expense); negative = listed beyond the bill (shown as a credit).
+            if bill:
+                adj = round(spent - sum(t["amount"] for t in card_txs), 2)
+                if abs(adj) >= 0.01:
+                    card_txs.append({
+                        "date": bill["due"],
+                        "description": "Ajuste de fechamento (data de corte)",
+                        "category": "Ajuste",
+                        "amount": adj,
+                        "source": "cartao",
+                        "logo": logo,
+                        "adjustment": True,
+                    })
             total_limit += limit
             total_available += available
             total_used += used
@@ -304,10 +465,13 @@ def build_overview(year, month):
                 "available": round(available, 2),
                 "used": round(used, 2),
                 "spent": round(spent, 2),
+                "invoice_total": round(spent, 2),
+                "invoice_min": invoice_min,
+                "invoice_closed": bool(bill),
                 "logo": logo,
                 "last4": str(a.get("number") or "")[-4:],
                 "additional_cards": additional,
-                "due_date": credit_data.get("balanceDueDate") or credit_data.get("dueDate"),
+                "due_date": invoice_due,
                 "transactions": card_txs,
             })
         elif kind == "BANK":
@@ -366,7 +530,7 @@ def build_overview(year, month):
             "date": it.get("date"),
             "description": it.get("description") or it.get("merchant") or it.get("category"),
             "category": it.get("category"),
-            "amount": round(abs(float(it.get("amount") or 0.0)), 2),
+            "amount": round(_amt(it), 2),
             "flow": flow,
             "logo": logo_fn(it),
         }
@@ -382,6 +546,8 @@ def build_overview(year, month):
     # installment portions), so they match the card totals.
     for c in credit:
         for t in c.get("transactions") or []:
+            if t.get("adjustment"):
+                continue  # reconciliation line, not a real purchase
             card_items.append(dict(t, flow="out"))
 
     card_items.sort(key=lambda x: x["date"] or "", reverse=True)

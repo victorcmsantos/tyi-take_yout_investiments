@@ -171,6 +171,7 @@ function VisaoGeral({ data, monthRef, openCat, setOpenCat }) {
   const spend = data.spend || {}
   const accounts = data.accounts || {}
   const buckets = data.buckets || {}
+  const cardsOpen = (accounts.credit || []).some((c) => !c.invoice_closed && c.spent > 0)
   const topCat = spend.top_category
   const categories = (data.categories || []).slice(0, 6)
 
@@ -234,9 +235,9 @@ function VisaoGeral({ data, monthRef, openCat, setOpenCat }) {
       </article>
 
       <article className="fin2-card fin2-limits">
-        <span className="fin2-kicker">Cartões</span>
+        <span className="fin2-kicker">Cartões{cardsOpen ? <em className="fin2-badge-partial">PARCIAL</em> : null}</span>
         <div className="fin2-bignum">{formatCurrencyBRL(buckets.cartao)}</div>
-        <small className="fin2-muted">gasto no mês</small>
+        <small className="fin2-muted">{cardsOpen ? '⚠ fatura em aberto · parcial (incompleto)' : 'gasto no mês'}</small>
         <ul className="fin2-acc-list">
           {(accounts.credit || []).map((c, i) => (
             <li key={i}>
@@ -245,7 +246,7 @@ function VisaoGeral({ data, monthRef, openCat, setOpenCat }) {
                 <strong>{c.name}{c.level ? <em className="fin2-card-level">{c.level}</em> : null}</strong>
                 <small>•••• {c.last4}{c.additional_cards?.length ? ` · ${c.additional_cards.length} adicionais` : ''}</small>
               </div>
-              <span className="fin2-acc-val">{formatCurrencyBRL(c.spent)}<small className="fin2-muted">gasto</small></span>
+              <span className="fin2-acc-val">{formatCurrencyBRL(c.spent)}<small className="fin2-muted">{c.invoice_closed ? 'gasto' : 'parcial'}</small></span>
             </li>
           ))}
         </ul>
@@ -294,11 +295,11 @@ function CartoesTab({ data, onRefetch }) {
   return (
     <>
     <div className="fin2-card fin2-cards-toolbar">
-      <span className="fin2-kicker" style={{ margin: 0 }}>Ciclo da fatura</span>
-      <span className="fin2-muted">fecha no dia</span>
+      <span className="fin2-kicker" style={{ margin: 0 }}>Fatura</span>
+      <span className="fin2-muted">Total de cada cartão = fatura real do banco (exato), lançada no mês do vencimento. Fechamento por banco (Itaú 22, Santander 25); a lista de compras soma o total com uma linha de “Ajuste de fechamento”.</span>
+      <span className="fin2-muted">·  padrão outros bancos: dia</span>
       <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(e.target.value)} className="fin2-day-input" />
       <button type="button" className="fin2-chip active" onClick={saveDay}>Aplicar</button>
-      <span className="fin2-muted">Gastos do cartão somam pelo ciclo (ex.: dia 26 → 25), não pelo mês-calendário.</span>
     </div>
     <div className="fin2-grid">
       {credit.map((c, i) => {
@@ -309,13 +310,17 @@ function CartoesTab({ data, onRefetch }) {
               <div className="fin2-cardbig-head">
                 {c.logo ? <img src={c.logo} alt="" /> : <span className="fin2-acc-dot" />}
                 <div>
-                  <strong>{c.name}{c.level ? <em className="fin2-card-level">{c.level}</em> : null}</strong>
+                  <strong>{c.name}{c.level ? <em className="fin2-card-level">{c.level}</em> : null}{!c.invoice_closed && c.spent > 0 ? <em className="fin2-badge-partial">PARCIAL</em> : null}</strong>
                   <small>{c.brand} · •••• {c.last4}</small>
                 </div>
                 <span className="fin2-cardbig-chevron">{isOpen ? '⌄' : '›'}</span>
               </div>
-              <div className="fin2-bignum">{formatCurrencyBRL(c.spent)}</div>
-              <small className="fin2-muted">gasto no mês · {c.transactions?.length || 0} compras · toque para ver</small>
+              <div className={`fin2-bignum${!c.invoice_closed && c.spent > 0 ? ' fin2-bignum-partial' : ''}`}>{formatCurrencyBRL(c.spent)}</div>
+              <small className="fin2-muted">
+                {c.invoice_closed ? 'fatura fechada' : '⚠ parcial · fatura em aberto (Pierre ainda sincronizando — incompleto)'}
+                {c.due_date ? ` · vence ${c.due_date.split('-').reverse().join('/')}` : ''}
+                {' · '}{c.transactions?.length || 0} compras · toque para ver
+              </small>
             </button>
             {c.additional_cards?.length ? (
               <div className="fin2-cardbig-add">
@@ -328,10 +333,10 @@ function CartoesTab({ data, onRefetch }) {
                 {(c.transactions || []).length === 0 ? (
                   <li className="fin2-tx-empty"><small className="fin2-muted">Sem compras no período.</small></li>
                 ) : c.transactions.map((t, j) => (
-                  <li key={j}>
-                    <TxLogo t={t} />
-                    <div><strong>{t.description}</strong><small>{t.date} · {t.category}</small></div>
-                    <span className="fin2-neg">−{formatCurrencyBRL(t.amount)}</span>
+                  <li key={j} className={t.adjustment ? 'fin2-tx-adjust' : ''}>
+                    {t.adjustment ? <span className="fin2-acc-dot">⚙</span> : <TxLogo t={t} />}
+                    <div><strong>{t.description}</strong><small>{t.date ? `${t.date} · ` : ''}{t.category}</small></div>
+                    <span className={t.amount < 0 ? 'fin2-pos' : 'fin2-neg'}>{t.amount < 0 ? '+' : '−'}{formatCurrencyBRL(Math.abs(t.amount))}</span>
                   </li>
                 ))}
               </ul>

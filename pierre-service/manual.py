@@ -211,6 +211,9 @@ def inject(payload, start, end):
                 "account_info": {"name": name, "type": "BANK", "subtype": "CHECKING_ACCOUNT", "logo": acct_logo},
                 "type": "CREDIT" if t["flow"] == "in" else "DEBIT",
                 "transaction_type": "received" if t["flow"] == "in" else "transfer",
+                # carried through so the UI can edit THIS manual tx (not a bulk rule)
+                "manual_id": t["id"],
+                "manual_flow": t["flow"],
             }
             (received if t["flow"] == "in" else bank_transfer).append(entry)
             ym, day = (t["date"] or "")[:7], t["date"]

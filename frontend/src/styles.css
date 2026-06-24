@@ -5538,6 +5538,14 @@ html[data-theme='dark'] .asset-table tbody tr:hover .sticky-col-ticker {
   vertical-align: middle;
 }
 .fin2-bignum-partial { color: #ffb84d; }
+.fin2-tx-editor-rec {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px dashed var(--fin-border, rgba(255,255,255,0.12));
+}
+.fin2-tx-editor-rec select { padding: 5px 8px; }
+.fin2-recur-off { opacity: 0.45; }
+.fin2-recur-off strong { text-decoration: line-through; }
 .fin2-soon { text-align: center; padding: 60px 22px; }
 .fin2-soon p { color: var(--fin-muted); }
 

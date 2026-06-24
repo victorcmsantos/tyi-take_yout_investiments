@@ -27,8 +27,16 @@ DEFAULT_FIXED_CATEGORIES = {
     "Serviços",
     "Impostos sobre operações financeiras",
 }
-# Internal movements that must not count as income or expense.
-DEFAULT_INTERNAL_CATEGORIES = {"Transferência mesma titularidade"}
+# Internal movements ("Movimentação interna"): money moved ONLY between the
+# user's own connected accounts. These are neutral for the cash-flow Sobra. The
+# user assigns "Movimentação interna" manually to the ambiguous ones (a PIX that
+# is really a transfer between own accounts); same-ownership is auto. Anything
+# that LEAVES to a non-own account (investments, family, external) is NOT here —
+# it counts as a normal outflow (DespAvulsa) and subtracts from Sobra.
+DEFAULT_INTERNAL_CATEGORIES = {
+    "Transferência mesma titularidade",
+    "Movimentação interna",
+}
 # Inbound transfer categories: by default these are money circulating, NOT
 # income. An inbound transfer only counts as Receita when its description
 # matches a known income source (the user's billing entities / clients), so

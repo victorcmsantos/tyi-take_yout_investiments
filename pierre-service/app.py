@@ -115,13 +115,15 @@ def ledger_route():
 @app.get("/cashflow")
 def cashflow_route():
     def _build():
-        payload = overrides.apply(pierre.get_transactions(
+        # inject first, then overrides, so recategorization rules apply to manual
+        # transactions too (e.g. a manual ECS transfer marked as Investimentos).
+        payload = manual.inject(pierre.get_transactions(
             start_date=request.args.get("startDate"),
             end_date=request.args.get("endDate"),
             account_type=request.args.get("accountType"),
             fmt="structured",
-        ))
-        payload = manual.inject(payload, request.args.get("startDate") or "", request.args.get("endDate") or "")
+        ), request.args.get("startDate") or "", request.args.get("endDate") or "")
+        payload = overrides.apply(payload)
         return cashflow.summarize_cashflow(payload)
 
     return _guard(_build)
@@ -233,6 +235,9 @@ def recurring_add():
 
 @app.delete("/recurring-items")
 def recurring_delete():
+    from_month = request.args.get("from_month")
+    if from_month:
+        return _ok(recurring.deactivate_from(_int_arg("id"), from_month))
     recurring.delete_item(_int_arg("id"))
     return _ok({"deleted": _int_arg("id")})
 

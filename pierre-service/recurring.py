@@ -44,11 +44,16 @@ def _db():
           kind TEXT NOT NULL DEFAULT 'fixed',
           total_installments INTEGER DEFAULT 0,
           start_month TEXT DEFAULT '',
+          end_month TEXT DEFAULT '',
           active INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL
         )
         """
     )
+    # Migrate older DBs that predate end_month (effective removal month).
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(recurring_items)")}
+    if "end_month" not in cols:
+        conn.execute("ALTER TABLE recurring_items ADD COLUMN end_month TEXT DEFAULT ''")
     return conn
 
 
@@ -114,6 +119,27 @@ def delete_item(item_id):
         c.commit()
 
 
+def deactivate_from(item_id, end_month):
+    """Stop a recurring item FROM ``end_month`` onwards, keeping it in earlier
+    months (the user removes a commitment effective from the month they're
+    viewing). If that leaves no active month (started in the same month it was
+    removed), hard-delete it instead."""
+    em = (str(end_month) or "").strip()
+    if not em:
+        delete_item(item_id)
+        return {"deleted": item_id}
+    with _LOCK, _db() as c:
+        row = c.execute("SELECT start_month FROM recurring_items WHERE id = ?", (item_id,)).fetchone()
+        sidx = _ym_index(row["start_month"]) if row else None
+        if sidx is not None and _ym_index(em) is not None and sidx >= _ym_index(em):
+            c.execute("DELETE FROM recurring_items WHERE id = ?", (item_id,))
+            c.commit()
+            return {"deleted": item_id}
+        c.execute("UPDATE recurring_items SET end_month = ? WHERE id = ?", (em, item_id))
+        c.commit()
+    return {"id": item_id, "end_month": em}
+
+
 def _installment_number(item, ym):
     sidx = _ym_index(item.get("start_month"))
     idx = _ym_index(ym)
@@ -125,10 +151,19 @@ def _installment_number(item, ym):
 def active_in_month(item, ym):
     if not item.get("active"):
         return False
+    idx = _ym_index(ym)
+    # Removed effective from end_month: inactive in that month and onwards.
+    eidx = _ym_index(item.get("end_month"))
+    if eidx is not None and idx is not None and idx >= eidx:
+        return False
     if item.get("kind") == "installment":
         n = _installment_number(item, ym)
         total = int(item.get("total_installments") or 0)
         return n is not None and 1 <= n <= total
+    # Fixed: active from its start_month (if set) onwards; no start = always-on.
+    sidx = _ym_index(item.get("start_month"))
+    if sidx is not None and idx is not None and idx < sidx:
+        return False
     return True
 
 

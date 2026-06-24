@@ -11,17 +11,35 @@ const cleanMerchant = (desc) => String(desc || '')
   .replace(/\s+\d{3,}\s*$/, '')
   .trim()
 
-function TxEditor({ tx, onSaved }) {
+function TxEditor({ tx, monthParam, onSaved }) {
   const cats = useMemo(() => Object.keys(CAT_EMOJI).sort((a, b) => a.localeCompare(b, 'pt-BR')), [])
   const [pattern, setPattern] = useState(() => cleanMerchant(tx.description))
   const [category, setCategory] = useState(tx.category || cats[0])
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
 
-  const save = async () => {
+  // Recurring capture: infer bucket from the transaction, and detect a parcela
+  // ("DESC 6/12") to default to installment with its total.
+  const parc = /(\d{1,2})\s*\/\s*(\d{1,2})/.exec(tx.description || '')
+  const recBucket = tx.source === 'cartao' ? 'cartao' : (tx.flow === 'in' ? 'receita' : 'despfixa')
+  const [recKind, setRecKind] = useState(parc ? 'installment' : 'fixed')
+  const [recBusy, setRecBusy] = useState(false)
+  const [recDone, setRecDone] = useState(false)
+
+  const isManual = !!tx.manual_id
+  const saveCat = async (cat) => {
     setSaving(true); setErr('')
     try {
-      await apiPost('/api/pierre/overrides', { pattern, category })
+      if (isManual) {
+        // Manual transaction: edit THIS one. Manual transfers often share a
+        // description (e.g. "Victor..."), so a pattern rule would hit all of them.
+        await apiPost('/api/pierre/manual-transactions', {
+          id: tx.manual_id, date: tx.date, description: tx.description,
+          category: cat, amount: Math.abs(Number(tx.amount) || 0), flow: tx.flow || 'out',
+        })
+      } else {
+        await apiPost('/api/pierre/overrides', { pattern, category: cat })
+      }
       clearApiCache('/api/pierre')
       onSaved()
     } catch (e) {
@@ -29,26 +47,104 @@ function TxEditor({ tx, onSaved }) {
       setSaving(false)
     }
   }
+  const save = () => saveCat(category)
+
+  const addRecurring = async () => {
+    setRecBusy(true); setErr('')
+    try {
+      const total = recKind === 'installment' && parc ? Number(parc[2]) : 0
+      // Fixed items apply from the month being viewed onwards. Installments keep
+      // their real schedule: start so parcela 1 lands on its month (this tx is
+      // parcela `parc[1]`, so parcela 1 was `parc[1]-1` months earlier).
+      let start = monthParam || ''
+      if (recKind === 'installment' && parc && tx.date) {
+        const d = new Date(`${tx.date}T00:00:00`)
+        d.setMonth(d.getMonth() - (Number(parc[1]) - 1))
+        start = d.toISOString().slice(0, 7)
+      }
+      await apiPost('/api/pierre/recurring-items', {
+        description: pattern || tx.description,
+        bucket: recBucket, amount: Number(tx.amount) || 0, category: tx.category || '',
+        kind: recKind, total_installments: total, start_month: start,
+      })
+      clearApiCache('/api/pierre')
+      setRecDone(true)
+    } catch (e) {
+      setErr(e?.message || 'Falha ao adicionar')
+    } finally { setRecBusy(false) }
+  }
 
   return (
     <div className="fin2-tx-editor" onClick={(e) => e.stopPropagation()}>
-      <label>Quando a descrição contém
-        <input value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder="ex: MINI MARKET OF JOY" />
-      </label>
-      <label>categorizar como
+      {isManual ? (
+        <small className="fin2-muted">✍️ Lançamento manual — a mudança vale <strong>só para esta transação</strong>.</small>
+      ) : (
+        <label>Quando a descrição contém
+          <input value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder="ex: MINI MARKET OF JOY" />
+        </label>
+      )}
+      <label>{isManual ? 'categoria desta transação' : 'categorizar como'}
         <select value={category} onChange={(e) => setCategory(e.target.value)}>
           {[...new Set([category, ...cats])].filter(Boolean).map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
       </label>
-      <button type="button" className="fin2-chip active" disabled={saving || !pattern.trim() || !category} onClick={save}>
-        {saving ? 'Salvando...' : 'Salvar regra'}
+      <button type="button" className="fin2-chip active" disabled={saving || (!isManual && !pattern.trim()) || !category} onClick={save}>
+        {saving ? 'Salvando...' : (isManual ? 'Salvar' : 'Salvar regra')}
       </button>
+      <div className="fin2-tx-editor-rec">
+        <span className="fin2-muted">Reclassificar{isManual ? ' (só esta)' : ''}:</span>
+        <button type="button" className="fin2-chip" disabled={saving || (!isManual && !pattern.trim())} title="Entre suas próprias contas — não conta na sobra" onClick={() => saveCat('Movimentação interna')}>🔄 Movimentação interna</button>
+        <button type="button" className="fin2-chip" disabled={saving || (!isManual && !pattern.trim())} title="Conta como saída (Desp. avulsa)" onClick={() => saveCat('Investimentos')}>📈 Investimento</button>
+      </div>
+      <small className="fin2-muted">
+        {MOVIMENTACAO_CATS.has(tx.category)
+          ? '🔄 Movimentação interna (entre suas contas) — não conta na sobra.'
+          : 'Movimentação interna (entre suas contas) é neutra; investimento e transferências p/ fora contam como saída.'}
+      </small>
+      <div className="fin2-tx-editor-rec">
+        {recDone ? (
+          <small className="fin2-pos">✓ Adicionado aos recorrentes — ajuste na aba Recorrentes se precisar.</small>
+        ) : (
+          <>
+            <span className="fin2-muted">Recorrente · {BUCKET_LABELS[recBucket]}</span>
+            <select value={recKind} onChange={(e) => setRecKind(e.target.value)}>
+              <option value="fixed">Mensal fixo</option>
+              <option value="installment">Parcelado{parc ? ` (${parc[1]}/${parc[2]})` : ''}</option>
+            </select>
+            <button type="button" className="fin2-chip" disabled={recBusy} onClick={addRecurring}>
+              {recBusy ? 'Adicionando...' : '➕ Adicionar aos recorrentes'}
+            </button>
+          </>
+        )}
+      </div>
       {err ? <small className="fin2-neg">{err}</small> : null}
     </div>
   )
 }
 
 const MONTHS = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+const ymShort = (ym) => {
+  const [y, m] = String(ym || '').split('-')
+  return (MONTHS[Number(m) - 1] || '').slice(0, 3).toLowerCase() + (y ? `/${y.slice(2)}` : '')
+}
+const ymPrev = (ym) => {
+  const [y, m] = String(ym || '').split('-').map(Number)
+  if (!y || !m) return ''
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`
+}
+const ymIdx = (ym) => { const [y, m] = String(ym || '').split('-').map(Number); return (y && m) ? y * 12 + (m - 1) : null }
+// Mirrors recurring.active_in_month: active within [start_month, end_month).
+const recActive = (it, ym) => {
+  const idx = ymIdx(ym), s = ymIdx(it.start_month), e = ymIdx(it.end_month)
+  if (e !== null && idx !== null && idx >= e) return false
+  if (it.kind === 'installment') {
+    if (s === null || idx === null) return false
+    const n = idx - s + 1
+    return n >= 1 && n <= Number(it.total_installments || 0)
+  }
+  if (s !== null && idx !== null && idx < s) return false
+  return true
+}
 const TABS = ['Visão geral', 'Transações', 'Cartões', 'Categorias', 'Recorrentes', 'Manual']
 const TODAY_ISO = new Date().toISOString().slice(0, 10)
 const CAT_EMOJI = {
@@ -63,7 +159,11 @@ const CAT_EMOJI = {
   'Pedágios e pagamentos no veículo': '🛣️', 'Impostos sobre operações financeiras': '🏛️',
   'Alimentos e bebidas': '🍔', 'Não categorizada': '❔',
   'Faturamento': '💼', 'Impostos': '🏛️', 'Transferência mesma titularidade': '🔁',
+  'Movimentação interna': '🔄', 'Investimentos': '📈', 'Transferências': '↔️', 'Transferência - PIX': '↔️',
 }
+// Categories neutral for the Sobra: only transfers between the user's OWN
+// accounts. Investments/external transfers count as a normal outflow.
+const MOVIMENTACAO_CATS = new Set(['Transferência mesma titularidade', 'Movimentação interna'])
 const emojiFor = (c) => CAT_EMOJI[c] || '🏷️'
 
 function TxLogo({ t }) {
@@ -253,7 +353,7 @@ function VisaoGeral({ data, monthRef, openCat, setOpenCat }) {
       </article>
 
       <article className="fin2-card fin2-bucketscard fin2-span2">
-        <span className="fin2-kicker">Fluxo do mês — realizado × planejado</span>
+        <span className="fin2-kicker">Fluxo do mês — realizado × projetado (fim do mês)</span>
         <FluxoCard realized={buckets} planned={data.planned} />
       </article>
 
@@ -296,7 +396,7 @@ function CartoesTab({ data, onRefetch }) {
     <>
     <div className="fin2-card fin2-cards-toolbar">
       <span className="fin2-kicker" style={{ margin: 0 }}>Fatura</span>
-      <span className="fin2-muted">Total de cada cartão = fatura real do banco (exato), lançada no mês do vencimento. Fechamento por banco (Itaú 22, Santander 25); a lista de compras soma o total com uma linha de “Ajuste de fechamento”.</span>
+      <span className="fin2-muted">Total de cada cartão = fatura real do banco (exato). Lançada no mês das compras (paga dia 01 do mês seguinte, como você orça). Fechamento por banco (Itaú 22, Santander 25); a lista soma o total com uma linha de “Ajuste de fechamento”.</span>
       <span className="fin2-muted">·  padrão outros bancos: dia</span>
       <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(e.target.value)} className="fin2-day-input" />
       <button type="button" className="fin2-chip active" onClick={saveDay}>Aplicar</button>
@@ -401,7 +501,7 @@ function TransacoesTab({ monthParam }) {
                   </div>
                   <span className={t.flow === 'in' ? 'fin2-pos' : 'fin2-neg'}>{t.flow === 'in' ? '' : '−'}{formatCurrencyBRL(t.amount)}</span>
                 </button>
-                {open ? <TxEditor tx={t} onSaved={() => { setOpenTx(null); refetch() }} /> : null}
+                {open ? <TxEditor tx={t} monthParam={monthParam} onSaved={() => { setOpenTx(null); refetch() }} /> : null}
               </li>
             )
           })
@@ -537,36 +637,44 @@ function ManualTab() {
 const BUCKET_LABELS = { receita: 'Receita', despfixa: 'Desp. fixa', cartao: 'Cartão', despavulsa: 'Desp. avulsa' }
 
 function FluxoCard({ realized, planned }) {
-  const pb = planned?.buckets || {}
   const rows = ['receita', 'despfixa', 'cartao', 'despavulsa']
-  const committed = (pb.despfixa || 0) + (pb.cartao || 0) + (pb.despavulsa || 0)
+  // Projetado (fim do mês) = Realizado + recorrentes que ainda NÃO caíram. The
+  // `posted` flag keeps already-cleared items out, so there's no double count.
+  const pend = {}
+  for (const it of planned?.items || []) if (!it.posted) pend[it.bucket] = (pend[it.bucket] || 0) + Number(it.amount || 0)
+  const proj = {}
+  for (const k of rows) proj[k] = (realized[k] || 0) + (pend[k] || 0)
+  const projSobra = (proj.receita || 0) - (proj.despfixa || 0) - (proj.cartao || 0) - (proj.despavulsa || 0)
+  const pendingTotal = planned?.pending_total || 0
   return (
     <div className="fin2-fluxo">
       <div className="fin2-fluxo-row fin2-fluxo-head">
-        <span>Categoria</span><span className="r">Realizado</span><span className="r">Planejado (fixo)</span>
+        <span>Categoria</span><span className="r">Realizado</span><span className="r">Projetado (fim)</span>
       </div>
       {rows.map((k) => (
         <div className="fin2-fluxo-row" key={k}>
           <span>{BUCKET_LABELS[k]}</span>
           <span className={`r ${k === 'receita' ? 'fin2-pos' : 'fin2-neg'}`}>{formatCurrencyBRL(realized[k])}</span>
-          <span className="r fin2-muted">{pb[k] ? formatCurrencyBRL(pb[k]) : '—'}</span>
+          <span className={`r ${pend[k] ? (k === 'receita' ? 'fin2-pos' : 'fin2-neg') : 'fin2-muted'}`}>{formatCurrencyBRL(proj[k])}</span>
         </div>
       ))}
       <div className="fin2-fluxo-row fin2-fluxo-sobra">
         <span>Sobra</span>
         <span className={`r ${(realized.sobra || 0) >= 0 ? 'fin2-pos' : 'fin2-neg'}`}>{formatCurrencyBRL(realized.sobra)}</span>
-        <span className="r fin2-muted">{committed ? `custo fixo ${formatCurrencyBRL(committed)}` : '—'}</span>
+        <span className={`r ${projSobra >= 0 ? 'fin2-pos' : 'fin2-neg'}`}><strong>{formatCurrencyBRL(projSobra)}</strong></span>
       </div>
-      {planned?.pending_total > 0 ? (
-        <div className="fin2-fluxo-foot">⚠ Comprometido que ainda não caiu este mês: <strong className="fin2-neg">{formatCurrencyBRL(planned.pending_total)}</strong></div>
-      ) : null}
+      {pendingTotal > 0 ? (
+        <div className="fin2-fluxo-foot">Projetado = Realizado + <strong className="fin2-neg">{formatCurrencyBRL(pendingTotal)}</strong> de recorrentes que ainda faltam cair este mês.</div>
+      ) : (
+        <div className="fin2-fluxo-foot fin2-muted">Tudo que estava planejado já caiu — projetado = realizado.</div>
+      )}
     </div>
   )
 }
 
 const RECUR_BLANK = { description: '', bucket: 'despfixa', amount: '', kind: 'fixed', total_installments: '', start_month: '' }
 
-function RecorrentesTab() {
+function RecorrentesTab({ monthParam }) {
   const { data: items, loading, error, refetch } = useApiQuery('/api/pierre/recurring-items')
   const [form, setForm] = useState(RECUR_BLANK)
   const [editingId, setEditingId] = useState(null)
@@ -574,9 +682,12 @@ function RecorrentesTab() {
   const reset = () => { setForm(RECUR_BLANK); setEditingId(null) }
   const save = async () => {
     if (!form.description.trim() || !form.amount) return
+    // New fixed items apply from the month being viewed onwards; installments
+    // keep their explicit start; edits keep whatever start they already had.
+    const start_month = (!editingId && form.kind === 'fixed' && !form.start_month) ? (monthParam || '') : form.start_month
     const body = {
       ...(editingId ? { id: editingId } : {}),
-      ...form, amount: Number(form.amount), total_installments: Number(form.total_installments) || 0,
+      ...form, start_month, amount: Number(form.amount), total_installments: Number(form.total_installments) || 0,
     }
     await apiPost('/api/pierre/recurring-items', body); reset(); clearApiCache('/api/pierre'); refetch()
   }
@@ -584,13 +695,15 @@ function RecorrentesTab() {
     setForm({ description: it.description, bucket: it.bucket, amount: String(it.amount), kind: it.kind, total_installments: String(it.total_installments || ''), start_month: it.start_month || '' })
     setEditingId(it.id)
   }
-  const del = async (id) => { await apiDelete('/api/pierre/recurring-items', {}, { id }); clearApiCache('/api/pierre'); refetch() }
+  // Removing a recurring stops it FROM the month being viewed onwards (earlier
+  // months keep it). The backend hard-deletes if that leaves no active month.
+  const del = async (id) => { await apiDelete('/api/pierre/recurring-items', {}, { id, from_month: monthParam }); clearApiCache('/api/pierre'); refetch() }
 
   if (loading && !items) return <StatePanel busy eyebrow="Finanças" title="Carregando recorrentes" />
   if (error) return <StatePanel eyebrow="Finanças" title="Não foi possível carregar" description={error} />
 
   const list = items || []
-  const committed = list.filter((i) => i.bucket !== 'receita').reduce((s, i) => s + Number(i.amount || 0), 0)
+  const committed = list.filter((i) => i.bucket !== 'receita' && recActive(i, monthParam)).reduce((s, i) => s + Number(i.amount || 0), 0)
 
   return (
     <div className="fin2-grid">
@@ -618,7 +731,7 @@ function RecorrentesTab() {
           <button type="button" className="fin2-chip active" disabled={!form.description.trim() || !form.amount} onClick={save}>{editingId ? 'Salvar' : 'Adicionar'}</button>
           {editingId ? <button type="button" className="fin2-chip" onClick={reset}>Cancelar</button> : null}
         </div>
-        <small className="fin2-muted">Custo fixo mensal comprometido: <strong>{formatCurrencyBRL(committed)}</strong> · {list.length} itens</small>
+        <small className="fin2-muted">Comprometido em {ymShort(monthParam)}: <strong>{formatCurrencyBRL(committed)}</strong> · {list.filter((i) => recActive(i, monthParam)).length} ativos de {list.length}</small>
       </article>
 
       <article className="fin2-card fin2-span2">
@@ -627,15 +740,19 @@ function RecorrentesTab() {
           {list.length === 0 ? (
             <li className="fin2-tx-empty"><small className="fin2-muted">Nenhum recorrente. Cadastre seus fixos, assinaturas e parcelas acima.</small></li>
           ) : list.map((it) => (
-            <li key={it.id} className={editingId === it.id ? 'editing' : ''}>
+            <li key={it.id} className={`${editingId === it.id ? 'editing' : ''}${recActive(it, monthParam) ? '' : ' fin2-recur-off'}`}>
               <span className={`financas-tag financas-tag-${it.bucket === 'cartao' ? 'cartao' : it.bucket === 'receita' ? 'receita' : 'fixa'}`}>{BUCKET_LABELS[it.bucket]}</span>
               <div>
                 <strong>{it.description}</strong>
-                <small>{it.kind === 'installment' ? `parcelado ${it.total_installments}x · início ${it.start_month || '?'}` : 'mensal fixo'}</small>
+                <small>
+                  {it.kind === 'installment' ? `parcelado ${it.total_installments}x · início ${ymShort(it.start_month) || '?'}` : 'mensal fixo'}
+                  {it.start_month && it.kind !== 'installment' ? ` · desde ${ymShort(it.start_month)}` : ''}
+                  {it.end_month ? ` · até ${ymShort(ymPrev(it.end_month))}` : ''}
+                </small>
               </div>
               <span className={it.bucket === 'receita' ? 'fin2-pos' : 'fin2-neg'}>{formatCurrencyBRL(it.amount)}</span>
               <button type="button" className="fin2-icon-btn" title="Editar" onClick={() => startEdit(it)}>✎</button>
-              <button type="button" className="fin2-icon-btn" title="Excluir" onClick={() => del(it.id)}>✕</button>
+              <button type="button" className="fin2-icon-btn" title={`Remover a partir de ${ymShort(monthParam)}`} onClick={() => del(it.id)}>✕</button>
             </li>
           ))}
         </ul>
@@ -697,7 +814,7 @@ function FinancasPage() {
       ) : tab === 'Manual' ? (
         <ManualTab />
       ) : tab === 'Recorrentes' ? (
-        <RecorrentesTab />
+        <RecorrentesTab monthParam={monthParam} />
       ) : (
         <TransacoesTab monthParam={monthParam} />
       )}

@@ -33,6 +33,7 @@ const ScannerPage = lazy(() => import('./pages/ScannerPage'))
 const ScannerMetricsLabPage = lazy(() => import('./pages/ScannerMetricsLabPage'))
 const SwingTradePage = lazy(() => import('./pages/SwingTradePage'))
 const SyncHealthPage = lazy(() => import('./pages/SyncHealthPage'))
+const FinancasPage = lazy(() => import('./pages/FinancasPage'))
 
 function RouteFallback({ title = 'Carregando pagina...' }) {
   return (
@@ -312,6 +313,7 @@ function App({ themeMode, onToggleTheme }) {
     '/scanner': 'Scanner',
     '/admin/sync-health': 'Saude de sync',
     '/swing-trade': 'Swing Trade',
+    '/financas': 'Fluxo de caixa',
     '/admin': 'Admin',
     '/admin/metricas': 'Metricas',
     '/admin/metrics-lab': 'Metrics Lab',
@@ -363,6 +365,12 @@ function App({ themeMode, onToggleTheme }) {
         items: [
           { to: '/carteira', label: 'Renda Variavel' },
           { to: '/renda-fixa', label: 'Renda Fixa' },
+        ],
+      },
+      {
+        title: 'Financas',
+        items: [
+          { to: '/financas', label: 'Fluxo de caixa' },
         ],
       },
       {
@@ -613,6 +621,10 @@ function App({ themeMode, onToggleTheme }) {
               <Route
                 path="/alocador"
                 element={isAdminUser ? <Navigate to="/admin" replace /> : <AllocationPage assets={assetSuggestions} />}
+              />
+              <Route
+                path="/financas"
+                element={isAdminUser ? <Navigate to="/admin" replace /> : <FinancasPage />}
               />
               <Route path="/scanner" element={<ScannerPage readOnly={isViewerUser} />} />
               <Route path="/swing-trade" element={<SwingTradePage readOnly={isViewerUser} />} />

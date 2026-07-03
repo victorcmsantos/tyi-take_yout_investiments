@@ -1341,15 +1341,23 @@ select {
   }
 
   .app-v2-header-bar {
-    position: fixed !important;
+    /* sticky (not fixed): it keeps its space in the flow, so content starts BELOW
+       it — no overlap hiding the page tabs — and still sticks to the top on scroll.
+       The old fixed header + margin-top hack left ~90px of content (the tabs) behind
+       the header on mobile. */
+    position: sticky !important;
     top: 0;
-    left: 0;
-    right: 0;
     z-index: 60;
   }
 
   .app-v2-layout {
-    margin-top: 126px;
+    margin-top: 0;
+  }
+
+  /* the countdown badge is decorative and made the mobile header a third of the
+     screen tall; hide it on phones to keep the header compact. */
+  .app-v2-header-countdown {
+    display: none;
   }
 
   .app-v2-brand-logo {
@@ -1369,10 +1377,11 @@ select {
 
   .app-v2-header-right {
     margin-left: auto;
-    flex-direction: column;
-    align-items: flex-end;
-    justify-content: flex-start;
-    gap: 4px;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
   }
 
   .app-v2-header-portfolios {
@@ -1434,13 +1443,16 @@ select {
   .app-v2-sidebar {
     position: fixed;
     left: -320px;
-    top: 126px;
-    height: calc(100vh - 126px);
+    /* full-height scrollable overlay ABOVE the header (z 60), so every menu item
+       is reachable regardless of the header's height. 100dvh (not 100vh) so it
+       fits the visible area, not behind the mobile browser chrome. */
+    top: 0;
+    height: 100dvh;
     width: min(88vw, 320px);
     border-radius: 0 12px 12px 0;
     transition: left 180ms ease;
     overflow-y: auto;
-    z-index: 50;
+    z-index: 70;
   }
 
   .app-v2-sidebar.open {
@@ -1452,13 +1464,13 @@ select {
     position: fixed;
     inset: 0;
     background: rgba(6, 17, 29, 0.45);
-    z-index: 40;
+    z-index: 65;
   }
 }
 
 @media (max-width: 640px) {
   .app-v2-layout {
-    margin-top: 118px;
+    margin-top: 0;
   }
 
   .app-v2-header-row {
@@ -1528,8 +1540,8 @@ select {
   }
 
   .app-v2-sidebar {
-    top: 118px;
-    height: calc(100vh - 118px);
+    top: 0;
+    height: 100dvh;
   }
 
   .cards {
@@ -4038,7 +4050,9 @@ h3,
   border: 1px solid rgba(22, 50, 74, 0.08) !important;
   border-radius: 28px !important;
   box-shadow: var(--shadow-card);
-  overflow: hidden;
+  /* clip horizontally for the rounded corners, but DON'T block vertical scroll —
+     on mobile the sidebar is a fixed, scrollable overlay (see the media query). */
+  overflow-x: hidden;
 }
 
 .app-v2-sidebar-head {
@@ -4431,6 +4445,18 @@ textarea:focus {
 .dashboard-sections {
   display: grid;
   gap: 18px;
+  /* single implicit column was `auto` (grew to the widest table -> the whole page
+     rendered at desktop width on mobile). Cap it so wide tables scroll in their
+     own .table-wrap instead of stretching the layout. */
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* let the section containers shrink below their content's intrinsic width so the
+   table-wrap's overflow-x:auto can take over on narrow screens. */
+.dashboard-sections > .dashboard-animate,
+.dashboard-section-card {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .dashboard-section-card,
@@ -5502,3 +5528,302 @@ html[data-theme='dark'] .asset-table tbody tr:hover .sticky-col-ticker {
   font-size: 11px;
   padding: 5px 8px;
 }
+
+
+/* ===== Finanças v2 (Open Finance / Pierre) — dark cards ===== */
+.fin2 { --fin-bg:#0b1118; --fin-card:#121922; --fin-card2:#0e151d; --fin-line:rgba(255,255,255,0.07); --fin-txt:#e8edf3; --fin-muted:#8a94a3; --fin-green:#2fd47e; --fin-red:#f0563f; }
+.fin2 { color: var(--fin-txt); }
+.fin2-tabs {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+  background: var(--fin-card2); border: 1px solid var(--fin-line);
+  border-radius: 16px; padding: 8px; margin-bottom: 16px;
+}
+.fin2-tab {
+  border: 1px solid transparent; background: transparent; color: var(--fin-muted);
+  border-radius: 10px; padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer;
+}
+.fin2-tab:hover { color: var(--fin-txt); }
+.fin2-tab.active { color: var(--fin-green); border-color: rgba(47,212,126,0.4); background: rgba(47,212,126,0.08); }
+.fin2-monthnav { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--fin-txt); font-weight: 700; }
+.fin2-monthnav button { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--fin-line); background: var(--fin-card); color: var(--fin-txt); cursor: pointer; font-size: 18px; line-height: 1; }
+.fin2-monthnav span { min-width: 130px; text-align: center; }
+
+.fin2-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+/* charts (Chart.js canvas) must scale down on narrow screens instead of pinning
+   the layout to their rendered desktop width (the classic mobile-overflow cause). */
+.fin2-card canvas { max-width: 100%; height: auto; }
+.fin2-card { background: var(--fin-card); border: 1px solid var(--fin-line); border-radius: 20px; padding: 22px; overflow-x: clip; }
+.fin2-kicker { display: block; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fin-muted); margin-bottom: 10px; }
+.fin2-bignum { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; }
+.fin2-muted { color: var(--fin-muted); }
+.fin2-pos { color: var(--fin-green); }
+.fin2-neg { color: var(--fin-red); }
+.fin2-tx-adjust { opacity: 0.78; font-style: italic; border-top: 1px dashed var(--fin-border, rgba(255,255,255,0.12)); }
+.fin2-tx-adjust strong { font-weight: 600; }
+.fin2-badge-partial {
+  display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 6px;
+  font-size: 10px; font-weight: 800; font-style: normal; letter-spacing: 0.04em;
+  color: #ffb84d; background: rgba(255,150,40,0.14); border: 1px solid rgba(255,150,40,0.45);
+  vertical-align: middle;
+}
+.fin2-bignum-partial { color: #ffb84d; }
+.fin2-tx-editor-rec {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px dashed var(--fin-border, rgba(255,255,255,0.12));
+}
+.fin2-tx-editor-rec select { padding: 5px 8px; }
+.fin2-recur-off { opacity: 0.45; }
+.fin2-recur-off strong { text-decoration: line-through; }
+.fin2-fluxo-pendbtn {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  width: 100%; background: none; border: 0; padding: 0; cursor: pointer;
+  color: inherit; font: inherit; text-align: left;
+}
+.fin2-fluxo-pend { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 5px; }
+.fin2-fluxo-pend li {
+  display: flex; justify-content: space-between; gap: 12px; font-size: 13px;
+  padding: 5px 0; border-top: 1px dashed var(--fin-border, rgba(255,255,255,0.10));
+}
+.fin2-fluxo-pend li em { font-style: normal; font-size: 11px; margin-right: 6px; }
+.fin2-fluxo-rowbtn { cursor: pointer; border-radius: 8px; }
+.fin2-fluxo-rowbtn:hover { background: rgba(255,255,255,0.035); }
+.fin2-fluxo-cnt { font-style: normal; font-size: 11px; color: var(--fin-muted); margin-left: 7px; }
+.fin2-fluxo-buckitems { max-height: 320px; overflow-y: auto; padding: 2px 4px 6px; }
+.fin2-soon { text-align: center; padding: 60px 22px; }
+.fin2-soon p { color: var(--fin-muted); }
+
+.fin2-hero { grid-column: 1 / 2; background: linear-gradient(160deg, #15212c, #0e151d); }
+.fin2-hero h2 { margin: 0 0 8px; font-size: 22px; color: var(--fin-green); }
+.fin2-hero-insight { color: var(--fin-txt); opacity: 0.85; margin: 0 0 18px; }
+.fin2-hero-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.fin2-hero-stats > div { background: var(--fin-card2); border: 1px solid var(--fin-line); border-radius: 14px; padding: 12px 14px; }
+.fin2-hero-stats small { display: block; color: var(--fin-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+.fin2-hero-stats strong { font-size: 17px; }
+.fin2-rhythm { grid-column: 2 / 3; grid-row: 1 / 3; }
+.fin2-rhythm canvas { margin-top: 14px; }
+
+.fin2-acc-list, .fin2-cat-list, .fin2-tx-list { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 12px; }
+.fin2-acc-list li { display: flex; align-items: center; gap: 12px; }
+.fin2-acc-list img { width: 34px; height: 34px; border-radius: 9px; object-fit: cover; background: #fff; }
+.fin2-acc-dot { width: 34px; height: 34px; border-radius: 9px; background: var(--fin-card2); border: 1px solid var(--fin-line); }
+.fin2-acc-list li > div { flex: 1; display: flex; flex-direction: column; }
+.fin2-acc-list li small { color: var(--fin-muted); font-size: 12px; }
+.fin2-acc-val { font-weight: 700; }
+
+.fin2-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.fin2-strip-item { background: var(--fin-card2); border: 1px solid var(--fin-line); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+.fin2-strip-label { font-size: 11px; color: var(--fin-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.fin2-strip-item strong { font-size: 16px; }
+.fin2-strip-item.fin2-pos strong { color: var(--fin-green); }
+.fin2-strip-item.fin2-neg strong { color: var(--fin-red); }
+
+.fin2-cat-list li { display: grid; grid-template-columns: 1.3fr 1fr auto auto; align-items: center; gap: 12px; }
+.fin2-cat-name { font-weight: 600; }
+.fin2-cat-bar { height: 8px; border-radius: 99px; background: var(--fin-card2); overflow: hidden; }
+.fin2-cat-bar > span { display: block; height: 100%; background: linear-gradient(90deg, #f0563f, #f0894f); border-radius: 99px; }
+.fin2-cat-val { font-weight: 700; text-align: right; min-width: 90px; }
+.fin2-cat-delta { font-size: 12px; font-weight: 700; text-align: right; min-width: 56px; }
+.fin2-cat-delta.up { color: var(--fin-red); }
+.fin2-cat-delta.down { color: var(--fin-green); }
+.fin2-cat-delta.new { color: var(--fin-muted); }
+
+.fin2-heatmap { margin-top: 16px; display: grid; gap: 6px; }
+.fin2-heat-row { display: flex; gap: 6px; align-items: center; }
+.fin2-heat-wd { width: 16px; font-size: 11px; color: var(--fin-muted); }
+.fin2-heat-cell { flex: 1; aspect-ratio: 1.6; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: rgba(255,255,255,0.6); }
+.fin2-heat-cell.empty { background: transparent; }
+.fin2-heat-l0 { background: #161d26; }
+.fin2-heat-l1 { background: #4a2620; }
+.fin2-heat-l2 { background: #7d3325; }
+.fin2-heat-l3 { background: #b8412a; color: #fff; }
+.fin2-heat-l4 { background: #f0563f; color: #fff; }
+
+.fin2-tx-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.fin2-tx-list li > div { display: flex; flex-direction: column; min-width: 0; }
+.fin2-tx-list small { color: var(--fin-muted); font-size: 12px; }
+.fin2-tx-list span { font-weight: 700; white-space: nowrap; }
+/* Long descriptions must truncate, not stretch the row past the viewport on
+   mobile (otherwise the whole page renders at desktop width, zoomed out). */
+.fin2-tx-list li > div > strong,
+.fin2-tx-list li > div > small,
+.fin2-acc-list li > div > strong,
+.fin2-acc-list li > div > small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fin2-acc-list li > div { min-width: 0; }
+
+@media (max-width: 900px) {
+  .fin2-grid { grid-template-columns: minmax(0, 1fr); }
+  .fin2-hero, .fin2-rhythm { grid-column: auto; grid-row: auto; }
+  .fin2-strip { grid-template-columns: repeat(2, 1fr); }
+  .fin2-cat-list li { grid-template-columns: 1fr auto auto; }
+  .fin2-cat-bar { display: none; }
+}
+
+/* cartões: nível, adicionais, valor empilhado */
+.fin2-card-level { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: #c9a14a; background: rgba(201,161,74,0.14); border-radius: 6px; padding: 1px 6px; margin-left: 8px; font-style: normal; text-transform: uppercase; }
+.fin2-addcards { color: var(--fin-muted); font-size: 11px; letter-spacing: 0.04em; margin-top: 2px; }
+.fin2-acc-val { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2; }
+.fin2-acc-val small { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* categorias estilo Pierre: Categoria | Atual | barra | Variação | Anterior */
+.fin2-cat-head {
+  display: grid;
+  grid-template-columns: 1.6fr 0.9fr 1.4fr 0.9fr 0.8fr;
+  gap: 12px; align-items: center;
+  font-size: 11px; color: var(--fin-muted); text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 0 0 8px; border-bottom: 1px solid var(--fin-line); margin-top: 6px;
+}
+.fin2-cat-head .r { text-align: right; }
+.fin2-cats .fin2-cat-list li {
+  display: grid;
+  grid-template-columns: 1.6fr 0.9fr 1.4fr 0.9fr 0.8fr;
+  gap: 12px; align-items: center;
+}
+.fin2-cat-name { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+.fin2-cat-emoji { font-style: normal; font-size: 16px; line-height: 1; width: 22px; text-align: center; }
+.fin2-cat-atual { text-align: right; font-weight: 700; }
+.fin2-cat-prev { text-align: right; color: var(--fin-muted); }
+.fin2-cat-delta { justify-self: end; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 8px; white-space: nowrap; }
+.fin2-cat-delta.up { color: #f5897a; background: rgba(240,86,63,0.14); }
+.fin2-cat-delta.down { color: var(--fin-green); background: rgba(47,212,126,0.12); }
+.fin2-cat-delta.new { color: var(--fin-muted); background: transparent; }
+
+@media (max-width: 900px) {
+  .fin2-cat-head { display: none; }
+  .fin2-cats .fin2-cat-list li { grid-template-columns: 1.4fr auto auto; }
+  .fin2-cats .fin2-cat-bar, .fin2-cat-prev { display: none; }
+}
+
+/* categorias clicáveis: linha-botão + detalhe expansível + pontinho */
+.fin2-cats .fin2-cat-list li { display: block; }
+.fin2-cat-row {
+  display: grid;
+  grid-template-columns: 1.6fr 0.9fr 1.4fr 0.9fr 0.8fr;
+  gap: 12px; align-items: center; width: 100%;
+  background: transparent; border: 0; color: inherit; font: inherit;
+  text-align: left; cursor: pointer; padding: 9px 8px; border-radius: 10px;
+}
+.fin2-cat-row:hover { background: rgba(255,255,255,0.03); }
+.fin2-cats .fin2-cat-list li.open .fin2-cat-row { background: rgba(255,255,255,0.05); }
+.fin2-cat-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.fin2-cat-dot.tone-red { background: #f0563f; }
+.fin2-cat-dot.tone-yellow { background: #e0b341; }
+.fin2-cat-dot.tone-green { background: #2fd47e; }
+.fin2-cat-dot.tone-gray { background: #6b7480; }
+.fin2-cat-detail { padding: 6px 8px 14px 40px; display: grid; gap: 9px; }
+.fin2-cat-tx { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--fin-line); padding-top: 9px; }
+.fin2-cat-tx > div { display: flex; flex-direction: column; min-width: 0; }
+.fin2-cat-tx strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fin2-cat-tx small { color: var(--fin-muted); font-size: 11px; }
+.fin2-cat-tx > span { font-weight: 700; white-space: nowrap; }
+@media (max-width: 900px) {
+  .fin2-cat-row { grid-template-columns: 1.4fr auto auto; }
+  .fin2-cats .fin2-cat-bar, .fin2-cat-prev { display: none; }
+}
+
+/* abas Cartões / Transações */
+.fin2-span2 { grid-column: 1 / -1; }
+.fin2-cardbig-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.fin2-cardbig-head img { width: 38px; height: 38px; border-radius: 10px; background: #fff; }
+.fin2-cardbig-head > div { display: flex; flex-direction: column; }
+.fin2-cardbig-head small { color: var(--fin-muted); font-size: 12px; }
+.fin2-cardbig .fin2-bignum { margin-top: 4px; }
+.fin2-cardbig-closing { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--fin-line); }
+.fin2-cardbig-closing .fin2-day-input { width: 56px; height: 32px; }
+.fin2-cardbig-closing .fin2-day-override { border-color: var(--fin-accent, #f0563f); color: var(--fin-accent, #f0563f); font-weight: 700; }
+.fin2-cardbig-add { margin-top: 16px; border-top: 1px solid var(--fin-line); padding-top: 12px; }
+.fin2-cardbig-add > div { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.fin2-addchip { font-size: 12px; font-weight: 700; color: var(--fin-muted); background: var(--fin-card2); border: 1px solid var(--fin-line); border-radius: 8px; padding: 3px 9px; letter-spacing: 0.03em; }
+
+.fin2-ledger-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.fin2-ledger-filters { display: flex; gap: 8px; }
+.fin2-chip { border: 1px solid var(--fin-line); background: var(--fin-card2); color: var(--fin-muted); border-radius: 999px; padding: 6px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+.fin2-chip.active { color: var(--fin-green); border-color: rgba(47,212,126,0.4); background: rgba(47,212,126,0.08); }
+.fin2-search { flex: 1; min-width: 220px; height: 38px; border-radius: 10px; border: 1px solid var(--fin-line); background: var(--fin-card2); color: var(--fin-txt); padding: 0 14px; font: inherit; }
+.fin2-search::placeholder { color: var(--fin-muted); }
+.fin2-ledger li { border-top: 1px solid var(--fin-line); padding-top: 11px; }
+.fin2-ledger li:first-child { border-top: 0; padding-top: 0; }
+
+/* logo do banco/cartão na transação */
+.fin2-tx-logo { width: 26px; height: 26px; border-radius: 7px; object-fit: cover; background: #fff; flex: 0 0 auto; }
+.fin2-tx-logo.fallback { background: var(--fin-card2); border: 1px solid var(--fin-line); display: inline-flex; align-items: center; justify-content: center; font-size: 13px; }
+.fin2-tx-list li > div, .fin2-cat-tx > div { flex: 1 1 auto; min-width: 0; }
+.fin2-tx-list li strong, .fin2-cat-tx strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+
+/* cartão expansível com suas compras */
+.fin2-cardbig-btn { width: 100%; background: transparent; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; padding: 0; }
+.fin2-cardbig-head { width: 100%; }
+.fin2-cardbig-chevron { margin-left: auto; color: var(--fin-muted); font-size: 20px; line-height: 1; }
+.fin2-cardbig.open .fin2-cardbig-chevron { color: var(--fin-green); }
+.fin2-cardbig-txs { margin-top: 16px; border-top: 1px solid var(--fin-line); padding-top: 14px; max-height: 320px; overflow-y: auto; }
+.fin2-cardbig-txs li { border-top: 1px solid var(--fin-line); padding-top: 10px; }
+.fin2-cardbig-txs li:first-child { border-top: 0; padding-top: 0; }
+
+/* extrato: linha clicável + editor de categoria */
+.fin2-ledger li { display: block; }
+.fin2-ledger-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; background: transparent; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; padding: 11px 6px; border-radius: 8px; }
+.fin2-ledger-row:hover { background: rgba(255,255,255,0.03); }
+.fin2-ledger li.open .fin2-ledger-row { background: rgba(255,255,255,0.05); }
+.fin2-ledger-row > div { flex: 1 1 auto; min-width: 0; }
+.fin2-tx-editor { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; padding: 10px 8px 16px; border-bottom: 1px solid var(--fin-line); }
+.fin2-tx-editor label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: var(--fin-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.fin2-tx-editor input, .fin2-tx-editor select { height: 36px; border-radius: 9px; border: 1px solid var(--fin-line); background: var(--fin-card2); color: var(--fin-txt); padding: 0 12px; font: inherit; min-width: 200px; }
+.fin2-tx-editor button { height: 36px; cursor: pointer; }
+.fin2-tx-editor button:disabled { opacity: 0.5; cursor: default; }
+
+/* aba Manual: contas e lançamentos */
+.fin2-manual-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+.fin2-manual-form input, .fin2-manual-form select {
+  height: 38px; border-radius: 9px; border: 1px solid var(--fin-line);
+  background: var(--fin-card2); color: var(--fin-txt); padding: 0 12px; font: inherit;
+}
+.fin2-manual-form input[placeholder="Descrição"] { flex: 1; min-width: 160px; }
+.fin2-manual-form input[type="number"] { width: 120px; }
+.fin2-manual-form button { height: 38px; cursor: pointer; }
+.fin2-manual-form button:disabled { opacity: 0.5; cursor: default; }
+.fin2-manual-acc-head { display: flex; align-items: center; gap: 12px; }
+.fin2-manual-acc-head > div { flex: 1; display: flex; flex-direction: column; }
+.fin2-manual-acc-head small { color: var(--fin-muted); font-size: 12px; }
+.fin2-manual-txs { margin-top: 16px; border-top: 1px solid var(--fin-line); padding-top: 14px; max-height: 280px; overflow-y: auto; }
+.fin2-manual-txs li { border-top: 1px solid var(--fin-line); padding-top: 10px; }
+.fin2-manual-txs li:first-child { border-top: 0; padding-top: 0; }
+.fin2-icon-btn { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--fin-line); background: var(--fin-card2); color: var(--fin-muted); cursor: pointer; flex: 0 0 auto; font-size: 13px; }
+.fin2-icon-btn:hover { color: var(--fin-red); border-color: rgba(240,86,63,0.4); }
+
+/* seletor de logo e logo da conta manual */
+.fin2-logo-picker { display: flex; gap: 8px; align-items: center; }
+.fin2-logo-opt { width: 40px; height: 40px; border-radius: 10px; border: 2px solid var(--fin-line); background: #fff; padding: 4px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.fin2-logo-opt img { width: 100%; height: 100%; object-fit: contain; }
+.fin2-logo-opt.active { border-color: var(--fin-green); }
+.fin2-manual-logo { width: 34px; height: 34px; border-radius: 9px; background: #fff; object-fit: contain; padding: 3px; flex: 0 0 auto; }
+
+/* edição de lançamento manual */
+.fin2-manual-txs li.editing { background: rgba(47,212,126,0.06); border-radius: 8px; }
+.fin2-manual-txs li.editing strong { color: var(--fin-green); }
+
+/* Fluxo do mês: realizado x planejado */
+.fin2-fluxo { margin-top: 6px; }
+.fin2-fluxo-row { display: grid; grid-template-columns: 1.4fr 1fr 1.1fr; gap: 12px; align-items: center; padding: 9px 4px; }
+.fin2-fluxo-row .r { text-align: right; font-weight: 700; }
+.fin2-fluxo-head { font-size: 11px; color: var(--fin-muted); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--fin-line); }
+.fin2-fluxo-head .r, .fin2-fluxo-head span { font-weight: 600; }
+.fin2-fluxo-sobra { border-top: 1px solid var(--fin-line); margin-top: 4px; font-size: 17px; }
+.fin2-fluxo-sobra span:first-child { font-weight: 800; }
+.fin2-fluxo-foot { margin-top: 12px; padding: 10px 12px; background: rgba(240,86,63,0.08); border-radius: 10px; font-size: 13px; color: var(--fin-txt); }
+
+/* lista de recorrentes */
+.fin2-recur-list { margin-top: 14px; }
+.fin2-recur-list li { display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--fin-line); padding-top: 11px; }
+.fin2-recur-list li:first-child { border-top: 0; padding-top: 0; }
+.fin2-recur-list li > div { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.fin2-recur-list small { color: var(--fin-muted); font-size: 11px; }
+.fin2-recur-list li.editing { background: rgba(47,212,126,0.06); border-radius: 8px; }
+.financas-tag { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.financas-tag-receita { background: rgba(47,212,126,0.16); color: var(--fin-green); }
+.financas-tag-cartao { background: rgba(31,111,235,0.18); color: #6f9bff; }
+.financas-tag-fixa { background: rgba(196,139,45,0.18); color: #d6a24a; }
+.financas-tag-avulsa { background: rgba(240,86,63,0.16); color: #f5897a; }
+
+/* ciclo da fatura (toolbar Cartões) */
+.fin2-cards-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.fin2-day-input { width: 64px; height: 36px; border-radius: 9px; border: 1px solid var(--fin-line); background: var(--fin-card2); color: var(--fin-txt); padding: 0 10px; font: inherit; text-align: center; }

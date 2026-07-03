@@ -313,3 +313,23 @@ CREATE TABLE IF NOT EXISTS chart_snapshot_monthly_ticker (
   updated_at TEXT NOT NULL,
   FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
 );
+
+-- Read-through cache for heavy chart series keyed by the (sorted portfolio
+-- ids + range/scope) combination. Shared across workers, warmed by the
+-- periodic chart-snapshot job.
+CREATE TABLE IF NOT EXISTS chart_series_cache (
+  cache_key TEXT PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Last-good cache of BCB/SGS index observations (CDI=11, IPCA=433, ...), one
+-- row per (series, day), so a transient BCB 502 falls back to stored data
+-- instead of a broken projection.
+CREATE TABLE IF NOT EXISTS bcb_series_observations (
+  series_code INTEGER NOT NULL,
+  obs_date TEXT NOT NULL,
+  value REAL NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (series_code, obs_date)
+);

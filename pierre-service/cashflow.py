@@ -45,6 +45,10 @@ DEFAULT_INTERNAL_CATEGORIES = {
 DEFAULT_INBOUND_IGNORE_CATEGORIES = {
     "Transferência - TED",
     "Transferência - PIX",
+    # Same-institution transfer. Santander mirrors the card auto-debit
+    # ("DEB. AUTOM. DE FATURA EM C/C") as an INBOUND item under this category, so
+    # without ignoring it the bill payment was double-counted as income (receita).
+    "Transferência - Mesma instituição",
     "Transferências",
 }
 # Description keywords that mark an inbound transfer as real income. Income is
@@ -94,6 +98,17 @@ def summarize_cashflow(transactions_payload):
     by_month_income = {}
     by_month_expense = {}
     cat_acc = {}
+    # Transactions composing each bucket, so the UI can drill into a bucket.
+    bucket_items = {"receita": [], "despfixa": [], "cartao": [], "despavulsa": []}
+
+    def add_item(bucket, item, value, source):
+        bucket_items[bucket].append({
+            "date": item.get("date"),
+            "description": item.get("description") or item.get("merchant") or item.get("category"),
+            "category": item.get("category"),
+            "amount": round(value, 2),
+            "source": source,
+        })
 
     def add_month(store, item, value):
         m = _month(item)
@@ -123,6 +138,7 @@ def summarize_cashflow(transactions_payload):
             receita += value
             add_month(by_month_income, item, value)
             add_cat(category, "receita", value)
+            add_item("receita", item, value, "conta")
 
         # Bank debits out. Skip card settlement and internal transfers.
         for item in account.get("bank_transfer") or []:
@@ -137,6 +153,7 @@ def summarize_cashflow(transactions_payload):
                 avulsa += value
             add_month(by_month_expense, item, value)
             add_cat(category, bucket, value)
+            add_item("despfixa" if bucket == "fixa" else "despavulsa", item, value, "conta")
 
         # Credit-card purchases (the real card spend).
         credit_cards = account.get("credit_cards") or {}
@@ -152,6 +169,7 @@ def summarize_cashflow(transactions_payload):
                     cartao += value
                     add_month(by_month_expense, item, value)
                     add_cat(category, "cartao", value)
+                    add_item("cartao", item, value, "cartao")
 
     sobra = receita - cartao - fixa - avulsa
     categories = sorted(
@@ -172,6 +190,8 @@ def summarize_cashflow(transactions_payload):
         },
         "by_month_income": by_month_income,
         "by_month_expense": by_month_expense,
+        "bucket_items": {k: sorted(v, key=lambda x: x["date"] or "", reverse=True)
+                         for k, v in bucket_items.items()},
         "categories": categories,
         "totals_source": {
             "total_received": summary.get("total_received"),

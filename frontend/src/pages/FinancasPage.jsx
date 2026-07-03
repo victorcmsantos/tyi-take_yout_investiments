@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Chart as ChartJS } from 'chart.js/auto'
 import { Line } from 'react-chartjs-2'
 import StatePanel from '../components/StatePanel'
@@ -354,7 +354,7 @@ function VisaoGeral({ data, monthRef, openCat, setOpenCat }) {
 
       <article className="fin2-card fin2-bucketscard fin2-span2">
         <span className="fin2-kicker">Fluxo do mês — realizado × projetado (fim do mês)</span>
-        <FluxoCard realized={buckets} planned={data.planned} />
+        <FluxoCard realized={buckets} planned={data.planned} bucketItems={data.bucket_items} />
       </article>
 
       <article className="fin2-card fin2-cats">
@@ -392,11 +392,35 @@ function CartoesTab({ data, onRefetch }) {
     await apiPost('/api/pierre/settings', { card_closing_day: Number(day) || 1 })
     clearApiCache('/api/pierre'); refetchCfg(); if (onRefetch) onRefetch()
   }
+  const ym = data.month  // month being viewed (YYYY-MM)
+  // Per-card DEFAULT closing day (by last4), applies to every month. Merge this
+  // card into the saved map; out-of-range clears it (falls back to bank/global).
+  const saveCardDefault = async (last4, value) => {
+    if (!last4) return
+    const map = { ...(cfg?.card_closing_by_last4 || {}) }
+    const n = Number(value)
+    if (n >= 1 && n <= 28) map[last4] = n
+    else delete map[last4]
+    await apiPost('/api/pierre/settings', { card_closing_by_last4: map })
+    clearApiCache('/api/pierre'); refetchCfg(); if (onRefetch) onRefetch()
+  }
+  // Per-MONTH override (the cut shifts month to month). Keyed "last4|YYYY-MM";
+  // empty/out-of-range removes it so the card uses its default that month.
+  const saveCardMonth = async (last4, value) => {
+    if (!last4 || !ym) return
+    const map = { ...(cfg?.card_closing_overrides || {}) }
+    const key = `${last4}|${ym}`
+    const n = Number(value)
+    if (value !== '' && n >= 1 && n <= 28) map[key] = n
+    else delete map[key]
+    await apiPost('/api/pierre/settings', { card_closing_overrides: map })
+    clearApiCache('/api/pierre'); refetchCfg(); if (onRefetch) onRefetch()
+  }
   return (
     <>
     <div className="fin2-card fin2-cards-toolbar">
       <span className="fin2-kicker" style={{ margin: 0 }}>Fatura</span>
-      <span className="fin2-muted">Total de cada cartão = fatura real do banco (exato). Lançada no mês das compras (paga dia 01 do mês seguinte, como você orça). Fechamento por banco (Itaú 22, Santander 25); a lista soma o total com uma linha de “Ajuste de fechamento”.</span>
+      <span className="fin2-muted">Total de cada cartão = fatura real do banco (exato). Lançada no mês das compras (paga dia 01 do mês seguinte, como você orça). Fechamento por cartão: dia padrão (todos os meses) + ajuste só do mês quando o corte muda; a lista soma o total com uma linha de “Ajuste de fechamento”.</span>
       <span className="fin2-muted">·  padrão outros bancos: dia</span>
       <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(e.target.value)} className="fin2-day-input" />
       <button type="button" className="fin2-chip active" onClick={saveDay}>Aplicar</button>
@@ -422,6 +446,33 @@ function CartoesTab({ data, onRefetch }) {
                 {' · '}{c.transactions?.length || 0} compras · toque para ver
               </small>
             </button>
+            <div className="fin2-cardbig-closing">
+              <small className="fin2-muted">Fecha dia</small>
+              <input
+                key={`cdef-${c.last4}-${c.closing_day_default}`}
+                type="number" min="1" max="28" defaultValue={c.closing_day_default}
+                className="fin2-day-input" title="Dia padrão (todos os meses)"
+                onClick={(e) => e.stopPropagation()}
+                onBlur={(e) => { if (String(e.target.value) !== String(c.closing_day_default ?? '')) saveCardDefault(c.last4, e.target.value) }}
+                onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur() }}
+              />
+              <small className="fin2-muted">· só em {ymShort(ym)}:</small>
+              <input
+                key={`cmon-${c.last4}-${ym}-${c.closing_day_month ?? ''}`}
+                type="number" min="1" max="28"
+                defaultValue={c.closing_day_month ?? ''}
+                placeholder={c.closing_day_default}
+                className={`fin2-day-input${c.closing_day_month ? ' fin2-day-override' : ''}`}
+                title={`Ajuste só de ${ymShort(ym)} (vazio = usa o padrão ${c.closing_day_default})`}
+                onClick={(e) => e.stopPropagation()}
+                onBlur={(e) => { if (String(e.target.value) !== String(c.closing_day_month ?? '')) saveCardMonth(c.last4, e.target.value) }}
+                onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur() }}
+              />
+              {c.closing_day_month ? (
+                <button type="button" className="fin2-icon-btn" title="Remover ajuste do mês"
+                  onClick={(e) => { e.stopPropagation(); saveCardMonth(c.last4, '') }}>✕</button>
+              ) : null}
+            </div>
             {c.additional_cards?.length ? (
               <div className="fin2-cardbig-add">
                 <small className="fin2-muted">{c.additional_cards.length} cartões adicionais</small>
@@ -636,35 +687,77 @@ function ManualTab() {
 
 const BUCKET_LABELS = { receita: 'Receita', despfixa: 'Desp. fixa', cartao: 'Cartão', despavulsa: 'Desp. avulsa' }
 
-function FluxoCard({ realized, planned }) {
+function FluxoCard({ realized, planned, bucketItems }) {
   const rows = ['receita', 'despfixa', 'cartao', 'despavulsa']
+  const items = bucketItems || {}
+  const [showPend, setShowPend] = useState(false)
+  const [openB, setOpenB] = useState(null)
+  // Receita amounts are inflows (+); everything else is an outflow (−), except a
+  // negative value (e.g. the card closing adjustment) which is a credit (+).
+  const sign = (k, amt) => (k === 'receita' ? '+' : (amt < 0 ? '+' : '−'))
   // Projetado (fim do mês) = Realizado + recorrentes que ainda NÃO caíram. The
   // `posted` flag keeps already-cleared items out, so there's no double count.
+  const pendItems = (planned?.items || []).filter((i) => !i.posted)
   const pend = {}
-  for (const it of planned?.items || []) if (!it.posted) pend[it.bucket] = (pend[it.bucket] || 0) + Number(it.amount || 0)
+  for (const it of pendItems) pend[it.bucket] = (pend[it.bucket] || 0) + Number(it.amount || 0)
   const proj = {}
   for (const k of rows) proj[k] = (realized[k] || 0) + (pend[k] || 0)
   const projSobra = (proj.receita || 0) - (proj.despfixa || 0) - (proj.cartao || 0) - (proj.despavulsa || 0)
-  const pendingTotal = planned?.pending_total || 0
+  const pendIn = pendItems.filter((i) => i.bucket === 'receita')
+  const pendOut = pendItems.filter((i) => i.bucket !== 'receita')
+  const sum = (arr) => arr.reduce((s, i) => s + Number(i.amount || 0), 0)
   return (
     <div className="fin2-fluxo">
       <div className="fin2-fluxo-row fin2-fluxo-head">
         <span>Categoria</span><span className="r">Realizado</span><span className="r">Projetado (fim)</span>
       </div>
-      {rows.map((k) => (
-        <div className="fin2-fluxo-row" key={k}>
-          <span>{BUCKET_LABELS[k]}</span>
-          <span className={`r ${k === 'receita' ? 'fin2-pos' : 'fin2-neg'}`}>{formatCurrencyBRL(realized[k])}</span>
-          <span className={`r ${pend[k] ? (k === 'receita' ? 'fin2-pos' : 'fin2-neg') : 'fin2-muted'}`}>{formatCurrencyBRL(proj[k])}</span>
-        </div>
-      ))}
+      {rows.map((k) => {
+        const list = items[k] || []
+        const open = openB === k
+        return (
+          <Fragment key={k}>
+            <div className="fin2-fluxo-row fin2-fluxo-rowbtn" onClick={() => setOpenB(open ? null : k)}>
+              <span>{BUCKET_LABELS[k]}{list.length ? <em className="fin2-fluxo-cnt">{open ? '⌄' : '›'} {list.length}</em> : null}</span>
+              <span className={`r ${k === 'receita' ? 'fin2-pos' : 'fin2-neg'}`}>{formatCurrencyBRL(realized[k])}</span>
+              <span className={`r ${pend[k] ? (k === 'receita' ? 'fin2-pos' : 'fin2-neg') : 'fin2-muted'}`}>{formatCurrencyBRL(proj[k])}</span>
+            </div>
+            {open ? (
+              <ul className="fin2-fluxo-pend fin2-fluxo-buckitems">
+                {list.length === 0 ? (
+                  <li><span className="fin2-muted">Sem transações neste mês.</span></li>
+                ) : list.map((t, idx) => (
+                  <li key={idx} className={t.adjustment ? 'fin2-tx-adjust' : ''}>
+                    <span><em className="fin2-muted">{t.date}</em> {t.description}</span>
+                    <span className={sign(k, t.amount) === '+' ? 'fin2-pos' : 'fin2-neg'}>{sign(k, t.amount)}{formatCurrencyBRL(Math.abs(t.amount || 0))}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </Fragment>
+        )
+      })}
       <div className="fin2-fluxo-row fin2-fluxo-sobra">
         <span>Sobra</span>
         <span className={`r ${(realized.sobra || 0) >= 0 ? 'fin2-pos' : 'fin2-neg'}`}>{formatCurrencyBRL(realized.sobra)}</span>
         <span className={`r ${projSobra >= 0 ? 'fin2-pos' : 'fin2-neg'}`}><strong>{formatCurrencyBRL(projSobra)}</strong></span>
       </div>
-      {pendingTotal > 0 ? (
-        <div className="fin2-fluxo-foot">Projetado = Realizado + <strong className="fin2-neg">{formatCurrencyBRL(pendingTotal)}</strong> de recorrentes que ainda faltam cair este mês.</div>
+      {pendItems.length > 0 ? (
+        <div className="fin2-fluxo-foot">
+          <button type="button" className="fin2-fluxo-pendbtn" onClick={() => setShowPend((s) => !s)}>
+            <span>Falta cair: {pendIn.length ? <strong className="fin2-pos">+{formatCurrencyBRL(sum(pendIn))} a receber</strong> : null}{pendIn.length && pendOut.length ? ' · ' : ''}{pendOut.length ? <strong className="fin2-neg">−{formatCurrencyBRL(sum(pendOut))} a pagar</strong> : null}</span>
+            <span className="fin2-muted">{showPend ? 'ocultar ⌄' : `ver ${pendItems.length} itens ›`}</span>
+          </button>
+          {showPend ? (
+            <ul className="fin2-fluxo-pend">
+              {[...pendOut, ...pendIn].map((i, idx) => (
+                <li key={idx}>
+                  <span><em className="fin2-muted">{BUCKET_LABELS[i.bucket]}</em> {i.description}{i.installment_label ? ` (${i.installment_label})` : ''}</span>
+                  <span className={i.bucket === 'receita' ? 'fin2-pos' : 'fin2-neg'}>{i.bucket === 'receita' ? '+' : '−'}{formatCurrencyBRL(i.amount)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       ) : (
         <div className="fin2-fluxo-foot fin2-muted">Tudo que estava planejado já caiu — projetado = realizado.</div>
       )}

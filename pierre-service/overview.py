@@ -103,6 +103,39 @@ def _cycle_window(year, month, closing=None):
     return start, end
 
 
+def _closing_resolver(credit_accounts, ym=None):
+    """Build fn(x) -> closing day for a card in month ``ym`` (YYYY-MM), resolving
+    the MOST SPECIFIC rule via settings.closing_for: a per-month override, else the
+    per-card default (by last4) when brand+level+connector pin one physical card,
+    else the per-bank default, else the global default. ``x`` may be a purchase's
+    ``account_info`` (name/brand/level), a full credit account (creditData +
+    number), or a bare connector string."""
+    def resolve(x):
+        if isinstance(x, dict) and isinstance(x.get("creditData"), dict):  # full account
+            return settings.closing_for(x.get("connectorName"), str(x.get("number") or "")[-4:], ym)
+        if isinstance(x, dict):
+            name = _norm(x.get("name"))
+            brand = str(x.get("brand") or "").upper()
+            level = str(x.get("level") or "").upper()
+        else:
+            name, brand, level = _norm(x), "", ""
+        best = None
+        for a in credit_accounts:
+            if not (_norm(a.get("connectorName")) and _norm(a.get("connectorName")) in name):
+                continue
+            acd = a.get("creditData") or {}
+            ab = str(acd.get("brand") or "").upper()
+            al = str(acd.get("level") or "").upper()
+            if (not brand or ab == brand) and (not level or al == level):
+                best = a
+                if brand and level and ab == brand and al == level:
+                    break  # exact card match
+        if best is not None:
+            return settings.closing_for(best.get("connectorName"), str(best.get("number") or "")[-4:], ym)
+        return settings.closing_for(x.get("name") if isinstance(x, dict) else x, None, ym)
+    return resolve
+
+
 def _summary(payload):
     data = (payload or {}).get("data") or {}
     return data.get("summary") or {}
@@ -175,18 +208,22 @@ def build_ledger(year, month):
     logo_fn = _make_logo_fn(acc_raw)
     # overrides applied AFTER manual.inject (below) so rules reach manual txs too.
     card_by_id = {}
+    credit_accounts = []
     for a in acc_raw:
         if a.get("type") == "CREDIT":
             cd = a.get("creditData") or {}
             card_by_id[a.get("id")] = (str(cd.get("brand") or "").upper(),
                                        str(cd.get("level") or "").upper(), a.get("connectorName"))
+            credit_accounts.append(a)
 
-    # Each card's statement closes on its own day (Itaú 22, Santander 25...); the
-    # statement closing in month M is the card spending OF month M.
+    # Each card's statement closes on its own day (Itaú 22, Santander 25, or a
+    # per-card default / per-month override...); the statement closing in month M
+    # is the card spending OF month M.
+    _closing = _closing_resolver(credit_accounts, ym=f"{year:04d}-{month:02d}")
     _win_cache = {}
 
-    def _win_for(connector):
-        cl = settings.closing_for(connector)
+    def _win_for(x):
+        cl = _closing(x)
         if cl not in _win_cache:
             _win_cache[cl] = _cycle_window(year, month, cl)
         return _win_cache[cl]
@@ -220,7 +257,7 @@ def build_ledger(year, month):
     # Card purchases: the statement closing in month M (paid 1st of M+1) = upfront
     # purchases in the window + installment portions due in month M, each card
     # using its own bank's closing day.
-    _wins = [_win_for(a.get("connectorName")) for a in acc_raw if a.get("type") == "CREDIT"]
+    _wins = [_win_for(a) for a in credit_accounts]
     fetch_start = min((w[0] for w in _wins), default=_cycle_window(year, month)[0])
     fetch_end = max((w[1] for w in _wins), default=_cycle_window(year, month)[1])
     cyc = overrides.apply(pierre.get_transactions(start_date=fetch_start, end_date=fetch_end, account_type="CREDIT"))
@@ -234,7 +271,7 @@ def build_ledger(year, month):
             for it in cv.get("purchases") or []:
                 if it.get("installment_due_date"):
                     continue  # installment -> from /installments below
-                ws, we = _win_for((it.get("account_info") or {}).get("name"))
+                ws, we = _win_for(it.get("account_info") or {})
                 if not (ws <= (it.get("date") or "") <= we):
                     continue
                 rows.append(row(it, "cartao", "out"))
@@ -282,33 +319,40 @@ def build_overview(year, month):
 
     cur_s = _summary(cur_tx)
     prev_s = _summary(prev_tx)
-    buckets = cashflow.summarize_cashflow(cur_tx)["buckets"]
+    cf = cashflow.summarize_cashflow(cur_tx)
+    buckets = cf["buckets"]
+    bucket_items = cf.get("bucket_items") or {"receita": [], "despfixa": [], "cartao": [], "despavulsa": []}
 
     cur_accounts_tx = ((cur_tx.get("data") or {}).get("transactions") or {}).get("accounts") or {}
 
     # Card id -> (brand, level, connector), to map installments (which carry
     # accountId) to the physical card and its bank (for the closing day).
     card_by_id = {}
+    credit_accounts = []
     for a in _acc_list(accounts_raw):
         if a.get("type") == "CREDIT":
             cd = a.get("creditData") or {}
             card_by_id[a.get("id")] = (str(cd.get("brand") or "").upper(),
                                        str(cd.get("level") or "").upper(), a.get("connectorName"))
+            credit_accounts.append(a)
 
     # The card spending OF month M = the statement that CLOSES in M (paid on the
     # 1st of M+1, which the user budgets as month M's debt). Its exact total is the
     # bank's CLOSED bill (get-bills, below); here we build the line items for that
-    # cycle, since Pierre tags no billId. Closing day VARIES BY BANK (Itaú 22,
-    # Santander 25...), so each card uses its own window, all closing in month M.
+    # cycle, since Pierre tags no billId. Closing day varies BY CARD (per-card
+    # override by last4) and BY BANK (Itaú 22, Santander 25...), so each card uses
+    # its own window, all closing in month M.
+    month_ym = f"{year:04d}-{month:02d}"
+    _closing = _closing_resolver(credit_accounts, ym=month_ym)
     _win_cache = {}
 
-    def _win_for(connector):
-        cl = settings.closing_for(connector)
+    def _win_for(x):
+        cl = _closing(x)
         if cl not in _win_cache:
             _win_cache[cl] = _cycle_window(year, month, cl)
         return _win_cache[cl]
 
-    _wins = [_win_for(a.get("connectorName")) for a in _acc_list(accounts_raw) if a.get("type") == "CREDIT"]
+    _wins = [_win_for(a) for a in credit_accounts]
     fetch_start = min((w[0] for w in _wins), default=_cycle_window(year, month)[0])
     fetch_end = max((w[1] for w in _wins), default=_cycle_window(year, month)[1])
     cycle_tx = overrides.apply(pierre.get_transactions(start_date=fetch_start, end_date=fetch_end))
@@ -333,7 +377,7 @@ def build_overview(year, month):
                 if it.get("installment_due_date"):
                     continue  # installment -> from /installments below
                 ai = it.get("account_info") or {}
-                ws, we = _win_for(ai.get("name"))
+                ws, we = _win_for(ai)
                 d = it.get("date") or ""
                 if not (ws <= d <= we):
                     continue
@@ -481,6 +525,12 @@ def build_overview(year, month):
                 "invoice_total": round(spent, 2),
                 "invoice_min": invoice_min,
                 "invoice_closed": bool(bill),
+                # effective = what the cycle window uses this month; default = the
+                # per-card/bank fallback (ignoring any month override); month = the
+                # explicit override for THIS month (null if none).
+                "closing_day": settings.closing_for(a.get("connectorName"), str(a.get("number") or "")[-4:], month_ym),
+                "closing_day_default": settings.closing_for(a.get("connectorName"), str(a.get("number") or "")[-4:]),
+                "closing_day_month": settings.card_closing_overrides().get(f"{str(a.get('number') or '')[-4:]}|{month_ym}"),
                 "logo": logo,
                 "last4": str(a.get("number") or "")[-4:],
                 "additional_cards": additional,
@@ -628,6 +678,17 @@ def build_overview(year, month):
         },
         "categories": categories,
         "buckets": buckets,
+        # Cartão bucket items = the real per-card invoice detail (incl. the
+        # closing adjustment), so the Fluxo drill-down sums to the bill total.
+        "bucket_items": {
+            **bucket_items,
+            "cartao": [
+                {"date": t.get("date"), "description": t.get("description"),
+                 "category": t.get("category"), "amount": t.get("amount"),
+                 "source": "cartao", "adjustment": bool(t.get("adjustment"))}
+                for c in credit for t in (c.get("transactions") or [])
+            ],
+        },
         "recent_card": card_items[:6],
         "recent_account": acct_items[:6],
     }

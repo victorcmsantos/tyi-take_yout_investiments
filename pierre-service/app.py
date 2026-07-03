@@ -3,6 +3,7 @@ with caching. Not exposed to the host; the TYI backend calls it server-to-server
 over the private network. No auth here — auth is enforced by the backend.
 """
 
+import json
 from datetime import date
 
 from flask import Flask, jsonify, request
@@ -246,6 +247,9 @@ def recurring_delete():
 def settings_get():
     data = dict(settings.all_settings())
     data["card_closing_day"] = settings.card_closing_day()
+    data["card_closing_days"] = settings.card_closing_days()
+    data["card_closing_by_last4"] = settings.card_closing_by_last4()
+    data["card_closing_overrides"] = settings.card_closing_overrides()
     return _ok(data)
 
 
@@ -253,6 +257,10 @@ def settings_get():
 def settings_set():
     body = request.get_json(silent=True) or {}
     for k, v in body.items():
+        # dict/list values (e.g. the per-card closing map) are stored as JSON so
+        # settings.card_closing_by_last4() can parse them back.
+        if isinstance(v, (dict, list)):
+            v = json.dumps(v, ensure_ascii=False)
         settings.set_value(k, v)
     return _ok({"card_closing_day": settings.card_closing_day()})
 

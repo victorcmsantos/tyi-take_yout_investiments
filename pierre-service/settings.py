@@ -67,9 +67,46 @@ def card_closing_days():
     return dict(DEFAULT_CLOSING_DAYS)
 
 
-def closing_for(connector):
-    """Closing day for a card, matched by its connector/bank name; falls back to
-    the global default when the bank isn't in the per-connector map."""
+def card_closing_by_last4():
+    """Map of card last4 -> default closing day. Per physical card / invoice,
+    beating the per-bank and global defaults but yielding to a per-month override.
+    Lets two cards of the same bank (e.g. two Itaú cards) close on different days."""
+    raw = get("card_closing_by_last4")
+    if raw:
+        try:
+            return {str(k).strip()[-4:]: max(1, min(28, int(v)))
+                    for k, v in json.loads(raw).items()}
+        except Exception:
+            pass
+    return {}
+
+
+def card_closing_overrides():
+    """Map of "last4|YYYY-MM" -> closing day. The MOST specific rule: a per-MONTH
+    override for one card, because the real cut shifts month to month (weekends /
+    holidays push it to the next business day). Beats the per-card default."""
+    raw = get("card_closing_overrides")
+    if raw:
+        try:
+            return {str(k): max(1, min(28, int(v))) for k, v in json.loads(raw).items()}
+        except Exception:
+            pass
+    return {}
+
+
+def closing_for(connector, last4=None, ym=None):
+    """Closing day for a card. Resolution order, most specific first: a per-month
+    override (last4|ym) -> a per-card default (last4) -> the per-bank default
+    (connector substring) -> the global default."""
+    last4 = str(last4).strip()[-4:] if last4 else None
+    if last4 and ym:
+        day = card_closing_overrides().get(f"{last4}|{ym}")
+        if day:
+            return day
+    if last4:
+        day = card_closing_by_last4().get(last4)
+        if day:
+            return day
     name = unicodedata.normalize("NFKD", str(connector or "")).encode("ascii", "ignore").decode().lower()
     for key, day in card_closing_days().items():
         if key and key in name:

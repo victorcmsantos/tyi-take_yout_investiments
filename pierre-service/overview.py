@@ -147,11 +147,13 @@ def _pct_delta(cur, prev):
     return round(((cur - prev) / prev) * 100.0, 1)
 
 
-def _spend_by_category(accounts_tx, ym, collect=False, logo_fn=None):
+def _spend_by_category(accounts_tx, ym, collect=False, logo_fn=None, include_cards=True):
     """Aggregate real spending by category for transactions whose DATE falls in
     the given month (YYYY-MM) — installments keep their purchase-month, matching
     Pierre. Income and settlement/internal categories are excluded. When
-    ``collect`` is set, also returns the underlying transactions per category."""
+    ``collect`` is set, also returns the underlying transactions per category.
+    With ``include_cards=False`` only bank (conta) movements are counted — card
+    spend is merged in separately from the invoice cycle (see build_overview)."""
     agg = {}
     items_by_cat = {}
 
@@ -177,9 +179,10 @@ def _spend_by_category(accounts_tx, ym, collect=False, logo_fn=None):
         if not isinstance(a, dict):
             continue
         add(a.get("bank_transfer"), "conta")
-        for cv in (a.get("credit_cards") or {}).values():
-            if isinstance(cv, dict):
-                add(cv.get("purchases"), "cartao")
+        if include_cards:
+            for cv in (a.get("credit_cards") or {}).values():
+                if isinstance(cv, dict):
+                    add(cv.get("purchases"), "cartao")
 
     if collect:
         for items in items_by_cat.values():
@@ -564,9 +567,34 @@ def build_overview(year, month):
     prev_spent = float(prev_s.get("total_spent") or 0.0)
 
     # --- categories with variation (date-filtered spending, like Pierre) ------
+    # Account (conta) spend follows the CALENDAR month; card spend follows the
+    # INVOICE CYCLE (same basis as the Cartões tile and buckets.cartao), so the
+    # card categories here reflect the real invoice being built — not just the
+    # handful of purchases posted since the 1st. Current-month card spend is
+    # reused from `card_purchases` (already installment-aware); the previous
+    # month keeps its calendar-month card spend as an approximate baseline.
     prev_accounts_tx = ((prev_tx.get("data") or {}).get("transactions") or {}).get("accounts") or {}
-    cur_cat, cur_cat_items = _spend_by_category(cur_accounts_tx, f"{year:04d}-{month:02d}", collect=True, logo_fn=logo_fn)
+    cur_cat, cur_cat_items = _spend_by_category(
+        cur_accounts_tx, cur_ym, collect=True, logo_fn=logo_fn, include_cards=False)
     prev_cat = _spend_by_category(prev_accounts_tx, f"{py:04d}-{pm:02d}")
+
+    # Merge the current invoice-cycle card purchases into the category totals.
+    for items in card_purchases.values():
+        for it in items:
+            cat = it.get("category")
+            if cat in HIDDEN_SPEND_CATEGORIES:
+                continue
+            cur_cat[cat] = cur_cat.get(cat, 0.0) + it.get("amount", 0.0)
+            cur_cat_items.setdefault(cat, []).append({
+                "date": it.get("date"),
+                "description": it.get("description"),
+                "amount": it.get("amount"),
+                "source": "cartao",
+                "logo": "",
+            })
+    for items in cur_cat_items.values():
+        items.sort(key=lambda x: x["date"] or "", reverse=True)
+
     categories = []
     for name in set(cur_cat) | set(prev_cat):
         ct = cur_cat.get(name, 0.0)

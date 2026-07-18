@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import 'chart.js/auto'
 import { Line } from 'react-chartjs-2'
 import StatePanel from '../components/StatePanel'
+import PortfolioAiAnalysisCard from '../components/PortfolioAiAnalysisCard'
 import { buildExportFilename, exportRowsAsCsv, exportTableAsPdf } from '../exporters'
 import { useApiQuery } from '../hooks/useApiQuery'
 import { formatQuantity } from '../formatters'
@@ -406,6 +407,8 @@ function PortfolioPage({ selectedPortfolioIds }) {
           </section>
         </div>
       </article>
+
+      <PortfolioAiAnalysisCard selectedPortfolioIds={selectedPortfolioIds} />
 
       <div className="accordion-wrap">
         {CATEGORY_META.map((meta) => {

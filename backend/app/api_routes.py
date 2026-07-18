@@ -69,6 +69,10 @@ from .services import (
     update_transaction,
     enrich_asset_with_openclaw,
     enrich_assets_with_openclaw_batch,
+    analyze_portfolio_with_openclaw,
+    get_portfolio_analysis,
+    generate_finance_insights,
+    get_finance_insights,
     update_metric_formula,
 )
 from .services import _legacy as legacy_market
@@ -2527,6 +2531,49 @@ def portfolio_snapshot():
     sort_dir = request.args.get("sort_dir", "asc")
     payload = get_portfolio_snapshot(portfolio_ids, sort_by=sort_by, sort_dir=sort_dir)
     return _json_ok(payload)
+
+
+@api_bp.route("/portfolio/analysis", methods=["GET"])
+def portfolio_analysis_read():
+    """Read the cached whole-portfolio AI analysis (instant, no OpenClaw call)."""
+    if not get_current_user():
+        return _json_error("Nao autenticado.", status=401)
+    portfolio_ids = _selected_portfolio_ids_from_request()
+    return _json_ok({"analysis": get_portfolio_analysis(portfolio_ids)})
+
+
+@api_bp.route("/portfolio/analyze/openclaw", methods=["POST"])
+def portfolio_analyze_openclaw():
+    """Generate/refresh the whole-portfolio AI analysis via OpenClaw."""
+    if not get_current_user():
+        return _json_error("Nao autenticado.", status=401)
+    portfolio_ids = _selected_portfolio_ids_from_request()
+    ok, message, analysis = analyze_portfolio_with_openclaw(portfolio_ids)
+    if not ok:
+        return _json_error(message, status=502)
+    return _json_ok({"message": message, "analysis": analysis})
+
+
+@api_bp.route("/financas/insights", methods=["GET"])
+def finance_insights_read():
+    """Read cached proactive finance insights (instant, no OpenClaw call)."""
+    if not get_current_user():
+        return _json_error("Nao autenticado.", status=401)
+    month = (request.args.get("month") or "").strip() or None
+    return _json_ok({"insights": get_finance_insights(month)})
+
+
+@api_bp.route("/financas/insights/openclaw", methods=["POST"])
+def finance_insights_openclaw():
+    """Generate/refresh proactive finance insights from Pierre data via OpenClaw."""
+    if not get_current_user():
+        return _json_error("Nao autenticado.", status=401)
+    payload = request.get_json(silent=True) or request.form.to_dict() or {}
+    month = (payload.get("month") or request.args.get("month") or "").strip() or None
+    ok, message, insights = generate_finance_insights(month)
+    if not ok:
+        return _json_error(message, status=502)
+    return _json_ok({"message": message, "insights": insights})
 
 
 @api_bp.route("/sectors", methods=["GET"])

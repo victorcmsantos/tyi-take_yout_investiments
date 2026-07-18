@@ -742,6 +742,34 @@ def ensure_schema_upgrades():
         """
     )
 
+    # Cache da analise de carteira inteira gerada pela IA (OpenClaw), chaveada
+    # pelo escopo de carteiras selecionado (ex.: "1,2,3" ou "all").
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS portfolio_analysis (
+            scope_key TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            raw_reply TEXT NOT NULL DEFAULT '',
+            total_value REAL NOT NULL DEFAULT 0,
+            positions_count INTEGER NOT NULL DEFAULT 0,
+            generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+    # Cache dos insights financeiros proativos (IA) por mes de referencia
+    # (YYYY-MM), gerados a partir do overview do Pierre.
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS finance_insights (
+            month TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            raw_reply TEXT NOT NULL DEFAULT '',
+            generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS fixed_incomes (

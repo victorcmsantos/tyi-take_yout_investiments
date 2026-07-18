@@ -18,6 +18,14 @@ from .openclaw import (
     get_asset_enrichment,
     get_asset_enrichment_history,
 )
+from .portfolio_ai import (
+    analyze_portfolio_with_openclaw,
+    get_portfolio_analysis,
+)
+from .finance_ai import (
+    generate_finance_insights,
+    get_finance_insights,
+)
 from .portfolio import (
     add_fixed_income,
     add_income,
@@ -59,6 +67,7 @@ __all__ = [
     "add_fixed_income",
     "add_income",
     "add_transaction",
+    "analyze_portfolio_with_openclaw",
     "create_portfolio",
     "delete_fixed_incomes",
     "delete_incomes",
@@ -66,6 +75,7 @@ __all__ = [
     "delete_transactions",
     "enrich_asset_with_openclaw",
     "enrich_assets_with_openclaw_batch",
+    "generate_finance_insights",
     "get_asset",
     "get_asset_upcoming_incomes",
     "get_asset_enrichment",
@@ -75,6 +85,7 @@ __all__ = [
     "get_asset_price_history",
     "get_asset_transactions",
     "get_benchmark_comparison",
+    "get_finance_insights",
     "get_fixed_income_payload_cached",
     "get_fixed_income_summary",
     "get_fixed_incomes",
@@ -83,6 +94,7 @@ __all__ = [
     "get_monthly_class_summary",
     "get_monthly_ticker_summary",
     "get_patrimony_open_pnl_by_type_series",
+    "get_portfolio_analysis",
     "get_portfolio_snapshot",
     "get_portfolios",
     "get_sectors_summary",

@@ -115,8 +115,8 @@ export function clearApiCache(pathPrefix = '') {
   })
 }
 
-export async function apiPost(path, body = {}, params = {}) {
-  return requestJson(path, { method: 'POST', params, body })
+export async function apiPost(path, body = {}, params = {}, options = {}) {
+  return requestJson(path, { method: 'POST', params, body, timeoutMs: options?.timeoutMs })
 }
 
 export async function apiPatch(path, body = {}, params = {}) {

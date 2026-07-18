@@ -1,6 +1,7 @@
 """OpenClaw enrichment services."""
 
 import json
+import os
 from datetime import datetime
 
 from ..db import get_db
@@ -10,6 +11,89 @@ from . import _legacy as legacy
 
 def _now_iso():
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _session_key(feature: str) -> str:
+    """Resolve the OpenClaw session key for a feature.
+
+    The OpenClaw gateway does NOT auto-create sessions on ``sessions_send`` — it
+    errors with "No session found" for an unknown key. The only session
+    guaranteed to exist is "main", so every feature defaults to it. To give a
+    feature its own session (cleaner context separation), pre-create the session
+    in OpenClaw and point it here via OPENCLAW_SESSION_KEY_<FEATURE> (e.g.
+    OPENCLAW_SESSION_KEY_PORTFOLIO_ANALYSIS=portfolio-analysis), or override all
+    features at once via OPENCLAW_SESSION_KEY.
+    """
+    normalized = str(feature or "main").strip() or "main"
+    env_specific = (os.getenv(f"OPENCLAW_SESSION_KEY_{normalized.upper().replace('-', '_')}") or "").strip()
+    if env_specific:
+        return env_specific
+    env_global = (os.getenv("OPENCLAW_SESSION_KEY") or "").strip()
+    if env_global:
+        return env_global
+    return "main"
+
+
+def _invoke_openclaw_prompt(prompt: str, *, session_key: str, timeout_seconds: int = 150, inner_timeout: int = 120) -> str:
+    """Send a single prompt to an OpenClaw session and return the reply text."""
+    result = invoke_tool(
+        "sessions_send",
+        {
+            "sessionKey": session_key,
+            "message": prompt,
+            "timeoutSeconds": inner_timeout,
+        },
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(result, dict):
+        return ""
+    return _extract_openclaw_reply(result)
+
+
+def run_structured_openclaw_prompt(
+    prompt: str,
+    *,
+    session_key: str,
+    retry_prompt: str | None = None,
+    normalizer=None,
+    is_meaningful=None,
+    timeout_seconds: int = 150,
+    inner_timeout: int = 120,
+):
+    """Generic structured-output runner reused by the AI features.
+
+    Sends ``prompt``, extracts the first JSON object from the reply, and runs it
+    through ``normalizer`` (if given). If the reply is transient ("aguarde"...)
+    or the parsed payload is empty/not meaningful, it retries once with
+    ``retry_prompt`` (or the same prompt). Returns ``(reply, parsed)``. Raises
+    ``OpenClawError`` on transport failure (callers should catch it).
+    """
+    def _parse(reply_text):
+        raw = _extract_json_from_text(reply_text)
+        return normalizer(raw) if normalizer else raw
+
+    def _is_empty(parsed_value):
+        if is_meaningful is not None:
+            return not is_meaningful(parsed_value)
+        return not isinstance(parsed_value, dict) or not parsed_value
+
+    reply = _invoke_openclaw_prompt(prompt, session_key=session_key, timeout_seconds=timeout_seconds, inner_timeout=inner_timeout)
+    parsed = _parse(reply)
+
+    if _is_transient_openclaw_reply(reply) or _is_empty(parsed):
+        retry_reply = _invoke_openclaw_prompt(
+            retry_prompt or prompt,
+            session_key=session_key,
+            timeout_seconds=timeout_seconds,
+            inner_timeout=inner_timeout,
+        )
+        retry_parsed = _parse(retry_reply)
+        if not _is_empty(retry_parsed):
+            reply, parsed = retry_reply, retry_parsed
+        elif retry_reply and not _is_transient_openclaw_reply(retry_reply):
+            reply, parsed = retry_reply, retry_parsed
+
+    return reply, parsed
 
 
 def get_asset_enrichment(ticker: str):
@@ -228,6 +312,54 @@ def _asset_prompt_profile(ticker: str, name: str, sector: str):
     )
 
 
+def _fmt_snapshot_num(value, suffix="", decimals=2):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number == 0:
+        return None
+    return f"{number:.{decimals}f}{suffix}"
+
+
+def _asset_market_snapshot(asset: dict) -> str:
+    """Compact, factual market snapshot from the fields the system already has.
+
+    Grounds the model in real numbers (price action + valuation) instead of
+    forcing it to invent them from memory. Only non-zero fields are included.
+    """
+    parts = []
+    price = _fmt_snapshot_num(asset.get("price"))
+    if price:
+        parts.append(f"preco atual {price}")
+    v7 = _fmt_snapshot_num(asset.get("variation_7d"), "%")
+    if v7:
+        parts.append(f"variacao 7 dias {v7}")
+    v30 = _fmt_snapshot_num(asset.get("variation_30d"), "%")
+    if v30:
+        parts.append(f"variacao 30 dias {v30}")
+    pl = _fmt_snapshot_num(asset.get("pl"))
+    if pl:
+        parts.append(f"P/L {pl}")
+    pvp = _fmt_snapshot_num(asset.get("pvp"))
+    if pvp:
+        parts.append(f"P/VP {pvp}")
+    dy = _fmt_snapshot_num(asset.get("dy"), "%")
+    if dy:
+        parts.append(f"dividend yield {dy}")
+    mcap = _fmt_snapshot_num(asset.get("market_cap_bi"))
+    if mcap:
+        parts.append(f"market cap ~{mcap} bi")
+    if not parts:
+        return ""
+    return (
+        "Dados de mercado atuais do proprio sistema (use como base factual e ancore "
+        "visao_do_mercado/humor_do_mercado neles; nao invente outros numeros): "
+        + "; ".join(parts)
+        + ". "
+    )
+
+
 def _build_asset_enrichment_prompt(asset: dict):
     ticker = (asset.get("ticker") or "").strip().upper()
     name = str(asset.get("name") or "").strip()
@@ -247,7 +379,8 @@ def _build_asset_enrichment_prompt(asset: dict):
         f"Setor: {sector}. "
         f"Preco atual aproximado: {current_price:.2f}. "
         f"Contexto: {profile_key}. "
-        "Responda APENAS JSON valido com as chaves resumo, modelo_de_negocio, tese, riscos, dividendos, visao_do_mercado, humor_do_mercado, acao_sugerida, justificativa_da_acao, observacoes. "
+        + _asset_market_snapshot(asset)
+        + "Responda APENAS JSON valido com as chaves resumo, modelo_de_negocio, tese, riscos, dividendos, visao_do_mercado, humor_do_mercado, acao_sugerida, justificativa_da_acao, observacoes. "
         "Use humor_do_mercado como positivo, neutro ou cauteloso. "
         "Use acao_sugerida como comprar_mais, segurar, reduzir ou observar. "
         "Se nao souber, use string vazia ou lista vazia. "
@@ -273,7 +406,8 @@ def _build_asset_enrichment_retry_prompt(asset: dict):
         f"Setor {sector}. "
         f"Preco atual aproximado {current_price:.2f}. "
         f"Contexto {profile_key}. "
-        "Retorne SOMENTE um JSON valido com resumo, modelo_de_negocio, tese, riscos, dividendos, visao_do_mercado, humor_do_mercado, acao_sugerida, justificativa_da_acao, observacoes. "
+        + _asset_market_snapshot(asset)
+        + "Retorne SOMENTE um JSON valido com resumo, modelo_de_negocio, tese, riscos, dividendos, visao_do_mercado, humor_do_mercado, acao_sugerida, justificativa_da_acao, observacoes. "
         "humor_do_mercado deve ser positivo, neutro ou cauteloso. "
         "acao_sugerida deve ser comprar_mais, segurar, reduzir ou observar. "
         "Preencha todas as chaves. "
@@ -330,19 +464,8 @@ def _is_transient_openclaw_reply(reply):
     return any(marker in text for marker in transient_markers)
 
 
-def _invoke_openclaw_asset_prompt(prompt: str):
-    result = invoke_tool(
-        "sessions_send",
-        {
-            "sessionKey": "main",
-            "message": prompt,
-            "timeoutSeconds": 120,
-        },
-        timeout_seconds=150,
-    )
-    if not isinstance(result, dict):
-        return "", None
-    reply = _extract_openclaw_reply(result)
+def _invoke_openclaw_asset_prompt(prompt: str, session_key: str | None = None):
+    reply = _invoke_openclaw_prompt(prompt, session_key=session_key or _session_key("main"))
     parsed = _normalize_asset_enrichment_payload(_extract_json_from_text(reply))
     return reply, parsed
 
@@ -542,4 +665,5 @@ __all__ = [
     "get_asset_enrichment",
     "get_asset_enrichment_history",
     "upsert_asset_enrichment",
+    "run_structured_openclaw_prompt",
 ]

@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Chart as ChartJS } from 'chart.js/auto'
 import { Line } from 'react-chartjs-2'
 import StatePanel from '../components/StatePanel'
+import FinanceInsightsCard from '../components/FinanceInsightsCard'
 import { useApiQuery } from '../hooks/useApiQuery'
 import { apiPost, apiDelete, clearApiCache } from '../api'
 import { formatCurrencyBRL, formatCompactBrl, formatPercent } from '../formatters'
@@ -899,7 +900,10 @@ function FinancasPage() {
           onAction={refetch}
         />
       ) : tab === 'Visão geral' ? (
-        <VisaoGeral data={data} monthRef={ref} openCat={openCat} setOpenCat={setOpenCat} />
+        <>
+          <VisaoGeral data={data} monthRef={ref} openCat={openCat} setOpenCat={setOpenCat} />
+          <FinanceInsightsCard monthParam={monthParam} />
+        </>
       ) : tab === 'Categorias' ? (
         <CategoriasTab data={data} openCat={openCat} setOpenCat={setOpenCat} />
       ) : tab === 'Cartões' ? (

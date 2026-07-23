@@ -263,7 +263,7 @@ function ChartsPage({ selectedPortfolioIds }) {
   const [range, setRange] = usePersistedState('charts.range.v1', '12m')
   const [scope, setScope] = usePersistedState('charts.scope.v1', 'all')
   const [annualMetrics, setAnnualMetrics] = usePersistedState('charts.annual-metrics.v1', ['invested', 'incomes'])
-  const [annualCategories, setAnnualCategories] = usePersistedState('charts.annual-categories.v1', ['br', 'us', 'fii', 'cripto', 'fixa'])
+  const [annualCategories, setAnnualCategories] = usePersistedState('charts.annual-categories.v1', ['br', 'us', 'etf', 'fii', 'cripto', 'fixa'])
   const [tickerSortBy, setTickerSortBy] = usePersistedState('charts.ticker-sort-by.v1', 'period_value')
   const [tickerSortMetric, setTickerSortMetric] = usePersistedState('charts.ticker-sort-metric.v1', 'incomes')
   const [tickerSortMonthKey, setTickerSortMonthKey] = usePersistedState('charts.ticker-sort-month.v1', 'total')
@@ -278,9 +278,9 @@ function ChartsPage({ selectedPortfolioIds }) {
   const previousPortfoliosRef = useRef('')
   const chartRefs = useRef({})
   const rangeValue = normalizeChoice(range, ['6m', '12m', '24m', '60m'], '12m')
-  const scopeValue = normalizeChoice(scope, ['all', 'br', 'us', 'fiis', 'crypto'], 'all')
+  const scopeValue = normalizeChoice(scope, ['all', 'br', 'us', 'etfs', 'fiis', 'crypto'], 'all')
   const annualMetricsValue = normalizeStringList(annualMetrics, ['invested', 'incomes'], ['invested', 'incomes'])
-  const annualCategoriesValue = normalizeStringList(annualCategories, ['br', 'us', 'fii', 'cripto', 'fixa'], ['br', 'us', 'fii', 'cripto', 'fixa'])
+  const annualCategoriesValue = normalizeStringList(annualCategories, ['br', 'us', 'etf', 'fii', 'cripto', 'fixa'], ['br', 'us', 'etf', 'fii', 'cripto', 'fixa'])
   const tickerSortByValue = normalizeChoice(tickerSortBy, ['ticker', 'period_value'], 'period_value')
   const tickerSortMetricValue = normalizeChoice(tickerSortMetric, ['invested', 'incomes'], 'incomes')
   const tickerSortMonthKeyValue = typeof tickerSortMonthKey === 'string' ? tickerSortMonthKey : 'total'
@@ -356,7 +356,7 @@ function ChartsPage({ selectedPortfolioIds }) {
 
   const onToggleCategory = (category) => {
     setAnnualCategories((current) => {
-      const base = normalizeStringList(current, ['br', 'us', 'fii', 'cripto', 'fixa'], ['br', 'us', 'fii', 'cripto', 'fixa'])
+      const base = normalizeStringList(current, ['br', 'us', 'etf', 'fii', 'cripto', 'fixa'], ['br', 'us', 'etf', 'fii', 'cripto', 'fixa'])
       const has = base.includes(category)
       if (has) {
         const next = base.filter((item) => item !== category)
@@ -403,6 +403,10 @@ function ChartsPage({ selectedPortfolioIds }) {
       if (annualCategoriesValue.includes('us')) {
         invested += Number(row.us_invested || 0)
         incomes += Number(row.us_incomes || 0)
+      }
+      if (annualCategoriesValue.includes('etf')) {
+        invested += Number(row.etf_invested || 0)
+        incomes += Number(row.etf_incomes || 0)
       }
       if (annualCategoriesValue.includes('fii')) {
         invested += Number(row.fii_invested || 0)
@@ -524,7 +528,7 @@ function ChartsPage({ selectedPortfolioIds }) {
 
   const classesTotal = (classesChart.values || []).reduce((acc, value) => acc + Number(value || 0), 0)
   const categoryTotal = (categoryChart.values || []).reduce((acc, value) => acc + Number(value || 0), 0)
-  const donutColors = ['#0f8a77', '#1f6feb', '#c48b2d', '#d95f2f']
+  const donutColors = ['#0f8a77', '#1f6feb', '#7b5cd6', '#c48b2d', '#d95f2f']
 
   const benchmarkData = {
     labels: benchmarkChart.labels || [],
@@ -981,6 +985,8 @@ function ChartsPage({ selectedPortfolioIds }) {
     'data',
     'br investidos',
     'br proventos',
+    'etf investidos',
+    'etf proventos',
     'fii investidos',
     'fii proventos',
     'fixa investidos',
@@ -994,6 +1000,8 @@ function ChartsPage({ selectedPortfolioIds }) {
     row.label,
     row.br_invested,
     row.br_incomes,
+    row.etf_invested,
+    row.etf_incomes,
     row.fii_invested,
     row.fii_incomes,
     row.fixa_invested,
@@ -1042,6 +1050,7 @@ function ChartsPage({ selectedPortfolioIds }) {
       <label><input type="checkbox" checked={annualMetricsValue.includes('incomes')} onChange={() => onToggleMetric('incomes')} /> Proventos</label>
       <label><input type="checkbox" checked={annualCategoriesValue.includes('br')} onChange={() => onToggleCategory('br')} /> BR</label>
       <label><input type="checkbox" checked={annualCategoriesValue.includes('us')} onChange={() => onToggleCategory('us')} /> US</label>
+      <label><input type="checkbox" checked={annualCategoriesValue.includes('etf')} onChange={() => onToggleCategory('etf')} /> ETFs</label>
       <label><input type="checkbox" checked={annualCategoriesValue.includes('fii')} onChange={() => onToggleCategory('fii')} /> FIIs</label>
       <label><input type="checkbox" checked={annualCategoriesValue.includes('cripto')} onChange={() => onToggleCategory('cripto')} /> Cripto</label>
       <label><input type="checkbox" checked={annualCategoriesValue.includes('fixa')} onChange={() => onToggleCategory('fixa')} /> FIXA</label>
@@ -1558,12 +1567,14 @@ function ChartsPage({ selectedPortfolioIds }) {
                 <tr>
                   <th rowSpan={2}>data</th>
                   <th colSpan={2}>BR</th>
+                  <th colSpan={2}>ETFs</th>
                   <th colSpan={2}>FII</th>
                   <th colSpan={2}>FIXA</th>
                   <th colSpan={2}>Cripto</th>
                   <th colSpan={2}>TOTAL</th>
                 </tr>
                 <tr>
+                  <th>investidos</th><th>proventos</th>
                   <th>investidos</th><th>proventos</th>
                   <th>investidos</th><th>proventos</th>
                   <th>investidos</th><th>proventos</th>
@@ -1576,6 +1587,7 @@ function ChartsPage({ selectedPortfolioIds }) {
                   <tr key={row.label}>
                     <td>{row.label}</td>
                     <td>{brl(row.br_invested)}</td><td>{brl(row.br_incomes)}</td>
+                    <td>{brl(row.etf_invested)}</td><td>{brl(row.etf_incomes)}</td>
                     <td>{brl(row.fii_invested)}</td><td>{brl(row.fii_incomes)}</td>
                     <td>{brl(row.fixa_invested)}</td><td>{brl(row.fixa_incomes)}</td>
                     <td>{brl(row.cripto_invested)}</td><td>{brl(row.cripto_incomes)}</td>

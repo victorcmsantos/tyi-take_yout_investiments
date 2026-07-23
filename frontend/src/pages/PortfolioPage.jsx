@@ -12,6 +12,7 @@ import { emitAppToast } from '../toast'
 const CATEGORY_META = [
   { key: 'br_stocks', label: 'Acoes BR' },
   { key: 'us_stocks', label: 'Acoes US' },
+  { key: 'etfs', label: 'ETFs' },
   { key: 'crypto', label: 'Cripto' },
   { key: 'fiis', label: 'FIIs' },
 ]
@@ -111,6 +112,7 @@ function PortfolioPage({ selectedPortfolioIds }) {
   const [sortBy, setSortBy] = useState('name')
   const [sortDir, setSortDir] = useState('asc')
   const [openGroups, setOpenGroups] = useState({})
+  const [usCurrency, setUsCurrency] = useState('BRL')
   const {
     data: snapshot,
     loading,
@@ -417,6 +419,16 @@ function PortfolioPage({ selectedPortfolioIds }) {
           const totalValue = Number(summary.total_value || 0)
           const groupWeight = snapshot.total_value > 0 ? (totalValue / snapshot.total_value) * 100 : 0
           const isOpen = !!openGroups[meta.key]
+          // Acoes US: valores chegam em BRL (cotacao de hoje); o toggle divide pela
+          // mesma cotacao para exibir em US$ nativo. Demais grupos ficam sempre em R$.
+          const usdbrlRate = Number(snapshot?.usdbrl_rate || 0)
+          const showUsd = meta.key === 'us_stocks' && usCurrency === 'USD'
+          const money = (value) => (
+            showUsd
+              ? (usdbrlRate > 0 ? `US$ ${(Number(value || 0) / usdbrlRate).toFixed(2)}` : 'US$ --')
+              : brl(value)
+          )
+          const openMoneyLabel = showUsd ? 'Aberto (US$)' : 'Aberto (R$)'
 
           return (
             <section key={meta.key} className="asset-group">
@@ -433,7 +445,7 @@ function PortfolioPage({ selectedPortfolioIds }) {
                   <div className="asset-group-metrics">
                     <div className="metric-item">
                       <span className="metric-label">Valor total</span>
-                      <strong>{brl(totalValue)}</strong>
+                      <strong>{money(totalValue)}</strong>
                     </div>
                     <div className="metric-item">
                       <span className="metric-label">Variacao</span>
@@ -442,9 +454,9 @@ function PortfolioPage({ selectedPortfolioIds }) {
                       </strong>
                     </div>
                     <div className="metric-item">
-                      <span className="metric-label">Aberto (R$)</span>
+                      <span className="metric-label">{openMoneyLabel}</span>
                       <strong className={Number(summary.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>
-                        {brl(summary.open_pnl_value)}
+                        {money(summary.open_pnl_value)}
                       </strong>
                     </div>
                     <div className="metric-item">
@@ -459,6 +471,29 @@ function PortfolioPage({ selectedPortfolioIds }) {
               {isOpen && (
                 <>
                   <div className="group-export-actions">
+                    {meta.key === 'us_stocks' && (
+                      <div className="currency-toggle" role="group" aria-label="Moeda de exibicao">
+                        <button
+                          type="button"
+                          className={`icon-btn ${usCurrency === 'BRL' ? 'active' : ''}`}
+                          aria-pressed={usCurrency === 'BRL'}
+                          onClick={() => setUsCurrency('BRL')}
+                        >
+                          R$
+                        </button>
+                        <button
+                          type="button"
+                          className={`icon-btn ${usCurrency === 'USD' ? 'active' : ''}`}
+                          aria-pressed={usCurrency === 'USD'}
+                          onClick={() => setUsCurrency('USD')}
+                        >
+                          US$
+                        </button>
+                        {usdbrlRate > 0 && (
+                          <small className="currency-rate-hint">1 US$ = R$ {usdbrlRate.toFixed(2)}</small>
+                        )}
+                      </div>
+                    )}
                     <button type="button" className="icon-btn" onClick={() => exportVariableGroupCsv(meta, items)}>
                       Exportar CSV
                     </button>
@@ -467,14 +502,14 @@ function PortfolioPage({ selectedPortfolioIds }) {
                     </button>
                   </div>
                   <div className="cards">
-                    <article className="card"><h3>Patrimonio</h3><p>{brl(summary.total_value)}</p></article>
-                    <article className="card"><h3>Investido</h3><p>{brl(summary.invested_value)}</p></article>
-                    <article className="card"><h3>Aberto (R$)</h3><p className={Number(summary.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>{brl(summary.open_pnl_value)}</p></article>
+                    <article className="card"><h3>Patrimonio</h3><p>{money(summary.total_value)}</p></article>
+                    <article className="card"><h3>Investido</h3><p>{money(summary.invested_value)}</p></article>
+                    <article className="card"><h3>{openMoneyLabel}</h3><p className={Number(summary.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>{money(summary.open_pnl_value)}</p></article>
                     <article className="card"><h3>Aberto (%)</h3><p className={Number(summary.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>{Number(summary.open_pnl_pct || 0).toFixed(2)}%</p></article>
-                    <article className="card"><h3>Proventos mes atual</h3><p>{brl(summary.incomes_current_month)}</p></article>
-                    <article className="card"><h3>Proventos 3 meses</h3><p>{brl(summary.incomes_3m)}</p></article>
-                    <article className="card"><h3>Proventos 12 meses</h3><p>{brl(summary.incomes_12m)}</p></article>
-                    <article className="card"><h3>Proventos total</h3><p>{brl(summary.total_incomes)}</p></article>
+                    <article className="card"><h3>Proventos mes atual</h3><p>{money(summary.incomes_current_month)}</p></article>
+                    <article className="card"><h3>Proventos 3 meses</h3><p>{money(summary.incomes_3m)}</p></article>
+                    <article className="card"><h3>Proventos 12 meses</h3><p>{money(summary.incomes_12m)}</p></article>
+                    <article className="card"><h3>Proventos total</h3><p>{money(summary.total_incomes)}</p></article>
                   </div>
 
                   <div className="table-wrap">
@@ -489,7 +524,7 @@ function PortfolioPage({ selectedPortfolioIds }) {
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('invested_value')}>{sortLabel('Investido', 'invested_value')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('value')}>{sortLabel('Total', 'value')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('total_incomes')}>{sortLabel('Proventos', 'total_incomes')}</button></th>
-                          <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('open_pnl_value')}>{sortLabel('Aberto (R$)', 'open_pnl_value')}</button></th>
+                          <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('open_pnl_value')}>{sortLabel(openMoneyLabel, 'open_pnl_value')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('open_pnl_pct')}>{sortLabel('Aberto (%)', 'open_pnl_pct')}</button></th>
                           <th><button type="button" className="th-sort-btn" onClick={() => toggleSort('weight')}>{sortLabel('Peso', 'weight')}</button></th>
                         </tr>
@@ -513,12 +548,12 @@ function PortfolioPage({ selectedPortfolioIds }) {
                             </td>
                             <td>{item.name}</td>
                             <td>{formatQuantity(item.shares, { maxDigits: quantityDigitsByCategory(meta.key), fallback: '0' })}</td>
-                            <td>{brl(item.price)}</td>
-                            <td>{brl(item.avg_price)}</td>
-                            <td>{brl(item.invested_value)}</td>
-                            <td>{brl(item.value)}</td>
-                            <td>{brl(item.total_incomes)}</td>
-                            <td className={Number(item.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>{brl(item.open_pnl_value)}</td>
+                            <td>{money(item.price)}</td>
+                            <td>{money(item.avg_price)}</td>
+                            <td>{money(item.invested_value)}</td>
+                            <td>{money(item.value)}</td>
+                            <td>{money(item.total_incomes)}</td>
+                            <td className={Number(item.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>{money(item.open_pnl_value)}</td>
                             <td className={Number(item.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>{Number(item.open_pnl_pct || 0).toFixed(2)}%</td>
                             <td>{Number(item.weight || 0).toFixed(2)}%</td>
                           </tr>

@@ -35,6 +35,22 @@ export function formatQuantity(value, { minDigits = 0, maxDigits = 4, trim = tru
   return text.replace(/,(\d*?[1-9])0+$/, ',$1').replace(/,$/, '')
 }
 
+// Espelha _is_us_stock_ticker do backend: acoes US sao so letras (dot removido),
+// <= 6 chars, e nao FII (...11) nem cripto (...USDT / ...-USD).
+export function isUsStockTicker(ticker) {
+  const t = String(ticker || '').trim().toUpperCase()
+  if (!t) return false
+  if (t.endsWith('11')) return false
+  if (t.endsWith('USDT') || t.endsWith('-USD')) return false
+  const clean = t.replace(/\./g, '')
+  return /^[A-Z]+$/.test(clean) && clean.length <= 6
+}
+
+// Moeda de lancamento do ativo: acoes US sao em dolar; o resto em real.
+export function assetPriceCurrency(ticker) {
+  return isUsStockTicker(ticker) ? 'US$' : 'R$'
+}
+
 export function formatCompactBrl(value, fallback = '-') {
   const num = toFiniteNumber(value, null)
   if (num == null) return fallback

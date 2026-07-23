@@ -293,10 +293,8 @@ def _normalize_transaction_form_data(form_data: dict, current_portfolio_id=None)
     price = _parse_float(form_data.get("price"))
     if price is None or price <= 0:
         return False, "Preco precisa ser numerico e maior que zero."
-    ok_conversion, converted_price, conversion_error = legacy._convert_usd_to_brl_if_needed(ticker, price)
-    if not ok_conversion:
-        return False, conversion_error
-    price = converted_price
+    # Acoes US guardam o preco em USD nativo; a conversao para BRL acontece na leitura
+    # (snapshot/graficos/telas) pela cotacao de hoje. Demais ativos seguem em BRL.
 
     transaction_date = _parse_date(form_data.get("date"))
     if transaction_date is None:
@@ -746,10 +744,7 @@ def add_income(form_data: dict):
     amount = _parse_float(form_data.get("amount"))
     if amount is None or amount <= 0:
         return False, "Valor do provento precisa ser numerico e maior que zero."
-    ok_conversion, converted_amount, conversion_error = legacy._convert_usd_to_brl_if_needed(ticker, amount)
-    if not ok_conversion:
-        return False, conversion_error
-    amount = converted_amount
+    # Proventos de acoes US ficam em USD nativo; conversao p/ BRL e na leitura (cotacao de hoje).
 
     income_date = _parse_date(form_data.get("date"))
     if income_date is None:
@@ -811,10 +806,7 @@ def update_income(income_id, form_data: dict):
     amount = _parse_float(form_data.get("amount"))
     if amount is None or amount <= 0:
         return False, "Valor do provento precisa ser numerico e maior que zero."
-    ok_conversion, converted_amount, conversion_error = legacy._convert_usd_to_brl_if_needed(ticker, amount)
-    if not ok_conversion:
-        return False, conversion_error
-    amount = converted_amount
+    # Proventos de acoes US ficam em USD nativo; conversao p/ BRL e na leitura (cotacao de hoje).
 
     income_date = _parse_date(form_data.get("date"))
     if income_date is None:
@@ -1552,7 +1544,15 @@ def get_transactions(portfolio_ids):
         """,
         tuple(pids),
     ).fetchall()
-    return [dict(row) for row in rows]
+    # Acoes US sao guardadas em USD; converte para BRL na leitura (cotacao de hoje).
+    rate = legacy._get_usdbrl_rate()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["price"] = legacy._usd_to_brl_amount(item["ticker"], item["price"], rate)
+        item["total_value"] = legacy._usd_to_brl_amount(item["ticker"], item["total_value"], rate)
+        result.append(item)
+    return result
 
 
 def delete_transactions(transaction_ids, portfolio_ids):
@@ -1613,7 +1613,14 @@ def get_incomes(portfolio_ids):
         """,
         tuple(pids),
     ).fetchall()
-    return [dict(row) for row in rows]
+    # Proventos de acoes US ficam em USD; converte para BRL na leitura (cotacao de hoje).
+    rate = legacy._get_usdbrl_rate()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["amount"] = legacy._usd_to_brl_amount(item["ticker"], item["amount"], rate)
+        result.append(item)
+    return result
 
 
 def delete_incomes(income_ids, portfolio_ids):
@@ -1674,7 +1681,15 @@ def get_asset_transactions(ticker: str, portfolio_ids):
         """,
         tuple([ticker.upper()] + pids),
     ).fetchall()
-    return [dict(row) for row in rows]
+    # Acoes US guardam USD; converte para BRL na leitura (cotacao de hoje).
+    rate = legacy._get_usdbrl_rate()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["price"] = legacy._usd_to_brl_amount(item["ticker"], item["price"], rate)
+        item["total_value"] = legacy._usd_to_brl_amount(item["ticker"], item["total_value"], rate)
+        result.append(item)
+    return result
 
 
 def get_asset_incomes(ticker: str, portfolio_ids):
@@ -1698,7 +1713,14 @@ def get_asset_incomes(ticker: str, portfolio_ids):
         """,
         tuple([ticker.upper()] + pids),
     ).fetchall()
-    return [dict(row) for row in rows]
+    # Proventos de acoes US ficam em USD; converte para BRL na leitura (cotacao de hoje).
+    rate = legacy._get_usdbrl_rate()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["amount"] = legacy._usd_to_brl_amount(item["ticker"], item["amount"], rate)
+        result.append(item)
+    return result
 
 
 def get_asset_position_summary(ticker: str, portfolio_ids):
@@ -1734,13 +1756,15 @@ def get_asset_position_summary(ticker: str, portfolio_ids):
         tuple([ticker.upper()] + pids),
     ).fetchall()
 
+    # Acoes US guardam USD; converte custo/proventos para BRL na leitura (cotacao de hoje).
+    rate = legacy._get_usdbrl_rate()
     shares = 0
     total_cost = 0.0
 
     for row in rows:
         tx_type = row["tx_type"]
         tx_shares = row["shares"]
-        tx_price = row["price"]
+        tx_price = legacy._usd_to_brl_amount(ticker, row["price"], rate)
 
         if tx_type == "buy":
             total_cost += tx_shares * tx_price
@@ -1796,10 +1820,10 @@ def get_asset_position_summary(ticker: str, portfolio_ids):
             + pids
         ),
     ).fetchone()
-    total_incomes = float(income_row["total_incomes"]) if income_row else 0.0
-    incomes_current_month = float(income_row["incomes_current_month"]) if income_row else 0.0
-    incomes_3m = float(income_row["incomes_3m"]) if income_row else 0.0
-    incomes_12m = float(income_row["incomes_12m"]) if income_row else 0.0
+    total_incomes = legacy._usd_to_brl_amount(ticker, float(income_row["total_incomes"]) if income_row else 0.0, rate)
+    incomes_current_month = legacy._usd_to_brl_amount(ticker, float(income_row["incomes_current_month"]) if income_row else 0.0, rate)
+    incomes_3m = legacy._usd_to_brl_amount(ticker, float(income_row["incomes_3m"]) if income_row else 0.0, rate)
+    incomes_12m = legacy._usd_to_brl_amount(ticker, float(income_row["incomes_12m"]) if income_row else 0.0, rate)
 
     return {
         "shares": shares,

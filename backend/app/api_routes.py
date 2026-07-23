@@ -1576,11 +1576,12 @@ def _build_charts_core_payload(portfolio_ids):
     category_labels = {
         "br_stocks": "Acoes BR",
         "us_stocks": "Acoes US",
+        "etfs": "ETFs",
         "crypto": "Cripto",
         "fiis": "FIIs",
     }
     category_chart = {"labels": [], "values": []}
-    for key in ("br_stocks", "us_stocks", "crypto", "fiis"):
+    for key in ("br_stocks", "us_stocks", "etfs", "crypto", "fiis"):
         value = float(portfolio["group_totals"].get(key, 0.0))
         if value <= 0:
             continue
@@ -1596,7 +1597,7 @@ def _build_charts_core_payload(portfolio_ids):
     }
 
     allocation_by_group_charts = []
-    for key in ("br_stocks", "us_stocks", "fiis", "crypto"):
+    for key in ("br_stocks", "us_stocks", "etfs", "fiis", "crypto"):
         items = portfolio["grouped_positions"].get(key, [])
         if not items:
             continue
@@ -1626,9 +1627,10 @@ def _build_charts_core_payload(portfolio_ids):
     }
 
     result_by_category_chart = {
-        "labels": ["US", "FIIs", "BR", "Cripto"],
+        "labels": ["US", "ETFs", "FIIs", "BR", "Cripto"],
         "values": [
             round(float(portfolio["group_summaries"]["us_stocks"]["open_pnl_value"]), 2),
+            round(float(portfolio["group_summaries"]["etfs"]["open_pnl_value"]), 2),
             round(float(portfolio["group_summaries"]["fiis"]["open_pnl_value"]), 2),
             round(float(portfolio["group_summaries"]["br_stocks"]["open_pnl_value"]), 2),
             round(float(portfolio["group_summaries"]["crypto"]["open_pnl_value"]), 2),

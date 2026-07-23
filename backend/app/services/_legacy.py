@@ -57,10 +57,16 @@ _NON_FII_11_TICKERS = {
     "CPLE11",
     "ENGI11",
     "KLBN11",
-    "LFTB11",
     "SANB11",
     "SAPR11",
     "TAEE11",
+}
+# ETFs brasileiros (terminam em 11, setor "Fundos/ETFs" igual aos FIIs, entao NAO
+# da pra distinguir por setor/nome). Lista explicita, no mesmo padrao de
+# _NON_FII_11_TICKERS. Adicione novos ETFs BR aqui.
+_ETF_TICKERS = {
+    "LFTB11",
+    "AUVP11",
 }
 _NON_FII_11_NAME_MARKERS = (
     "ALUPAR",
@@ -924,6 +930,7 @@ def _build_portfolio_tactical_summary(positions, group_summaries, total_value):
     category_labels = {
         "br_stocks": "Acoes BR",
         "us_stocks": "Acoes US",
+        "etfs": "ETFs",
         "crypto": "Cripto",
         "fiis": "FIIs",
     }
@@ -2988,6 +2995,117 @@ def _convert_usd_to_brl_if_needed(ticker: str, amount: float):
     return True, amount * usdbrl, None
 
 
+def _usd_to_brl_amount(ticker: str, amount, rate=None):
+    """Converte, na LEITURA, um valor guardado em USD (acoes US) para BRL pela
+    cotacao atual. Para ativos nao-US retorna o valor inalterado.
+
+    Acoes US passaram a ser guardadas em dolar nativo (transactions.price /
+    incomes.amount); o real e derivado aqui, sempre pela cotacao de hoje. Se a
+    cotacao nao estiver disponivel (cache frio, raro), devolve o valor cru para
+    nao quebrar o calculo em lote."""
+    if amount is None:
+        return amount
+    if not _is_us_stock_ticker(ticker):
+        return amount
+    if rate is None:
+        rate = _get_usdbrl_rate()
+    if not rate:
+        return amount
+    return amount * rate
+
+
+def migrate_us_assets_stored_to_usd():
+    """Migracao unica: acoes US passaram a ser guardadas em USD nativo. Converte os
+    valores ja existentes (transactions.price / incomes.amount) de BRL para USD,
+    dividindo pela cotacao USD/BRL da DATA de cada lancamento (recupera o dolar real).
+
+    Idempotente via tabela app_meta. Se o historico de cambio nao estiver disponivel,
+    cai para a cotacao atual (menos exato, mas evita janela com valores inflados)."""
+    db = get_db()
+    db.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)")
+    marker = db.execute(
+        "SELECT value FROM app_meta WHERE key = ?", ("us_assets_stored_in_usd",)
+    ).fetchone()
+    if marker:
+        return {"status": "skipped", "reason": "already-migrated"}
+
+    tx_rows = [
+        row for row in db.execute("SELECT id, ticker, date, price FROM transactions").fetchall()
+        if _is_us_stock_ticker(row["ticker"])
+    ]
+    inc_rows = [
+        row for row in db.execute("SELECT id, ticker, date, amount FROM incomes").fetchall()
+        if _is_us_stock_ticker(row["ticker"])
+    ]
+
+    if not tx_rows and not inc_rows:
+        db.execute(
+            "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)",
+            ("us_assets_stored_in_usd", "1"),
+        )
+        db.commit()
+        return {"status": "done", "tx": 0, "incomes": 0, "reason": "no-us-rows"}
+
+    day_map = _download_daily_close_map("USDBRL=X", "max") or _download_daily_close_map("BRL=X", "max")
+    fallback_rate = _get_usdbrl_rate()
+
+    def _rate_on(date_value):
+        key = str(date_value or "")[:10]
+        if day_map and key:
+            try:
+                cursor = datetime.strptime(key, "%Y-%m-%d").date()
+            except ValueError:
+                cursor = None
+            for _ in range(10):  # anda p/ tras em fim de semana / feriado
+                if cursor is None:
+                    break
+                day_key = cursor.strftime("%Y-%m-%d")
+                if day_map.get(day_key):
+                    return float(day_map[day_key])
+                cursor = cursor - timedelta(days=1)
+        return fallback_rate
+
+    tx_updates = []
+    for row in tx_rows:
+        rate = _rate_on(row["date"])
+        if not rate:
+            return {"status": "error", "reason": f"sem cotacao para {row['ticker']} em {row['date']}"}
+        tx_updates.append((float(row["price"]) / rate, row["id"]))
+
+    inc_updates = []
+    for row in inc_rows:
+        rate = _rate_on(row["date"])
+        if not rate:
+            return {"status": "error", "reason": f"sem cotacao para {row['ticker']} em {row['date']}"}
+        inc_updates.append((float(row["amount"]) / rate, row["id"]))
+
+    if tx_updates:
+        db.executemany("UPDATE transactions SET price = ? WHERE id = ?", tx_updates)
+    if inc_updates:
+        db.executemany("UPDATE incomes SET amount = ? WHERE id = ?", inc_updates)
+    db.execute(
+        "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)",
+        ("us_assets_stored_in_usd", "1"),
+    )
+    db.commit()
+
+    # Os caches de graficos foram calculados com os valores antigos (US em BRL a
+    # cambio historico); invalida para reconstruir com o novo modelo.
+    try:
+        all_pids = [row["id"] for row in db.execute("SELECT id FROM portfolios").fetchall()]
+        if all_pids:
+            invalidate_chart_snapshots(all_pids)
+    except Exception:
+        pass
+
+    return {
+        "status": "done",
+        "tx": len(tx_updates),
+        "incomes": len(inc_updates),
+        "historical_fx": bool(day_map),
+    }
+
+
 def _history_variations(hist, current_price=None):
     if hist is None or hist.empty:
         return {"variation_7d": None, "variation_30d": None}
@@ -3562,6 +3680,10 @@ def _position_category(ticker: str, name: str, sector: str):
     ):
         return "crypto"
 
+    # ETFs brasileiros (lista explicita) antes de FII/BR, pois compartilham setor.
+    if ticker_up in _ETF_TICKERS:
+        return "etfs"
+
     is_explicit_fii = (
         ticker_up.endswith("11")
         and (
@@ -4017,7 +4139,11 @@ def get_income_totals_by_ticker(portfolio_ids):
         tuple(pids),
     ).fetchall()
 
-    by_ticker = {row["ticker"]: float(row["total_incomes"]) for row in rows}
+    usdbrl_rate = _get_usdbrl_rate()
+    by_ticker = {
+        row["ticker"]: _usd_to_brl_amount(row["ticker"], float(row["total_incomes"]), usdbrl_rate)
+        for row in rows
+    }
     total = round(sum(by_ticker.values()), 2)
     return by_ticker, total
 
@@ -4117,6 +4243,8 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str =
         """,
         tuple(pids),
     ).fetchall()
+    # Acoes US guardam price/amount em USD; converte para BRL pela cotacao de hoje.
+    usdbrl_rate = _get_usdbrl_rate()
     cost_state = {}
     for tx in tx_rows:
         ticker = tx["ticker"]
@@ -4124,9 +4252,10 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str =
         shares = current["shares"]
         cost = current["cost"]
 
+        tx_price = _usd_to_brl_amount(ticker, tx["price"], usdbrl_rate)
         if tx["tx_type"] == "buy":
             shares += tx["shares"]
-            cost += tx["shares"] * tx["price"]
+            cost += tx["shares"] * tx_price
         else:
             if shares > 0:
                 avg_price = cost / shares
@@ -4164,7 +4293,10 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str =
         """,
         tuple(pids),
     ).fetchall()
-    incomes_by_ticker = {row["ticker"]: float(row["total_incomes"]) for row in income_rows}
+    incomes_by_ticker = {
+        row["ticker"]: _usd_to_brl_amount(row["ticker"], float(row["total_incomes"]), usdbrl_rate)
+        for row in income_rows
+    }
     incomes_total = sum(incomes_by_ticker.values())
     income_current_month_rows = db.execute(
         """
@@ -4179,7 +4311,8 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str =
         tuple(pids + [current_month_start.strftime("%Y-%m-%d")]),
     ).fetchall()
     incomes_current_month_by_ticker = {
-        row["ticker"]: float(row["total_incomes"]) for row in income_current_month_rows
+        row["ticker"]: _usd_to_brl_amount(row["ticker"], float(row["total_incomes"]), usdbrl_rate)
+        for row in income_current_month_rows
     }
     income_3m_rows = db.execute(
         """
@@ -4193,7 +4326,10 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str =
         """,
         tuple(pids + [start_3m.strftime("%Y-%m-%d")]),
     ).fetchall()
-    incomes_3m_by_ticker = {row["ticker"]: float(row["total_incomes"]) for row in income_3m_rows}
+    incomes_3m_by_ticker = {
+        row["ticker"]: _usd_to_brl_amount(row["ticker"], float(row["total_incomes"]), usdbrl_rate)
+        for row in income_3m_rows
+    }
     income_12m_rows = db.execute(
         """
         SELECT ticker, COALESCE(SUM(amount), 0) AS total_incomes
@@ -4206,38 +4342,21 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str =
         """,
         tuple(pids + [start_12m.strftime("%Y-%m-%d")]),
     ).fetchall()
-    incomes_12m_by_ticker = {row["ticker"]: float(row["total_incomes"]) for row in income_12m_rows}
-    incomes_summary_row = db.execute(
-        """
-        SELECT
-            COALESCE(SUM(amount), 0) AS total_incomes,
-            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_current_month,
-            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_3m,
-            COALESCE(SUM(CASE WHEN date >= ? THEN amount ELSE 0 END), 0) AS incomes_12m
-        FROM incomes
-        WHERE portfolio_id IN ("""
-        + placeholders
-        + """)
-        """,
-        tuple(
-            [
-                current_month_start.strftime("%Y-%m-%d"),
-                start_3m.strftime("%Y-%m-%d"),
-                start_12m.strftime("%Y-%m-%d"),
-            ]
-            + pids
-        ),
-    ).fetchone()
-    if incomes_summary_row:
-        incomes_total = float(incomes_summary_row["total_incomes"] or incomes_total)
-        incomes_current_month = float(incomes_summary_row["incomes_current_month"] or 0.0)
-        incomes_3m = float(incomes_summary_row["incomes_3m"] or 0.0)
-        incomes_12m = float(incomes_summary_row["incomes_12m"] or 0.0)
+    incomes_12m_by_ticker = {
+        row["ticker"]: _usd_to_brl_amount(row["ticker"], float(row["total_incomes"]), usdbrl_rate)
+        for row in income_12m_rows
+    }
+    # Totais gerais derivam dos mapas por ticker (ja convertidos p/ BRL), garantindo
+    # que topo == soma dos grupos == soma das posicoes mesmo com acoes US em USD.
+    incomes_total = sum(incomes_by_ticker.values())
+    incomes_current_month = sum(incomes_current_month_by_ticker.values())
+    incomes_3m = sum(incomes_3m_by_ticker.values())
+    incomes_12m = sum(incomes_12m_by_ticker.values())
 
     for item in positions:
         invested_total += cost_state.get(item["ticker"], {"cost": 0.0})["cost"]
 
-    grouped_positions = {"br_stocks": [], "us_stocks": [], "crypto": [], "fiis": []}
+    grouped_positions = {"br_stocks": [], "us_stocks": [], "etfs": [], "crypto": [], "fiis": []}
 
     for item in positions:
         invested_item = cost_state.get(item["ticker"], {"cost": 0.0})["cost"]
@@ -4331,6 +4450,7 @@ def get_portfolio_snapshot(portfolio_ids, sort_by: str = "name", sort_dir: str =
         "tactical_summary": tactical_summary,
         "sort_by": safe_sort_by,
         "sort_dir": safe_sort_dir,
+        "usdbrl_rate": usdbrl_rate,
     }
 
 
@@ -4367,12 +4487,15 @@ def _build_monthly_class_summary(portfolio_ids):
             return "br"
         if category == "us_stocks":
             return "us"
+        if category == "etfs":
+            return "etf"
         if category == "fiis":
             return "fii"
         if category == "crypto":
             return "cripto"
         return None
 
+    usdbrl_rate = _get_usdbrl_rate()
     rows_map = {}
     month_set = set()
 
@@ -4383,6 +4506,8 @@ def _build_monthly_class_summary(portfolio_ids):
                 "br_incomes": 0.0,
                 "us_invested": 0.0,
                 "us_incomes": 0.0,
+                "etf_invested": 0.0,
+                "etf_incomes": 0.0,
                 "fii_invested": 0.0,
                 "fii_incomes": 0.0,
                 "fixa_invested": 0.0,
@@ -4420,7 +4545,8 @@ def _build_monthly_class_summary(portfolio_ids):
         _ensure_month_entry(month_key)
         # "Investidos" segue aporte de compras no mes.
         if row["tx_type"] == "buy":
-            rows_map[month_key][f"{bucket}_invested"] += float(row["amount"] or 0.0)
+            amount = _usd_to_brl_amount(row["ticker"], float(row["amount"] or 0.0), usdbrl_rate)
+            rows_map[month_key][f"{bucket}_invested"] += amount
 
     income_rows = db.execute(
         """
@@ -4447,7 +4573,9 @@ def _build_monthly_class_summary(portfolio_ids):
         if not bucket:
             continue
         _ensure_month_entry(month_key)
-        rows_map[month_key][f"{bucket}_incomes"] += float(row["amount"] or 0.0)
+        rows_map[month_key][f"{bucket}_incomes"] += _usd_to_brl_amount(
+            row["ticker"], float(row["amount"] or 0.0), usdbrl_rate
+        )
 
     fixed_rows = db.execute(
         """
@@ -4493,6 +4621,7 @@ def _build_monthly_class_summary(portfolio_ids):
         total_invested = (
             values["br_invested"]
             + values["us_invested"]
+            + values["etf_invested"]
             + values["fii_invested"]
             + values["fixa_invested"]
             + values["cripto_invested"]
@@ -4500,6 +4629,7 @@ def _build_monthly_class_summary(portfolio_ids):
         total_incomes = (
             values["br_incomes"]
             + values["us_incomes"]
+            + values["etf_incomes"]
             + values["fii_incomes"]
             + values["fixa_incomes"]
             + values["cripto_incomes"]
@@ -4511,6 +4641,8 @@ def _build_monthly_class_summary(portfolio_ids):
                 "br_incomes": round(values["br_incomes"], 2),
                 "us_invested": round(values["us_invested"], 2),
                 "us_incomes": round(values["us_incomes"], 2),
+                "etf_invested": round(values["etf_invested"], 2),
+                "etf_incomes": round(values["etf_incomes"], 2),
                 "fii_invested": round(values["fii_invested"], 2),
                 "fii_incomes": round(values["fii_incomes"], 2),
                 "fixa_invested": round(values["fixa_invested"], 2),
@@ -4575,6 +4707,7 @@ def _build_monthly_ticker_summary(portfolio_ids, months=24):
         if month_key not in month_map:
             month_map[month_key] = {"invested": 0.0, "incomes": 0.0}
 
+    usdbrl_rate = _get_usdbrl_rate()
     tx_rows = db.execute(
         """
         SELECT
@@ -4604,7 +4737,7 @@ def _build_monthly_ticker_summary(portfolio_ids, months=24):
         if not ticker:
             continue
 
-        amount = float(row["amount"] or 0.0)
+        amount = _usd_to_brl_amount(ticker, float(row["amount"] or 0.0), usdbrl_rate)
         ticker_name_map[ticker] = (row["name"] or ticker).strip() or ticker
         ticker_category_map[ticker] = _position_category(ticker, row["name"], row["sector"])
 
@@ -4642,7 +4775,7 @@ def _build_monthly_ticker_summary(portfolio_ids, months=24):
         if not ticker:
             continue
 
-        amount = float(row["amount"] or 0.0)
+        amount = _usd_to_brl_amount(ticker, float(row["amount"] or 0.0), usdbrl_rate)
         ticker_name_map[ticker] = (row["name"] or ticker).strip() or ticker
         ticker_category_map[ticker] = _position_category(ticker, row["name"], row["sector"])
 
@@ -4746,6 +4879,8 @@ def _combine_monthly_class_rows(parts):
         "br_incomes",
         "us_invested",
         "us_incomes",
+        "etf_invested",
+        "etf_incomes",
         "fii_invested",
         "fii_incomes",
         "fixa_invested",
@@ -4772,6 +4907,7 @@ def _combine_monthly_class_rows(parts):
         total_invested = (
             values["br_invested"]
             + values["us_invested"]
+            + values["etf_invested"]
             + values["fii_invested"]
             + values["fixa_invested"]
             + values["cripto_invested"]
@@ -4779,6 +4915,7 @@ def _combine_monthly_class_rows(parts):
         total_incomes = (
             values["br_incomes"]
             + values["us_incomes"]
+            + values["etf_incomes"]
             + values["fii_incomes"]
             + values["fixa_incomes"]
             + values["cripto_incomes"]
@@ -4790,6 +4927,8 @@ def _combine_monthly_class_rows(parts):
                 "br_incomes": round(values["br_incomes"], 2),
                 "us_invested": round(values["us_invested"], 2),
                 "us_incomes": round(values["us_incomes"], 2),
+                "etf_invested": round(values["etf_invested"], 2),
+                "etf_incomes": round(values["etf_incomes"], 2),
                 "fii_invested": round(values["fii_invested"], 2),
                 "fii_incomes": round(values["fii_incomes"], 2),
                 "fixa_invested": round(values["fixa_invested"], 2),
@@ -5255,7 +5394,7 @@ def _portfolio_daily_value_series(snapshot: dict, day_keys, period: str):
             "missing_tickers": [],
         }
 
-    selected_categories = {"br_stocks", "us_stocks", "fiis", "crypto"}
+    selected_categories = {"br_stocks", "us_stocks", "etfs", "fiis", "crypto"}
     selected_positions = []
     for item in positions:
         category = _position_category(item.get("ticker"), item.get("name"), item.get("sector"))
@@ -5293,7 +5432,10 @@ def _portfolio_daily_value_series(snapshot: dict, day_keys, period: str):
             continue
 
         levels = _levels_from_day_map(day_keys, ticker_day_map, fill_before_first=True)
-        if _is_usd_quoted_ticker(ticker) and usdbrl_levels:
+        # Acoes US: a serie e um ratio sobre current_value (ja em BRL pela cotacao de
+        # hoje); deixar os niveis em USD faz o FX se cancelar no ratio -> "tudo pela
+        # cotacao atual". Cripto cotada em USD mantem o cambio historico (existente).
+        if _is_usd_quoted_ticker(ticker) and not _is_us_stock_ticker(ticker) and usdbrl_levels:
             converted = []
             for idx, value in enumerate(levels):
                 fx = usdbrl_levels[idx] if idx < len(usdbrl_levels) else None
@@ -5481,12 +5623,13 @@ def _portfolio_monthly_cumulative(snapshot, month_keys, period: str, scope_key: 
         return [None for _ in month_keys]
 
     selected_categories = {
-        "all": {"br_stocks", "us_stocks", "fiis", "crypto"},
+        "all": {"br_stocks", "us_stocks", "etfs", "fiis", "crypto"},
         "br": {"br_stocks"},
         "us": {"us_stocks"},
+        "etfs": {"etfs"},
         "fiis": {"fiis"},
         "crypto": {"crypto"},
-    }.get(scope_key, {"br_stocks", "us_stocks", "fiis", "crypto"})
+    }.get(scope_key, {"br_stocks", "us_stocks", "etfs", "fiis", "crypto"})
 
     selected_positions = []
     for item in positions:
@@ -5524,7 +5667,9 @@ def _portfolio_monthly_cumulative(snapshot, month_keys, period: str, scope_key: 
             continue
 
         levels = _levels_from_month_map(month_keys, month_map)
-        if _is_usd_quoted_ticker(ticker) and usdbrl_levels:
+        # Acoes US: serie e ratio sobre position_value (ja BRL pela cotacao de hoje);
+        # niveis em USD -> FX se cancela no ratio. Cripto USD mantem cambio historico.
+        if _is_usd_quoted_ticker(ticker) and not _is_us_stock_ticker(ticker) and usdbrl_levels:
             converted_levels = []
             for idx, value in enumerate(levels):
                 fx = usdbrl_levels[idx] if idx < len(usdbrl_levels) else None
@@ -5635,9 +5780,11 @@ def _portfolio_monthly_metrics_by_category(portfolio_ids, month_keys, period: st
     pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
     placeholders = ",".join(["?"] * len(pids))
     db = get_db()
+    usdbrl_rate = _get_usdbrl_rate()
     category_labels = {
         "br_stocks": "Ações BR",
         "us_stocks": "Ações US",
+        "etfs": "ETFs",
         "fiis": "FIIs",
         "crypto": "Cripto",
     }
@@ -5721,7 +5868,12 @@ def _portfolio_monthly_metrics_by_category(portfolio_ids, month_keys, period: st
             ticker_levels[ticker] = [None for _ in month_keys]
             continue
         levels = _levels_from_month_map(month_keys, month_map)
-        if _is_usd_quoted_ticker(ticker) and usdbrl_levels:
+        if _is_us_stock_ticker(ticker) and usdbrl_rate:
+            # Acoes US: mercado tambem pela cotacao de hoje (modelo "tudo pela cotacao atual"),
+            # coerente com custo/proventos convertidos a mesma taxa.
+            levels = [(float(v) * usdbrl_rate) if v is not None else None for v in levels]
+        elif _is_usd_quoted_ticker(ticker) and usdbrl_levels:
+            # Cripto cotada em USD: mantem cambio historico (comportamento existente).
             converted_levels = []
             for idx, value in enumerate(levels):
                 fx = usdbrl_levels[idx] if idx < len(usdbrl_levels) else None
@@ -5754,7 +5906,8 @@ def _portfolio_monthly_metrics_by_category(portfolio_ids, month_keys, period: st
             ticker = str(row["ticker"] or "").strip().upper()
             category = ticker_category.get(ticker)
             if category in result:
-                amount = float(row["shares"] or 0.0) * float(row["price"] or 0.0)
+                unit_price = _usd_to_brl_amount(ticker, float(row["price"] or 0.0), usdbrl_rate)
+                amount = float(row["shares"] or 0.0) * unit_price
                 current_shares = float(shares_state.get(ticker, 0.0) or 0.0)
                 current_cost = float(cost_state.get(ticker, 0.0) or 0.0)
                 if (row["tx_type"] or "").lower() == "buy":
@@ -5768,7 +5921,7 @@ def _portfolio_monthly_metrics_by_category(portfolio_ids, month_keys, period: st
                     next_cost = current_cost - (avg_price * sell_shares)
                     shares_state[ticker] = next_shares
                     cost_state[ticker] = 0.0 if next_shares <= 0 else next_cost
-                    sells_total[category] += sell_shares * float(row["price"] or 0.0)
+                    sells_total[category] += sell_shares * unit_price
             tx_index += 1
 
         while income_index < len(income_rows):
@@ -5779,7 +5932,9 @@ def _portfolio_monthly_metrics_by_category(portfolio_ids, month_keys, period: st
             ticker = str(row["ticker"] or "").strip().upper()
             category = ticker_category.get(ticker)
             if category in result:
-                incomes_total[category] += float(row["amount"] or 0.0)
+                incomes_total[category] += _usd_to_brl_amount(
+                    ticker, float(row["amount"] or 0.0), usdbrl_rate
+                )
             income_index += 1
 
         market_values = {key: 0.0 for key in result}
@@ -5917,7 +6072,7 @@ def _compute_patrimony_open_pnl_by_type_series(portfolio_ids, range_key: str = "
 
 def get_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: str = "all"):
     normalized_range, _months, _period = _benchmark_range_config(range_key)
-    valid_scopes = {"all", "br", "us", "fiis", "crypto"}
+    valid_scopes = {"all", "br", "us", "etfs", "fiis", "crypto"}
     normalized_scope = scope_key if scope_key in valid_scopes else "all"
     pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
     return _cached_chart_series(
@@ -5931,7 +6086,7 @@ def get_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: s
 
 def _compute_benchmark_comparison(portfolio_ids, range_key: str = "12m", scope_key: str = "all"):
     normalized_range, months, period = _benchmark_range_config(range_key)
-    valid_scopes = {"all", "br", "us", "fiis", "crypto"}
+    valid_scopes = {"all", "br", "us", "etfs", "fiis", "crypto"}
     normalized_scope = scope_key if scope_key in valid_scopes else "all"
     pids = tuple(sorted(normalize_portfolio_ids(portfolio_ids)))
     month_keys = _month_keys_back(months)

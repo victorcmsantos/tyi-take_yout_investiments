@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm } from '../api'
-import { formatCurrencyBRL, formatQuantity } from '../formatters'
+import { assetPriceCurrency, formatCurrencyBRL, formatQuantity } from '../formatters'
 import { emitAppToast } from '../toast'
 
 const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
@@ -416,7 +416,7 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
             <input id="shares" name="shares" type="number" min="0.00000001" step="any" value={form.shares} onChange={onChange} required />
           </div>
           <div>
-            <label htmlFor="price">Preco da operacao (R$)</label>
+            <label htmlFor="price">Preco da operacao ({assetPriceCurrency(form.ticker)})</label>
             <input id="price" name="price" type="text" value={form.price} onChange={onChange} required />
           </div>
           <div>
@@ -610,7 +610,7 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
                 />
               </div>
               <div>
-                <label htmlFor={`edit-price-${editingTx.id}`}>Preco da operacao (R$)</label>
+                <label htmlFor={`edit-price-${editingTx.id}`}>Preco da operacao ({assetPriceCurrency(editForm.ticker)})</label>
                 <input
                   id={`edit-price-${editingTx.id}`}
                   name="price"

@@ -1023,3 +1023,17 @@ def ensure_schema_upgrades():
     )
 
     db.commit()
+
+    # Migracao unica: acoes US passam a ser guardadas em USD nativo (conversao p/ BRL
+    # acontece na leitura, pela cotacao de hoje). Idempotente via app_meta; nao pode
+    # derrubar o startup se a cotacao historica oscilar.
+    try:
+        from .services import _legacy
+
+        result = _legacy.migrate_us_assets_stored_to_usd()
+        if result.get("status") == "done" and (result.get("tx") or result.get("incomes")):
+            current_app.logger.info("Migracao acoes US->USD aplicada: %s", result)
+        elif result.get("status") == "error":
+            current_app.logger.warning("Migracao acoes US->USD adiada: %s", result)
+    except Exception:
+        current_app.logger.exception("Falha na migracao de acoes US para USD nativo.")

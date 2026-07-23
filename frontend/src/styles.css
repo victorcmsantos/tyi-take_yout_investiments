@@ -2559,6 +2559,41 @@ html[data-theme='dark'] .scanner-negative {
   cursor: not-allowed;
 }
 
+.currency-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+}
+
+.currency-toggle .icon-btn {
+  padding: 6px 12px;
+  min-width: 44px;
+}
+
+.currency-toggle .icon-btn.active {
+  background: #2f6fed;
+  border-color: #2f6fed;
+  color: #ffffff;
+}
+
+.currency-rate-hint {
+  color: #6a7c90;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+html[data-theme='dark'] .currency-toggle .icon-btn.active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #0b1220;
+}
+
+html[data-theme='dark'] .currency-rate-hint {
+  color: #9fb0c3;
+}
+
 .dashboard-sections {
   display: grid;
   gap: 16px;

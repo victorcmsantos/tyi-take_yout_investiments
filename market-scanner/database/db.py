@@ -539,6 +539,14 @@ def close_trade(
     return _serialize_trade(trade)
 
 
+def list_open_trade_tickers(session: Session) -> set[str]:
+    """Tickers com trade ABERTO (para avaliar sinais de saida/perda de tendencia)."""
+    rows = session.execute(
+        select(Trade.ticker).where(Trade.status == OPEN_TRADE_STATUS).distinct()
+    ).scalars().all()
+    return {str(ticker).strip().upper() for ticker in rows if ticker}
+
+
 def list_trades(
     session: Session,
     *,
@@ -577,13 +585,14 @@ def list_active_signals(
     active_hours: int,
     limit: int = 200,
     trade_level_settings: TradeLevelSettings | None = None,
+    min_score: float = 0.0,
 ) -> list[dict[str, object]]:
-    """Return recent signals sorted by score descending."""
+    """Return recent signals sorted by score descending (score >= min_score)."""
 
     cutoff = datetime.utcnow() - timedelta(hours=active_hours)
     rows = session.scalars(
         select(Signal)
-        .where(Signal.created_at >= cutoff)
+        .where(Signal.created_at >= cutoff, Signal.score >= min_score)
         .order_by(desc(Signal.created_at), desc(Signal.score))
     ).all()
     latest_by_ticker: dict[str, Signal] = {}
@@ -618,6 +627,7 @@ def get_signal_matrix(
     active_hours: int,
     limit: int = 200,
     trade_level_settings: TradeLevelSettings | None = None,
+    min_score: float = 0.0,
 ) -> dict[str, object]:
     """Return a ticker x metric matrix for active signals."""
 
@@ -626,6 +636,7 @@ def get_signal_matrix(
         active_hours=active_hours,
         limit=limit,
         trade_level_settings=trade_level_settings,
+        min_score=min_score,
     )
     metric_frequency: dict[str, int] = defaultdict(int)
     for signal in signals:

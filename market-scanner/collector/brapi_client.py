@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -153,11 +153,73 @@ class BRAPIClient:
                 }
         return snapshots
 
+    def fetch_fundamentals(self, tickers: list[str]) -> dict[str, dict[str, float | None]]:
+        """Busca fundamentos (P/L e dividend yield 12m) via BRAPI.
+        Retorna {symbol_com_.SA: {price_earnings, dividend_yield}}."""
+        if not tickers:
+            return {}
+
+        out: dict[str, dict[str, float | None]] = {}
+        chunk_size = max(1, self.settings.brapi_max_tickers_per_request)
+        for start in range(0, len(tickers), chunk_size):
+            batch = tickers[start : start + chunk_size]
+            try:
+                results = self._request_quote_results(
+                    batch,
+                    period=None,
+                    interval=None,
+                    extra_params={"fundamental": "true", "dividends": "true"},
+                )
+            except RuntimeError:
+                continue
+            requested_symbol_map = {self._to_brapi_symbol(symbol): symbol for symbol in batch}
+            for result in results:
+                raw_symbol = str(result.get("symbol", "")).strip().upper()
+                if not raw_symbol:
+                    continue
+                source_symbol = requested_symbol_map.get(raw_symbol, f"{raw_symbol}.SA")
+                out[source_symbol] = {
+                    "price_earnings": self._to_float(result.get("priceEarnings")),
+                    "dividend_yield": self._compute_trailing_dy(result),
+                }
+        return out
+
+    def _compute_trailing_dy(self, result: dict[str, object]) -> float | None:
+        """DY = soma dos proventos (dividendos + JCP) dos ultimos 365 dias / preco."""
+        price = self._to_float(result.get("regularMarketPrice"))
+        if not price or price <= 0:
+            return None
+        dividends_data = result.get("dividendsData")
+        cash = dividends_data.get("cashDividends") if isinstance(dividends_data, dict) else None
+        if not isinstance(cash, list):
+            return None
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=365)).date()
+        total = 0.0
+        found = False
+        for item in cash:
+            if not isinstance(item, dict):
+                continue
+            rate = self._to_float(item.get("rate"))
+            if rate is None:
+                continue
+            raw_date = str(item.get("paymentDate") or item.get("lastDatePrior") or "")[:10]
+            try:
+                pay_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if pay_date >= cutoff:
+                total += rate
+                found = True
+        if not found or total <= 0:
+            return None
+        return total / price
+
     def _request_quote_results(
         self,
         tickers: list[str],
         period: str | None,
         interval: str | None,
+        extra_params: dict[str, str] | None = None,
     ) -> list[dict[str, object]]:
         request_symbols = [self._to_brapi_symbol(symbol) for symbol in tickers]
         query: dict[str, str] = {}
@@ -165,6 +227,8 @@ class BRAPIClient:
             query["range"] = period
         if interval:
             query["interval"] = interval
+        if extra_params:
+            query.update(extra_params)
         if self.settings.brapi_token:
             query["token"] = self.settings.brapi_token
         url = f"{self.base_url}/quote/{','.join(request_symbols)}?{urlencode(query)}"

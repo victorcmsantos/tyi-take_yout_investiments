@@ -89,4 +89,8 @@ class SignalEngine:
             return value > -0.15
         if metric_name == "relative_strength_vs_ibov":
             return value > 0
+        if metric_name == "dividend_yield":
+            return value > self.settings.signal_rules.dividend_yield_threshold
+        if metric_name == "price_earnings":
+            return 0.0 < value < self.settings.signal_rules.price_earnings_max
         return helpers.get("close", 0.0) > helpers.get("sma_21", 0.0)

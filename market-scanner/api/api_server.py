@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from threading import Thread
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -11,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from config.settings import AppSettings, get_settings
+from config.settings import AppSettings, get_settings, save_metric_overrides
 from database.db import (
     close_trade,
     create_trade_from_signal,
@@ -88,6 +89,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 session,
                 app_settings.active_signal_hours,
                 trade_level_settings=app_settings.trade_levels,
+                min_score=app_settings.signal_rules.min_score,
             )
         return payload
 
@@ -98,6 +100,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 session,
                 app_settings.active_signal_hours,
                 trade_level_settings=app_settings.trade_levels,
+                min_score=app_settings.signal_rules.min_score,
             )
         return payload
 
@@ -228,9 +231,21 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             setattr(app_settings.metrics, key, cast_value)
             updated_parameters[key] = cast_value
 
+        # Persiste (sobrevive a restart) e dispara um scan em background para
+        # aplicar os novos parametros (o daemon deduplica scans concorrentes).
+        save_metric_overrides(app_settings)
+        scan_started = False
+        try:
+            Thread(target=daemon.scan_market, kwargs={"force": True}, daemon=True).start()
+            scan_started = True
+        except RuntimeError:
+            scan_started = False
+
         return {
             "metric_key": metric_key,
             "updated_parameters": updated_parameters,
+            "persisted": True,
+            "scan_started": scan_started,
             "scan_summary": None,
             "catalog": build_metric_catalog(app_settings.metrics),
         }
@@ -243,12 +258,14 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 session,
                 app_settings.active_signal_hours,
                 trade_level_settings=app_settings.trade_levels,
+                min_score=app_settings.signal_rules.min_score,
             )
             trades_payload = list_trades(session)
             matrix_payload = get_signal_matrix(
                 session,
                 app_settings.active_signal_hours,
                 trade_level_settings=app_settings.trade_levels,
+                min_score=app_settings.signal_rules.min_score,
             )
         context = {
             "request": request,

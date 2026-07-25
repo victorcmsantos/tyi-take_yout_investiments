@@ -95,10 +95,11 @@ function ScannerMetricsLabPage() {
       const updatedCatalog = Array.isArray(payload?.catalog) ? payload.catalog : catalog
       setCatalog(updatedCatalog)
       setSelectedMetricKey(String(payload?.metric_key || selectedMetric.key))
-      const summary = payload?.scan_summary || {}
-      setMessage(
-        `Salvo. Processados ${Number(summary.tickers_processed || 0)} de ${Number(summary.tickers_loaded || 0)}; sinais ${Number(summary.signals_triggered || 0)}.`
-      )
+      const persisted = payload?.persisted ? ' e persistido (sobrevive a reinicio)' : ''
+      const scanMsg = payload?.scan_started
+        ? ' Scan iniciado em background — recarregue o painel do scanner em alguns minutos para ver o efeito.'
+        : ' Vale no proximo scan (rode um "Scan geral" no painel do scanner).'
+      setMessage(`Salvo${persisted}.${scanMsg}`)
     } catch (err) {
       setError(err.message)
     } finally {

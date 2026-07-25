@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from threading import Condition, Event, Lock, Thread
 from typing import Iterable
 from zoneinfo import ZoneInfo
@@ -21,6 +21,7 @@ from config.settings import AppSettings
 from database.db import (
     has_backend_assets_table,
     list_backend_br_asset_symbols,
+    list_open_trade_tickers,
     mark_missing_tickers_inactive,
     session_scope,
     touch_ticker_scan_status,
@@ -32,6 +33,7 @@ from database.db import (
     upsert_ticker_catalog,
 )
 from metrics.metric_engine import MetricEngine
+from scheduler.notifier import send_telegram_alert
 from signals.signal_engine import SignalEngine
 
 
@@ -80,6 +82,104 @@ class MarketScannerDaemon:
         self._scan_last_summary = ScanSummary(0, 0, 0)
         self._scan_last_finished_at: datetime | None = None
         self._stop_event = Event()
+        # Cache de fundamentos (DY/P/L) — buscado no maximo 1x por TTL (~24h)
+        # para nao sobrecarregar o BRAPI a cada scan do universo B3.
+        self._fundamentals_cache: dict[str, dict[str, float | None]] = {}
+        self._fundamentals_fetched_at: datetime | None = None
+        # Dedup de alertas Telegram: (ticker, data) ja avisado nao repete.
+        self._alerted_keys: set[tuple[str, str]] = set()
+        self._exit_alerted_keys: set[tuple[str, str]] = set()
+
+    def _exit_signal(self, computation) -> str | None:
+        """Perda de tendencia: fechou abaixo da SMA200 (cruzando pra baixo) ou
+        rompeu a minima de 20 dias. Usado so para posicoes abertas."""
+        frame = computation.frame
+        try:
+            close = frame["close"]
+        except Exception:  # noqa: BLE001
+            return None
+        reasons: list[str] = []
+        if "sma_200" in frame.columns and len(close) >= 2:
+            sma = frame["sma_200"]
+            try:
+                if close.iloc[-1] < sma.iloc[-1] and close.iloc[-2] >= sma.iloc[-2]:
+                    reasons.append("perdeu a SMA200")
+            except Exception:  # noqa: BLE001
+                pass
+        if "low" in frame.columns and len(frame) >= 21:
+            try:
+                recent_low = float(frame["low"].iloc[-21:-1].min())
+                if float(close.iloc[-1]) < recent_low:
+                    reasons.append("rompeu a minima de 20 dias")
+            except Exception:  # noqa: BLE001
+                pass
+        return " + ".join(reasons) if reasons else None
+
+    def _maybe_exit_alert(self, ticker: str, reason: str, computation) -> bool:
+        key = (ticker, str(computation.timestamp)[:10])
+        if key in self._exit_alerted_keys:
+            return False
+        name = ticker.removesuffix(".SA")
+        price = float(computation.helpers.get("close", 0.0) or 0.0)
+        text = (
+            "TYI · Scanner — ⚠️ SAIDA / perda de tendencia\n"
+            f"{name}  ·  R$ {price:.2f}\n"
+            f"Motivo: {reason}\n"
+            "Voce tem posicao aberta nesse ativo."
+        )
+        if send_telegram_alert(self.settings, text):
+            self._exit_alerted_keys.add(key)
+            return True
+        return False
+
+    def _maybe_alert(self, decision) -> bool:
+        key = (decision.ticker, str(decision.timestamp)[:10])
+        if key in self._alerted_keys:
+            return False
+        ticker = decision.ticker.removesuffix(".SA")
+        metrics = ", ".join(decision.metrics_triggered[:6])
+        text = (
+            "TYI · Scanner — sinal forte 🚀\n"
+            f"{ticker}  ·  score {decision.score:.0f}\n"
+            f"Preco R$ {decision.price:.2f}\n"
+            f"Sinais: {metrics}"
+        )
+        if send_telegram_alert(self.settings, text):
+            self._alerted_keys.add(key)
+            return True
+        return False
+
+    def _get_fundamentals(self, tickers: list[str], full_scan: bool) -> dict[str, dict[str, float | None]]:
+        if not self.settings.fundamentals_enabled:
+            return {}
+        if not full_scan:
+            # Scan pontual: busca so os pedidos e atualiza o cache.
+            try:
+                data = self.brapi_client.fetch_fundamentals(tickers)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Fundamentals fetch (single) failed", error=str(exc))
+                data = {}
+            if data:
+                self._fundamentals_cache.update(data)
+            return self._fundamentals_cache
+        now = datetime.utcnow()
+        ttl = timedelta(hours=max(1, self.settings.fundamentals_ttl_hours))
+        if (
+            self._fundamentals_fetched_at is not None
+            and (now - self._fundamentals_fetched_at) < ttl
+            and self._fundamentals_cache
+        ):
+            return self._fundamentals_cache
+        try:
+            data = self.brapi_client.fetch_fundamentals(tickers)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Fundamentals fetch failed; keeping previous cache", error=str(exc))
+            return self._fundamentals_cache
+        if data:
+            self._fundamentals_cache = data
+            self._fundamentals_fetched_at = now
+            logger.info("Fundamentals refreshed", tickers=len(data))
+        return self._fundamentals_cache
 
     def start(self) -> None:
         """Start the APScheduler daemon."""
@@ -324,9 +424,20 @@ class MarketScannerDaemon:
             if not requested_symbols:
                 mark_missing_tickers_inactive(session, [record.ticker for record in catalog])
         logger.info("Starting market scan", tickers=len(tickers))
+        fundamentals = self._get_fundamentals(tickers, full_scan=(requested_symbols is None))
+        # Posicoes abertas: para essas avaliamos sinal de saida (perda de tendencia).
+        try:
+            with session_scope(self.session_factory) as session:
+                open_trade_tickers = {
+                    ticker_.removesuffix(".SA").upper()
+                    for ticker_ in list_open_trade_tickers(session)
+                }
+        except Exception:  # noqa: BLE001
+            open_trade_tickers = set()
 
         processed = 0
         triggered = 0
+        alerted_this_scan = 0
         for batch in self._chunks(tickers, self.settings.download_batch_size):
             try:
                 data = self.brapi_client.download_batch(
@@ -418,6 +529,19 @@ class MarketScannerDaemon:
                             logger.debug("Skipping ticker with insufficient history", ticker=ticker)
                             continue
 
+                        # Injeta fundamentos (DY/P/L) como metricas, para pesarem no
+                        # sinal/score e aparecerem na matriz. Sao valores pontuais do
+                        # BRAPI (nao vem do frame de precos).
+                        fund = fundamentals.get(ticker) or {}
+                        dy_value = fund.get("dividend_yield")
+                        if dy_value is not None:
+                            computation.metrics["dividend_yield"] = dy_value
+                            computation.labels["dividend_yield"] = "Dividend Yield"
+                        pe_value = fund.get("price_earnings")
+                        if pe_value is not None and pe_value > 0:
+                            computation.metrics["price_earnings"] = pe_value
+                            computation.labels["price_earnings"] = "P/L"
+
                         upsert_metrics(
                             session,
                             ticker,
@@ -436,6 +560,22 @@ class MarketScannerDaemon:
                                 metrics_triggered=decision.metrics_triggered,
                             )
                             triggered += 1
+                            if (
+                                self.settings.alerts_enabled
+                                and decision.score >= self.settings.alert_min_score
+                                and alerted_this_scan < self.settings.alert_max_per_scan
+                                and self._maybe_alert(decision)
+                            ):
+                                alerted_this_scan += 1
+
+                        # Sinal de SAIDA para posicoes abertas (perda de tendencia).
+                        if (
+                            self.settings.alerts_enabled
+                            and ticker.removesuffix(".SA").upper() in open_trade_tickers
+                        ):
+                            exit_reason = self._exit_signal(computation)
+                            if exit_reason:
+                                self._maybe_exit_alert(ticker, exit_reason, computation)
                         processed += 1
                     except Exception as exc:
                         logger.exception("Ticker processing failed", ticker=ticker, error=str(exc))

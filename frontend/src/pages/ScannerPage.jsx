@@ -167,6 +167,7 @@ function ScannerPage({ readOnly = false }) {
   })
   const [tradeModalOpen, setTradeModalOpen] = useState(false)
   const [tradeModalSubmitting, setTradeModalSubmitting] = useState(false)
+  const [creatingTrade, setCreatingTrade] = useState(false)
   const [tradeModalPricingMode, setTradeModalPricingMode] = useState('price')
   const [tradeModalForm, setTradeModalForm] = useState({
     ticker: '',
@@ -486,6 +487,8 @@ function ScannerPage({ readOnly = false }) {
       setError('Informe o ticker para abrir trade.')
       return
     }
+    if (creatingTrade) return
+    setCreatingTrade(true)
     setError('')
     setMessage('')
     try {
@@ -503,6 +506,8 @@ function ScannerPage({ readOnly = false }) {
       await loadScanner(true)
     } catch (err) {
       setError(err.message)
+    } finally {
+      setCreatingTrade(false)
     }
   }
 
@@ -903,7 +908,9 @@ function ScannerPage({ readOnly = false }) {
               />
             </label>
             <div>
-              <Button type="submit" variant="contained">Criar trade</Button>
+              <Button type="submit" variant="contained" disabled={creatingTrade}>
+                {creatingTrade ? 'Criando...' : 'Criar trade'}
+              </Button>
             </div>
           </form>
         )}

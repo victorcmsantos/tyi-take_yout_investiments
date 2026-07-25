@@ -5,6 +5,7 @@ import ChartDataLabels from 'chartjs-plugin-datalabels'
 import StatePanel from '../components/StatePanel'
 import { useApiQuery } from '../hooks/useApiQuery'
 import { usePersistedState } from '../persistedState'
+import { downloadTextFile, exportRowsAsCsv } from '../exporters'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const brlCompact = (value) => `R$ ${Number(value || 0).toLocaleString('pt-BR', { notation: 'compact', maximumFractionDigits: 2 })}`
@@ -65,10 +66,37 @@ function getCountdownParts(now = new Date(), target = COUNTDOWN_TARGET) {
 
 ChartJS.register(ChartDataLabels)
 
-const TERMINAL_TEXT = '#8096ad'
-const TERMINAL_GRID = 'rgba(128, 150, 173, 0.16)'
+// Cores de eixo/grade: mutaveis porque os construtores de options abaixo (nivel
+// de modulo) as referenciam por nome; syncChartTheme() as ajusta ao tema atual a
+// cada render, mantendo os graficos legiveis em light e dark (P1 de contraste).
+let TERMINAL_TEXT = '#4a5b70'
+let TERMINAL_GRID = 'rgba(74, 91, 112, 0.14)'
+let TERMINAL_ZERO = 'rgba(74, 91, 112, 0.5)'
 const TERMINAL_PALETTE = ['#0f8a77', '#1f6feb', '#c48b2d', '#d95f2f', '#cf3f5b', '#6c63ff', '#2bb0c9', '#708090']
 const TERMINAL_MONO = 'IBM Plex Mono, SFMono-Regular, monospace'
+
+function syncChartTheme(mode) {
+  const dark = mode === 'dark'
+  TERMINAL_TEXT = dark ? '#8096ad' : '#4a5b70'
+  TERMINAL_GRID = dark ? 'rgba(128, 150, 173, 0.16)' : 'rgba(74, 91, 112, 0.14)'
+  TERMINAL_ZERO = dark ? 'rgba(219, 232, 245, 0.32)' : 'rgba(74, 91, 112, 0.5)'
+}
+
+function readThemeMode() {
+  if (typeof document === 'undefined') return 'light'
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'
+}
+
+function useThemeMode() {
+  const [mode, setMode] = useState(readThemeMode)
+  useEffect(() => {
+    const observer = new MutationObserver(() => setMode(readThemeMode()))
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    setMode(readThemeMode())
+    return () => observer.disconnect()
+  }, [])
+  return mode
+}
 
 function withHexAlpha(color, alpha = 'FF') {
   return /^#[0-9a-f]{6}$/i.test(color) ? `${color}${alpha}` : color
@@ -181,31 +209,6 @@ function normalizeStringList(value, allowed, fallback) {
   return filtered.length > 0 ? [...new Set(filtered)] : fallback
 }
 
-function csvCell(value) {
-  const text = String(value ?? '')
-  return `"${text.replace(/"/g, '""')}"`
-}
-
-function downloadTextFile(filename, content, mimeType = 'text/plain;charset=utf-8') {
-  const blob = new Blob([content], { type: mimeType })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  URL.revokeObjectURL(url)
-}
-
-function exportRowsAsCsv(filename, headers, rows) {
-  const csvLines = [
-    headers.map(csvCell).join(','),
-    ...rows.map((row) => row.map(csvCell).join(',')),
-  ]
-  downloadTextFile(filename, csvLines.join('\n'), 'text/csv;charset=utf-8')
-}
-
 function exportChartDataAsCsv(filename, chartData) {
   const labels = Array.isArray(chartData?.labels) ? chartData.labels : []
   const datasets = Array.isArray(chartData?.datasets) ? chartData.datasets : []
@@ -260,6 +263,8 @@ function DataSection({ id, title, subtitle, controls, children }) {
 }
 
 function ChartsPage({ selectedPortfolioIds }) {
+  const themeMode = useThemeMode()
+  syncChartTheme(themeMode)
   const [range, setRange] = usePersistedState('charts.range.v1', '12m')
   const [scope, setScope] = usePersistedState('charts.scope.v1', 'all')
   const [annualMetrics, setAnnualMetrics] = usePersistedState('charts.annual-metrics.v1', ['invested', 'incomes'])
@@ -370,13 +375,13 @@ function ChartsPage({ selectedPortfolioIds }) {
     callback: (value) => brl(value),
     color: TERMINAL_TEXT,
     font: { size: 11, family: TERMINAL_MONO },
-  }), [])
+  }), [themeMode])
 
   const percentScale = useMemo(() => makeScale({
     callback: (value) => `${Number(value || 0).toFixed(2)}%`,
     color: TERMINAL_TEXT,
     font: { size: 11, family: TERMINAL_MONO },
-  }), [])
+  }), [themeMode])
 
   const annualSummary = useMemo(() => {
     const rows = corePayload?.monthly_class_summary || []
@@ -788,7 +793,7 @@ function ChartsPage({ selectedPortfolioIds }) {
         ...buildCartesianOptions({ yScale: moneyScale, legend: true, stacked: true }).scales.y,
         grace: '8%',
         grid: {
-          color: (ctx) => (Number(ctx.tick?.value || 0) === 0 ? 'rgba(219, 232, 245, 0.32)' : TERMINAL_GRID),
+          color: (ctx) => (Number(ctx.tick?.value || 0) === 0 ? TERMINAL_ZERO : TERMINAL_GRID),
           lineWidth: (ctx) => (Number(ctx.tick?.value || 0) === 0 ? 1.4 : 1),
           drawBorder: false,
         },
@@ -1225,7 +1230,7 @@ function ChartsPage({ selectedPortfolioIds }) {
             {(loadingBenchmark || refreshingBenchmark) && <p className="subtitle">Atualizando benchmark...</p>}
             {benchmarkError && <p className="error">{benchmarkError}</p>}
             <div className="chart-canvas-wrap">
-              <Line ref={registerChartRef('benchmark')} data={benchmarkData} options={benchmarkOptions} />
+              <Line ref={registerChartRef('benchmark')} aria-label="Grafico de linha: rentabilidade comparada com indices" data={benchmarkData} options={benchmarkOptions} />
             </div>
           </ChartPanel>
         ) : null}
@@ -1238,7 +1243,7 @@ function ChartsPage({ selectedPortfolioIds }) {
             actions={makeChartActions('monthlyIncome', 'proventos-mensais', monthlyIncomeData)}
           >
             <div className="chart-canvas-wrap">
-              <Line ref={registerChartRef('monthlyIncome')} data={monthlyIncomeData} options={incomeLineOptions} />
+              <Line ref={registerChartRef('monthlyIncome')} aria-label="Grafico de linha: proventos mes a mes" data={monthlyIncomeData} options={incomeLineOptions} />
             </div>
           </ChartPanel>
         ) : null}
@@ -1288,7 +1293,7 @@ function ChartsPage({ selectedPortfolioIds }) {
             >
               <div className="chart-canvas-wrap">
                 <Line
-                  ref={registerChartRef('patrimonyByType')}
+                  ref={registerChartRef('patrimonyByType')} aria-label="Grafico: evolucao patrimonial por tipo"
                   data={patrimonyByTypeData}
                   options={isPatrimonyOpenMetric ? patrimonyOpenAreaOptions : patrimonyLineOptions}
                 />
@@ -1319,7 +1324,7 @@ function ChartsPage({ selectedPortfolioIds }) {
                 actions={makeChartActions('classesPie', 'renda-variavel-vs-fixa', classesData)}
               >
                 <div className="chart-canvas-wrap">
-                  <Pie ref={registerChartRef('classesPie')} data={classesData} options={pieValueInsideOptions} />
+                  <Pie ref={registerChartRef('classesPie')} aria-label="Grafico de pizza: renda variavel x renda fixa" data={classesData} options={pieValueInsideOptions} />
                 </div>
               </ChartPanel>
             ) : null}
@@ -1331,7 +1336,7 @@ function ChartsPage({ selectedPortfolioIds }) {
                 actions={makeChartActions('categoryDonut', 'distribuicao-por-tipo', categoryData)}
               >
                 <div className="chart-canvas-wrap">
-                  <Doughnut ref={registerChartRef('categoryDonut')} data={categoryData} options={categoryDonutOptions} />
+                  <Doughnut ref={registerChartRef('categoryDonut')} aria-label="Grafico de rosca: distribuicao por tipo de ativo" data={categoryData} options={categoryDonutOptions} />
                 </div>
               </ChartPanel>
             ) : null}
@@ -1343,7 +1348,7 @@ function ChartsPage({ selectedPortfolioIds }) {
                 actions={makeChartActions('resultCategory', 'resultado-por-categoria', resultByCategoryData)}
               >
                 <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('resultCategory')} data={resultByCategoryData} options={resultByCategoryOptions} />
+                  <Bar ref={registerChartRef('resultCategory')} aria-label="Grafico de barras: resultado por categoria" data={resultByCategoryData} options={resultByCategoryOptions} />
                 </div>
               </ChartPanel>
             ) : null}
@@ -1355,7 +1360,7 @@ function ChartsPage({ selectedPortfolioIds }) {
                 actions={makeChartActions('cardsBar', 'consolidado-carteira', cardsData)}
               >
                 <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('cardsBar')} data={cardsData} options={consolidatedOptions} />
+                  <Bar ref={registerChartRef('cardsBar')} aria-label="Grafico de barras: consolidado da carteira" data={cardsData} options={consolidatedOptions} />
                 </div>
               </ChartPanel>
             ) : null}
@@ -1367,7 +1372,7 @@ function ChartsPage({ selectedPortfolioIds }) {
                 actions={makeChartActions('topAssets', 'top-ativos-por-valor', topAssetsData)}
               >
                 <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('topAssets')} data={topAssetsData} options={barMoneyOptions} />
+                  <Bar ref={registerChartRef('topAssets')} aria-label="Grafico de barras: top 10 ativos por valor em carteira" data={topAssetsData} options={barMoneyOptions} />
                 </div>
               </ChartPanel>
             ) : null}
@@ -1381,7 +1386,7 @@ function ChartsPage({ selectedPortfolioIds }) {
                   actions={makeChartActions(item.key, `${item.key}-alocacao`, item.data)}
                 >
                   <div className="chart-canvas-wrap">
-                    <Bar ref={registerChartRef(item.key)} data={item.data} options={allocationBarOptionsFor(item)} />
+                    <Bar ref={registerChartRef(item.key)} aria-label="Grafico de barras: distribuicao interna por agrupamento" data={item.data} options={allocationBarOptionsFor(item)} />
                   </div>
                 </ChartPanel>
               ) : null
@@ -1404,7 +1409,7 @@ function ChartsPage({ selectedPortfolioIds }) {
                 actions={makeChartActions('fixedInvestment', 'investimento-renda-fixa', fixedInvestmentData)}
               >
                 <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('fixedInvestment')} data={fixedInvestmentData} options={barMoneyOptions} />
+                  <Bar ref={registerChartRef('fixedInvestment')} aria-label="Grafico de barras: aplicacao em renda fixa" data={fixedInvestmentData} options={barMoneyOptions} />
                 </div>
               </ChartPanel>
             ) : null}
@@ -1416,7 +1421,7 @@ function ChartsPage({ selectedPortfolioIds }) {
                 actions={makeChartActions('fixedDistributor', 'distribuidor-renda-fixa', fixedDistributorData)}
               >
                 <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('fixedDistributor')} data={fixedDistributorData} options={barMoneyOptions} />
+                  <Bar ref={registerChartRef('fixedDistributor')} aria-label="Grafico de barras: distribuidor de renda fixa" data={fixedDistributorData} options={barMoneyOptions} />
                 </div>
               </ChartPanel>
             ) : null}
@@ -1428,7 +1433,7 @@ function ChartsPage({ selectedPortfolioIds }) {
                 actions={makeChartActions('fixedIssuer', 'emissor-renda-fixa', fixedIssuerData)}
               >
                 <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('fixedIssuer')} data={fixedIssuerData} options={fixedIssuerOptions} />
+                  <Bar ref={registerChartRef('fixedIssuer')} aria-label="Grafico de barras: emissor de renda fixa" data={fixedIssuerData} options={fixedIssuerOptions} />
                 </div>
               </ChartPanel>
             ) : null}

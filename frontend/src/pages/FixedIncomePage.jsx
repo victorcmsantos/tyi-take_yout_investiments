@@ -4,6 +4,7 @@ import { buildExportFilename, exportRowsAsCsv, exportTableAsPdf } from '../expor
 import StatePanel from '../components/StatePanel'
 import { useApiQuery } from '../hooks/useApiQuery'
 import { emitAppToast } from '../toast'
+import { useDialogA11y } from '../hooks/useDialogA11y'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
 const FIXED_INVESTMENT_TYPE_OPTIONS = [
@@ -334,6 +335,7 @@ function FixedIncomePage({ selectedPortfolioIds, portfolios = [] }) {
   const summary = payload.summary || {}
   const items = payload.items || []
   const editingItem = items.find((item) => Number(item.id) === Number(editingFixedId)) || null
+  const editFixedDialogRef = useDialogA11y(Boolean(editingItem), cancelEditFixed)
   const prefixadoItems = items.filter((item) => String(item.rate_type || '').toUpperCase() === 'FIXO')
   const posfixadoItems = items.filter((item) => String(item.rate_type || '').toUpperCase() !== 'FIXO')
   const groups = [
@@ -506,6 +508,8 @@ function FixedIncomePage({ selectedPortfolioIds, portfolios = [] }) {
             role="dialog"
             aria-modal="true"
             aria-label="Editar renda fixa"
+            ref={editFixedDialogRef}
+            tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="health-modal-header">

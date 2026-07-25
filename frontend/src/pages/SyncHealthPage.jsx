@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import StatePanel from '../components/StatePanel'
 import { Button, Paper, Typography } from '@mui/material'
 import { apiGet, apiGetCached } from '../api'
 import { formatDateTimeLocal } from '../datetime'
@@ -75,7 +76,7 @@ function SyncHealthPage() {
     [circuits],
   )
 
-  if (loading) return <p>Carregando saúde de sync...</p>
+  if (loading) return <StatePanel busy title="Carregando saude de sync..." />
 
   return (
     <section>

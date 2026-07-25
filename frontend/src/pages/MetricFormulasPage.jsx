@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import StatePanel from '../components/StatePanel'
 import { apiGet, apiPost } from '../api'
 
 function MetricFormulasPage() {
@@ -65,7 +66,7 @@ function MetricFormulasPage() {
     }
   }
 
-  if (loading) return <p>Carregando metricas...</p>
+  if (loading) return <StatePanel busy title="Carregando metricas..." />
   if (error && !selectedMetric) return <p className="error">{error}</p>
 
   const hasUnsavedChanges = selectedMetric ? String(formulaDraft || '').trim() !== String(selectedMetric.formula || '').trim() : false

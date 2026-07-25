@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm } from '../api'
 import { assetPriceCurrency, formatCurrencyBRL, formatQuantity } from '../formatters'
 import { emitAppToast } from '../toast'
+import { useDialogA11y } from '../hooks/useDialogA11y'
 
 const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
 const FIXED_INVESTMENT_TYPE_OPTIONS = [
@@ -65,6 +66,9 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
   const [fixedImportMessage, setFixedImportMessage] = useState('')
   const [fixedImportWarnings, setFixedImportWarnings] = useState([])
   const [fixedImporting, setFixedImporting] = useState(false)
+  const [submittingTx, setSubmittingTx] = useState(false)
+  const [submittingFixed, setSubmittingFixed] = useState(false)
+  const [importingTx, setImportingTx] = useState(false)
   const [fixedForm, setFixedForm] = useState({
     target_portfolio_id: '',
     distributor: '',
@@ -109,6 +113,7 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
     ? fixedForm.investment_type
     : (fixedForm.investment_type ? 'OUTRO' : '')
   const editingTx = rows.find((tx) => Number(tx.id) === Number(editingTxId)) || null
+  const editTxDialogRef = useDialogA11y(Boolean(editingTx), () => cancelEditTx())
 
   const loadTransactions = async () => {
     setLoading(true)
@@ -265,6 +270,8 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
 
   const onSubmit = async (event) => {
     event.preventDefault()
+    if (submittingTx) return
+    setSubmittingTx(true)
     setError('')
     setMessage('')
     try {
@@ -275,6 +282,8 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
       await loadTransactions()
     } catch (err) {
       setError(err.message)
+    } finally {
+      setSubmittingTx(false)
     }
   }
 
@@ -292,6 +301,8 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
 
   const onSubmitFixed = async (event) => {
     event.preventDefault()
+    if (submittingFixed) return
+    setSubmittingFixed(true)
     setFixedError('')
     setFixedMessage('')
     try {
@@ -312,6 +323,8 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
       }))
     } catch (err) {
       setFixedError(err.message)
+    } finally {
+      setSubmittingFixed(false)
     }
   }
 
@@ -326,6 +339,8 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
       setImportError('Selecione um arquivo CSV.')
       return
     }
+    if (importingTx) return
+    setImportingTx(true)
     try {
       const formData = new FormData()
       formData.append('target_portfolio_id', selectedPortfolioId)
@@ -337,6 +352,8 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
       event.target.reset()
     } catch (err) {
       setImportError(err.message)
+    } finally {
+      setImportingTx(false)
     }
   }
 
@@ -432,7 +449,9 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
             <input id="sector" name="sector" type="text" value={form.sector} onChange={onChange} />
           </div>
           <div className="form-actions">
-            <button type="submit" className="btn-primary">Salvar transacao</button>
+            <button type="submit" className="btn-primary" disabled={submittingTx}>
+              {submittingTx ? 'Salvando...' : 'Salvar transacao'}
+            </button>
           </div>
         </form>
       </article>
@@ -463,7 +482,9 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
             <input id="csv_file" name="csv_file" type="file" accept=".csv,text/csv" required />
           </div>
           <div className="form-actions">
-            <button type="submit" className="btn-primary">Importar CSV</button>
+            <button type="submit" className="btn-primary" disabled={importingTx}>
+              {importingTx ? 'Importando...' : 'Importar CSV'}
+            </button>
           </div>
         </form>
       </article>
@@ -544,6 +565,8 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
             role="dialog"
             aria-modal="true"
             aria-label="Editar transacao"
+            ref={editTxDialogRef}
+            tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="health-modal-header">
@@ -734,7 +757,9 @@ function NewTransactionPage({ selectedPortfolioIds, portfolios, assets = [] }) {
             <input id="reinvested" name="reinvested" type="text" value={fixedForm.reinvested} onChange={onFixedChange} />
           </div>
           <div className="form-actions">
-            <button type="submit" className="btn-primary">Salvar renda fixa</button>
+            <button type="submit" className="btn-primary" disabled={submittingFixed}>
+              {submittingFixed ? 'Salvando...' : 'Salvar renda fixa'}
+            </button>
           </div>
         </form>
       </article>

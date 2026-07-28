@@ -311,6 +311,11 @@ function FixedIncomePage({ selectedPortfolioIds, portfolios = [] }) {
     }
   }
 
+  // Hooks precisam rodar antes de qualquer return condicional (Rules of Hooks),
+  // por isso editingItem/useDialogA11y ficam aqui e nao apos os early returns.
+  const editingItem = (payload?.items || []).find((item) => Number(item.id) === Number(editingFixedId)) || null
+  const editFixedDialogRef = useDialogA11y(Boolean(editingItem), cancelEditFixed)
+
   if (loading && !payload) {
     return (
       <StatePanel
@@ -334,8 +339,6 @@ function FixedIncomePage({ selectedPortfolioIds, portfolios = [] }) {
 
   const summary = payload.summary || {}
   const items = payload.items || []
-  const editingItem = items.find((item) => Number(item.id) === Number(editingFixedId)) || null
-  const editFixedDialogRef = useDialogA11y(Boolean(editingItem), cancelEditFixed)
   const prefixadoItems = items.filter((item) => String(item.rate_type || '').toUpperCase() === 'FIXO')
   const posfixadoItems = items.filter((item) => String(item.rate_type || '').toUpperCase() !== 'FIXO')
   const groups = [

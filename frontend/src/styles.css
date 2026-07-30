@@ -5862,3 +5862,138 @@ html[data-theme='dark'] .asset-table tbody tr:hover .sticky-col-ticker {
 /* ciclo da fatura (toolbar Cartões) */
 .fin2-cards-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
 .fin2-day-input { width: 64px; height: 36px; border-radius: 9px; border: 1px solid var(--fin-line); background: var(--fin-card2); color: var(--fin-txt); padding: 0 10px; font: inherit; text-align: center; }
+
+/* ── AssetPage: hierarquia de posicao (hero + grupos de KPI) ──────── */
+.asset-position-hero {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  gap: 18px;
+  align-items: stretch;
+}
+.asset-position-hero .hero-primary,
+.asset-position-hero .hero-secondary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: center;
+}
+.asset-position-hero .hero-primary {
+  border-right: 1px solid var(--line-strong, #dbe4ef);
+  padding-right: 18px;
+}
+.asset-position-hero .hero-value {
+  font-size: 34px;
+  line-height: 1.1;
+  font-weight: 700;
+}
+.asset-position-hero .hero-secondary .hero-value {
+  font-size: 26px;
+}
+.asset-position-hero .hero-meta {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-strong, #dbe4ef);
+}
+.asset-position-hero .hero-meta > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.asset-kpi-section {
+  margin-top: 20px;
+}
+.asset-kpi-section-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted, #55708f);
+}
+.trend {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  white-space: nowrap;
+}
+.trend-arrow {
+  font-size: 0.8em;
+}
+html[data-theme='dark'] .asset-position-hero .hero-primary,
+html[data-theme='dark'] .asset-position-hero .hero-meta {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+@media (max-width: 640px) {
+  .asset-position-hero {
+    grid-template-columns: 1fr;
+  }
+  .asset-position-hero .hero-primary {
+    border-right: none;
+    padding-right: 0;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line-strong, #dbe4ef);
+  }
+}
+
+/* ── Acessibilidade: foco de teclado global (WCAG 2.2 SC 2.4.7 / 2.4.11) ──────
+   Restaura um indicador de foco visivel em TODA a UI. Usa :focus-visible para
+   nao aparecer em clique de mouse, so em navegacao por teclado. O !important
+   vence os `outline:none` e `all:unset` espalhados pelo arquivo. */
+:root { --focus-ring: #1f6feb; }
+html[data-theme='dark'] { --focus-ring: #7cc4ff; }
+
+:focus:not(:focus-visible) { outline: none; }
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible,
+[role='button']:focus-visible,
+[role='tab']:focus-visible,
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible,
+.btn-danger:focus-visible,
+.btn-link:focus-visible,
+.icon-btn:focus-visible,
+.th-sort-btn:focus-visible,
+.range-tab:focus-visible,
+.app-v2-menu-link:focus-visible,
+.app-v2-mobile-toggle:focus-visible,
+.fin2-chip:focus-visible,
+.fin2-tab:focus-visible,
+.currency-toggle button:focus-visible,
+.metrics-editor-menu-item:focus-visible {
+  outline: 2px solid var(--focus-ring) !important;
+  outline-offset: 2px;
+}
+
+/* Campo de busca do topo tem outline:none e envolve o input — mostra o anel no wrapper */
+.app-v2-search:focus-within {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* Login: botao "mostrar senha" (link discreto) */
+.auth-show-pass {
+  align-self: flex-start;
+  margin-top: -4px;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  font-size: 13px;
+  color: var(--focus-ring, #1f6feb);
+  cursor: pointer;
+  text-decoration: underline;
+}

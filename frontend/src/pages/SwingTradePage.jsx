@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import StatePanel from '../components/StatePanel'
 import 'chart.js/auto'
 import { Button, Paper, Typography } from '@mui/material'
 import { Bar, Doughnut, Line } from 'react-chartjs-2'
@@ -374,7 +375,7 @@ function SwingTradePage({ readOnly = false }) {
     }
   }
 
-  if (loading) return <p>Carregando swing trade...</p>
+  if (loading) return <StatePanel busy title="Carregando swing trade..." />
 
   return (
     <section>

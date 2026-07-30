@@ -7,6 +7,7 @@ function LoginPage({ onLoggedIn }) {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
 
   const onSubmit = async (event) => {
     event.preventDefault()
@@ -66,20 +67,32 @@ function LoginPage({ onLoggedIn }) {
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 autoComplete="username"
-                placeholder="admin"
+                placeholder="Seu usuario"
+                required
+                aria-invalid={!!error}
               />
             </label>
             <label className="auth-field">
               <span>Senha</span>
               <input
-                type="password"
+                type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 autoComplete="current-password"
                 placeholder="Sua senha"
+                required
+                aria-invalid={!!error}
               />
             </label>
-            {!!error && <p className="error">{error}</p>}
+            <button
+              type="button"
+              className="auth-show-pass"
+              onClick={() => setShowPassword((current) => !current)}
+              aria-pressed={showPassword}
+            >
+              {showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+            </button>
+            {!!error && <p className="error" role="alert">{error}</p>}
             <Button type="submit" variant="contained" size="large" disabled={loading} className="auth-submit-btn">
               {loading ? 'Entrando...' : 'Entrar'}
             </Button>

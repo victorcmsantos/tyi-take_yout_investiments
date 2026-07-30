@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import StatePanel from '../components/StatePanel'
 import { useNavigate } from 'react-router-dom'
 import { Button, Checkbox, FormControlLabel, Paper, Stack, Typography } from '@mui/material'
 import { apiGet, apiPost } from '../api'
@@ -287,7 +288,7 @@ function AdminPage({ currentUser }) {
         </div>
 
         {syncStatusLoading ? (
-          <p>Carregando saude de sync...</p>
+          <StatePanel busy compact title="Carregando saude de sync..." />
         ) : !syncStatus ? (
           <p>Saude de sync indisponivel.</p>
         ) : (
@@ -318,7 +319,7 @@ function AdminPage({ currentUser }) {
           </div>
         </div>
         {telegramStatusLoading ? (
-          <p>Carregando status do Telegram...</p>
+          <StatePanel busy compact title="Carregando status do Telegram..." />
         ) : !telegramStatus ? (
           <p>Status do Telegram indisponivel.</p>
         ) : (
@@ -355,7 +356,7 @@ function AdminPage({ currentUser }) {
         </div>
 
         {scannerStatusLoading ? (
-          <p>Carregando status do scanner...</p>
+          <StatePanel busy compact title="Carregando status do scanner..." />
         ) : !scannerStatus ? (
           <p>Status do scanner indisponivel.</p>
         ) : (
@@ -380,7 +381,7 @@ function AdminPage({ currentUser }) {
         <div style={{ marginTop: 16 }}>
           <Typography variant="subtitle2" sx={{ mb: 1, opacity: 0.85 }}>Auditoria do scanner/swing trade</Typography>
           {scannerAuditLoading ? (
-            <p>Carregando auditoria...</p>
+            <StatePanel busy compact title="Carregando auditoria..." />
           ) : scannerAudit.length === 0 ? (
             <p>Nenhuma acao auditada ainda.</p>
           ) : (
@@ -439,7 +440,7 @@ function AdminPage({ currentUser }) {
         <div style={{ marginTop: 16 }}>
           <Typography variant="subtitle2" sx={{ mb: 1, opacity: 0.85 }}>Backups existentes</Typography>
           {backupsLoading ? (
-            <p>Carregando backups...</p>
+            <StatePanel busy compact title="Carregando backups..." />
           ) : backups.length === 0 ? (
             <p>Nenhum backup encontrado.</p>
           ) : (
@@ -579,7 +580,7 @@ function AdminPage({ currentUser }) {
       <Paper className="admin-panel" sx={{ p: 2 }}>
         <Typography variant="h6" sx={{ mb: 2 }}>Usuarios</Typography>
         {loading ? (
-          <p>Carregando...</p>
+          <StatePanel busy compact title="Carregando..." />
         ) : (
           <Stack spacing={1.5}>
             {users.map((user) => (

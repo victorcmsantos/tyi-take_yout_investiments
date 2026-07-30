@@ -196,6 +196,25 @@ class MarketScannerDaemon:
                 coalesce=True,
                 replace_existing=True,
             )
+            if self.settings.setup3_robot_enabled:
+                self.scheduler.add_job(
+                    self._run_setup3_robot_job,
+                    trigger="cron",
+                    day_of_week=self.MARKET_CRON_DAY_OF_WEEK,
+                    hour=self.settings.setup3_robot_hour,
+                    minute=self.settings.setup3_robot_minute,
+                    id="daily_setup3_robot",
+                    max_instances=1,
+                    coalesce=True,
+                    replace_existing=True,
+                )
+                logger.info(
+                    "Setup3 daily robot scheduled "
+                    f"hour={self.settings.setup3_robot_hour} "
+                    f"minute={self.settings.setup3_robot_minute} "
+                    f"budget={self.settings.setup3_robot_budget} "
+                    f"owner_uid={self.settings.setup3_robot_owner_uid}"
+                )
             self.scheduler.start()
             logger.info(
                 "Market scanner scheduler started",
@@ -498,6 +517,7 @@ class MarketScannerDaemon:
                             high=float(latest_bar["high"]),
                             low=float(latest_bar["low"]),
                             close=float(latest_bar["close"]),
+                            candle_timestamp=latest_bar.name.to_pydatetime(),
                         )
 
                         if can_sync_backend_assets:
@@ -678,6 +698,28 @@ class MarketScannerDaemon:
     def _chunks(self, values: list[str], size: int) -> Iterable[list[str]]:
         for index in range(0, len(values), size):
             yield values[index : index + size]
+
+    def _run_setup3_robot_job(self) -> None:
+        """Job diario: abre paper trades do setup3 (saida automatica via scan)."""
+
+        from scheduler.setup3_robot import run_daily_setup3_robot
+
+        today = datetime.now(self.market_timezone).date()
+        try:
+            is_session = bool(self.market_calendar.is_session(pd.Timestamp(today)))
+        except Exception as exc:
+            logger.warning(
+                "Setup3 robot: falha ao checar sessao B3; usando fallback dia util",
+                error=str(exc),
+            )
+            is_session = today.weekday() < 5
+        if not is_session:
+            logger.info(f"Setup3 robot pulado: {today.isoformat()} nao e pregao B3")
+            return
+        try:
+            run_daily_setup3_robot(self.session_factory, self.settings, today=today)
+        except Exception:
+            logger.exception("Setup3 robot: execucao falhou")
 
     def _is_market_open(self, when: datetime | None = None) -> bool:
         """Return whether B3 is open for trading at the given instant."""

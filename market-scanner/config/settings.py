@@ -154,6 +154,14 @@ class AppSettings:
     alerts_enabled: bool = True
     alert_min_score: float = 60.0
     alert_max_per_scan: int = 10
+    # Robo diario de paper trading do setup3 (compra 1x/dia os sinais acionados).
+    setup3_robot_enabled: bool = False
+    setup3_robot_budget: float = 5000.0
+    setup3_robot_owner_uid: int = 3
+    setup3_robot_hour: int = 16
+    setup3_robot_minute: int = 0
+    setup3_robot_min_score: float = 0.0
+    setup3_robot_today_only: bool = True
     manual_tickers: list[str] = field(default_factory=list)
     signal_rules: SignalRuleSettings = field(default_factory=SignalRuleSettings)
     scoring: ScoringSettings = field(default_factory=ScoringSettings)
@@ -246,6 +254,13 @@ def get_settings() -> AppSettings:
         alerts_enabled=_get_bool("SCANNER_ALERTS_ENABLED", True),
         alert_min_score=_get_float("SCANNER_ALERT_MIN_SCORE", 60.0),
         alert_max_per_scan=_get_int("SCANNER_ALERT_MAX_PER_SCAN", 10),
+        setup3_robot_enabled=_get_bool("SETUP3_ROBOT_ENABLED", False),
+        setup3_robot_budget=_get_float("SETUP3_ROBOT_BUDGET", 5000.0),
+        setup3_robot_owner_uid=_get_int("SETUP3_ROBOT_OWNER_UID", 3),
+        setup3_robot_hour=_get_int("SETUP3_ROBOT_HOUR", 16),
+        setup3_robot_minute=_get_int("SETUP3_ROBOT_MINUTE", 0),
+        setup3_robot_min_score=_get_float("SETUP3_ROBOT_MIN_SCORE", 0.0),
+        setup3_robot_today_only=_get_bool("SETUP3_ROBOT_TODAY_ONLY", True),
         manual_tickers=_get_list("MANUAL_TICKERS", []),
         signal_rules=SignalRuleSettings(
             rsi_threshold=_get_float("RULE_RSI_THRESHOLD", 55.0),

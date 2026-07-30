@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from config.settings import AppSettings, TradeLevelSettings
 from database.models import Base, Metric, Price, Signal, TickerCatalog, Trade
+from database.trade_rules import candle_is_after_entry
 
 
 OPEN_TRADE_STATUS = "OPEN"
@@ -475,8 +476,14 @@ def update_open_trades_for_ticker(
     high: float,
     low: float,
     close: float,
+    candle_timestamp=None,
 ) -> None:
-    """Update tracked trades using the latest candle for a ticker."""
+    """Update tracked trades using the latest candle for a ticker.
+
+    ``candle_timestamp`` (o timestamp do candle avaliado) evita look-ahead: o
+    candle de ENTRADA nao dispara stop/alvo, pois seu high/low ja aconteceu (em
+    parte antes da entrada). So candles posteriores ao de entrada avaliam saida.
+    """
 
     open_trades = session.scalars(
         select(Trade)
@@ -487,6 +494,9 @@ def update_open_trades_for_ticker(
     for trade in open_trades:
         trade.last_price = close
         trade.last_checked_at = checked_at
+        # Nao avalia saida no candle de entrada (look-ahead); so em candles posteriores.
+        if not candle_is_after_entry(candle_timestamp, trade.signal_timestamp):
+            continue
         # Same-candle target+stop ambiguity is resolved conservatively as stop-first.
         if low <= trade.stop_price:
             trade.status = FAILURE_TRADE_STATUS

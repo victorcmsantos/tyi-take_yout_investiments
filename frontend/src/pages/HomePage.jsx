@@ -11,6 +11,7 @@ import { dateTimeBr } from '../datetime'
 import { useHomeDashboardData } from '../hooks/useHomeDashboardData'
 import { usePersistedState } from '../persistedState'
 import { emitAppToast } from '../toast'
+import { useDialogA11y } from '../hooks/useDialogA11y'
 
 const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
 const pct = (value, signed = false) => formatPercent(value, 2, { signed, fallback: '0.00%' })
@@ -72,6 +73,7 @@ function HomePage({ selectedPortfolioIds }) {
     refreshOnlyStaleAssets,
   } = useHomeDashboardData(selectedPortfolioIds)
   const [showHealthModal, setShowHealthModal] = useState(false)
+  const healthDialogRef = useDialogA11y(showHealthModal, () => setShowHealthModal(false))
   const [showCustomizer, setShowCustomizer] = useState(false)
   const [sortState, setSortState] = usePersistedState('home.assets.sort.v1', { by: 'name', dir: 'asc' })
   const [dashboardPrefs, setDashboardPrefs] = usePersistedState(
@@ -452,6 +454,8 @@ function HomePage({ selectedPortfolioIds }) {
             role="dialog"
             aria-modal="true"
             aria-label="Detalhes da saude de sync"
+            ref={healthDialogRef}
+            tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="health-modal-header">

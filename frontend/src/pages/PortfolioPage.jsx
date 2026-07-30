@@ -6,7 +6,8 @@ import StatePanel from '../components/StatePanel'
 import PortfolioAiAnalysisCard from '../components/PortfolioAiAnalysisCard'
 import { buildExportFilename, exportRowsAsCsv, exportTableAsPdf } from '../exporters'
 import { useApiQuery } from '../hooks/useApiQuery'
-import { formatQuantity } from '../formatters'
+import { formatCurrencyBRL, formatQuantity } from '../formatters'
+import Trend from '../components/Trend'
 import { emitAppToast } from '../toast'
 
 const CATEGORY_META = [
@@ -17,7 +18,7 @@ const CATEGORY_META = [
   { key: 'fiis', label: 'FIIs' },
 ]
 
-const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
+const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
 const marketStatusLabel = (item) => (item?.market_data?.is_stale ? 'Desatualizado' : 'Atualizado')
 const quantityDigitsByCategory = (categoryKey) => (
   categoryKey === 'br_stocks' || categoryKey === 'fiis' ? 0 : 4
@@ -280,8 +281,8 @@ function PortfolioPage({ selectedPortfolioIds }) {
       <div className="cards">
         <article className="card"><h3>Patrimonio</h3><p>{brl(snapshot.total_value)}</p></article>
         <article className="card"><h3>Investido</h3><p>{brl(snapshot.invested_value)}</p></article>
-        <article className="card"><h3>Aberto (R$)</h3><p className={snapshot.open_pnl_value >= 0 ? 'up' : 'down'}>{brl(snapshot.open_pnl_value)}</p></article>
-        <article className="card"><h3>Aberto (%)</h3><p className={snapshot.open_pnl_pct >= 0 ? 'up' : 'down'}>{snapshot.open_pnl_pct.toFixed(2)}%</p></article>
+        <article className="card"><h3>Aberto (R$)</h3><p><Trend value={snapshot.open_pnl_value}>{brl(snapshot.open_pnl_value)}</Trend></p></article>
+        <article className="card"><h3>Aberto (%)</h3><p><Trend value={snapshot.open_pnl_pct}>{snapshot.open_pnl_pct.toFixed(2)}%</Trend></p></article>
         <article className="card"><h3>Proventos mes atual</h3><p>{brl(snapshot.incomes_current_month)}</p></article>
         <article className="card"><h3>Proventos 3 meses</h3><p>{brl(snapshot.incomes_3m)}</p></article>
         <article className="card"><h3>Proventos 12 meses</h3><p>{brl(snapshot.incomes_12m)}</p></article>
@@ -370,9 +371,9 @@ function PortfolioPage({ selectedPortfolioIds }) {
                           Sinal: <strong>{item.structured_action_label}</strong>
                         </p>
                         <p className="portfolio-tactical-item-meta">
-                          Gap: <strong className={Number(item.price_gap_pct || 0) >= 0 ? 'up' : 'down'}>{Number(item.price_gap_pct || 0).toFixed(2)}%</strong>
+                          Gap: <strong><Trend value={item.price_gap_pct}>{Number(item.price_gap_pct || 0).toFixed(2)}%</Trend></strong>
                           {' · '}
-                          Aberto: <strong className={Number(item.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>{Number(item.open_pnl_pct || 0).toFixed(2)}%</strong>
+                          Aberto: <strong><Trend value={item.open_pnl_pct}>{Number(item.open_pnl_pct || 0).toFixed(2)}%</Trend></strong>
                         </p>
                       </article>
                     ))}
@@ -449,14 +450,14 @@ function PortfolioPage({ selectedPortfolioIds }) {
                     </div>
                     <div className="metric-item">
                       <span className="metric-label">Variacao</span>
-                      <strong className={Number(summary.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>
-                        {Number(summary.open_pnl_pct || 0).toFixed(2)}%
+                      <strong>
+                        <Trend value={summary.open_pnl_pct}>{Number(summary.open_pnl_pct || 0).toFixed(2)}%</Trend>
                       </strong>
                     </div>
                     <div className="metric-item">
                       <span className="metric-label">{openMoneyLabel}</span>
-                      <strong className={Number(summary.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>
-                        {money(summary.open_pnl_value)}
+                      <strong>
+                        <Trend value={summary.open_pnl_value}>{money(summary.open_pnl_value)}</Trend>
                       </strong>
                     </div>
                     <div className="metric-item">
@@ -504,8 +505,8 @@ function PortfolioPage({ selectedPortfolioIds }) {
                   <div className="cards">
                     <article className="card"><h3>Patrimonio</h3><p>{money(summary.total_value)}</p></article>
                     <article className="card"><h3>Investido</h3><p>{money(summary.invested_value)}</p></article>
-                    <article className="card"><h3>{openMoneyLabel}</h3><p className={Number(summary.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>{money(summary.open_pnl_value)}</p></article>
-                    <article className="card"><h3>Aberto (%)</h3><p className={Number(summary.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>{Number(summary.open_pnl_pct || 0).toFixed(2)}%</p></article>
+                    <article className="card"><h3>{openMoneyLabel}</h3><p><Trend value={summary.open_pnl_value}>{money(summary.open_pnl_value)}</Trend></p></article>
+                    <article className="card"><h3>Aberto (%)</h3><p><Trend value={summary.open_pnl_pct}>{Number(summary.open_pnl_pct || 0).toFixed(2)}%</Trend></p></article>
                     <article className="card"><h3>Proventos mes atual</h3><p>{money(summary.incomes_current_month)}</p></article>
                     <article className="card"><h3>Proventos 3 meses</h3><p>{money(summary.incomes_3m)}</p></article>
                     <article className="card"><h3>Proventos 12 meses</h3><p>{money(summary.incomes_12m)}</p></article>
@@ -553,8 +554,8 @@ function PortfolioPage({ selectedPortfolioIds }) {
                             <td>{money(item.invested_value)}</td>
                             <td>{money(item.value)}</td>
                             <td>{money(item.total_incomes)}</td>
-                            <td className={Number(item.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>{money(item.open_pnl_value)}</td>
-                            <td className={Number(item.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>{Number(item.open_pnl_pct || 0).toFixed(2)}%</td>
+                            <td><Trend value={item.open_pnl_value}>{money(item.open_pnl_value)}</Trend></td>
+                            <td><Trend value={item.open_pnl_pct}>{Number(item.open_pnl_pct || 0).toFixed(2)}%</Trend></td>
                             <td>{Number(item.weight || 0).toFixed(2)}%</td>
                           </tr>
                         ))}

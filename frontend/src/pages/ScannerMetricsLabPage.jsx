@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import StatePanel from '../components/StatePanel'
 import { apiGet, apiPatch } from '../api'
 
 function toNumberOrNull(value) {
@@ -107,7 +108,7 @@ function ScannerMetricsLabPage() {
     }
   }
 
-  if (loading) return <p>Carregando metrics lab...</p>
+  if (loading) return <StatePanel busy title="Carregando metrics lab..." />
 
   return (
     <section className="metrics-editor-page">

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { apiDelete, apiGet, apiPatch, apiPost, apiPostForm } from '../api'
 import { assetPriceCurrency, formatCurrencyBRL } from '../formatters'
 import { emitAppToast } from '../toast'
+import { useDialogA11y } from '../hooks/useDialogA11y'
 
 const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
 const EMPTY_EDIT_FORM = {
@@ -32,8 +33,10 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
   const [editForm, setEditForm] = useState(EMPTY_EDIT_FORM)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   const [importError, setImportError] = useState('')
   const [importMessage, setImportMessage] = useState('')
+  const [importing, setImporting] = useState(false)
   const [importWarnings, setImportWarnings] = useState([])
   const [form, setForm] = useState({
     target_portfolio_id: '',
@@ -163,6 +166,8 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
 
   const onSubmit = async (event) => {
     event.preventDefault()
+    if (submitting) return
+    setSubmitting(true)
     setError('')
     setMessage('')
     try {
@@ -173,6 +178,8 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
       await loadIncomes()
     } catch (err) {
       setError(err.message)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -206,6 +213,8 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
       setImportError('Selecione um arquivo CSV.')
       return
     }
+    if (importing) return
+    setImporting(true)
     try {
       const formData = new FormData()
       formData.append('target_portfolio_id', selectedPortfolioId)
@@ -217,10 +226,13 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
       event.target.reset()
     } catch (err) {
       setImportError(err.message)
+    } finally {
+      setImporting(false)
     }
   }
 
   const editingItem = rows.find((item) => Number(item.id) === Number(editingIncomeId)) || null
+  const editDialogRef = useDialogA11y(Boolean(editingIncomeId && editingItem), cancelEditIncome)
 
   return (
     <section>
@@ -275,7 +287,9 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
             <input id="date" name="date" type="date" value={form.date} onChange={onChange} required />
           </div>
           <div className="form-actions">
-            <button type="submit" className="btn-primary">Salvar provento</button>
+            <button type="submit" className="btn-primary" disabled={submitting}>
+              {submitting ? 'Salvando...' : 'Salvar provento'}
+            </button>
           </div>
         </form>
       </article>
@@ -306,7 +320,9 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
             <input id="csv_file_income" name="csv_file" type="file" accept=".csv,text/csv" required />
           </div>
           <div className="form-actions">
-            <button type="submit" className="btn-primary">Importar CSV</button>
+            <button type="submit" className="btn-primary" disabled={importing}>
+              {importing ? 'Importando...' : 'Importar CSV'}
+            </button>
           </div>
         </form>
       </article>
@@ -371,6 +387,8 @@ function NewIncomePage({ selectedPortfolioIds, portfolios, assets = [] }) {
             role="dialog"
             aria-modal="true"
             aria-label="Editar provento"
+            ref={editDialogRef}
+            tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="health-modal-header">

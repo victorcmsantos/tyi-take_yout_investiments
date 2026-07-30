@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { Skeleton } from '@mui/material'
 import 'chart.js/auto'
 import { Line } from 'react-chartjs-2'
 import { apiGet, apiPost } from '../api'
 import { formatAgeFromNow, formatDateTimeLocal, parseApiDate } from '../datetime'
+import { formatCurrencyBRL, formatPercent } from '../formatters'
+import StatePanel from '../components/StatePanel'
+import Trend from '../components/Trend'
+import { buildPositionDecision, normalizeStructuredMarketMood, structuredActionLabel } from '../lib/positionDecision'
 
 const CHART_RANGES = [
   { key: '1d', label: '1 DIA' },
@@ -19,9 +24,9 @@ const enrichmentStaleDays = Number.isFinite(rawEnrichmentStaleDays) && rawEnrich
   : 3
 const ENRICHMENT_STALE_AFTER_MS = enrichmentStaleDays * 24 * 60 * 60 * 1000
 
-const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
-const pct = (value) => `${Number(value || 0).toFixed(2)}%`
-const signedPct = (value) => `${Number(value || 0) >= 0 ? '+' : ''}${Number(value || 0).toFixed(2)}%`
+const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
+const pct = (value) => formatPercent(value, 2, { fallback: '0,00%' })
+const signedPct = (value) => formatPercent(value, 2, { signed: true, fallback: '0,00%' })
 const money = (value, currency = 'BRL') => {
   const num = Number(value)
   if (!Number.isFinite(num)) return '-'
@@ -86,268 +91,46 @@ function isTransientOpenClawReply(value) {
   ].some((marker) => text.includes(marker))
 }
 
-function normalizeSearchText(value) {
-  return String(value || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
+function AssetKpiSkeleton({ count = 4 }) {
+  return (
+    <div className="cards asset-kpi-grid">
+      {Array.from({ length: count }).map((_, idx) => (
+        <article className="card" key={`asset-kpi-skeleton-${idx}`}>
+          <Skeleton variant="text" width={120} height={20} />
+          <Skeleton variant="text" width={90} height={34} />
+        </article>
+      ))}
+    </div>
+  )
 }
 
-function inferMarketMoodLabel(value) {
-  const text = normalizeSearchText(value)
-  if (!text) {
-    return { label: 'Sem leitura', tone: 'neutral', score: 0 }
-  }
-
-  let score = 0
-  const positiveMarkers = [
-    'positivo',
-    'otimista',
-    'confianca',
-    'resiliente',
-    'solido',
-    'barato',
-    'atrativo',
-    'desconto',
-    'bom momento',
-    'favoravel',
-    'crescimento',
-    'melhora',
-    'forte',
-  ]
-  const negativeMarkers = [
-    'negativo',
-    'cautela',
-    'pressionado',
-    'caro',
-    'esticado',
-    'risco',
-    'incerteza',
-    'fraco',
-    'desaceleracao',
-    'desaceleração',
-    'volatil',
-    'volatilidade',
-    'piora',
-    'desafiador',
-  ]
-
-  positiveMarkers.forEach((marker) => {
-    if (text.includes(marker)) score += 1
-  })
-  negativeMarkers.forEach((marker) => {
-    if (text.includes(marker)) score -= 1
-  })
-
-  if (score >= 2) {
-    return { label: 'Mercado com viés positivo', tone: 'positive', score }
-  }
-  if (score <= -2) {
-    return { label: 'Mercado com viés cauteloso', tone: 'negative', score }
-  }
-  return { label: 'Mercado sem direção forte', tone: 'neutral', score }
-}
-
-function normalizeStructuredMarketMood(value) {
-  const text = normalizeSearchText(value)
-  if (!text) return ''
-  if (text.includes('positivo') || text.includes('favoravel') || text.includes('otimista')) return 'positive'
-  if (text.includes('cauteloso') || text.includes('negativo') || text.includes('pessimista')) return 'negative'
-  if (text.includes('neutro')) return 'neutral'
-  return ''
-}
-
-function marketMoodPresentation(structuredMood, marketView) {
-  const normalized = normalizeStructuredMarketMood(structuredMood)
-  if (normalized === 'positive') {
-    return { label: 'Mercado com viés positivo', tone: 'positive', score: 2 }
-  }
-  if (normalized === 'negative') {
-    return { label: 'Mercado com viés cauteloso', tone: 'negative', score: -2 }
-  }
-  if (normalized === 'neutral') {
-    return { label: 'Mercado sem direção forte', tone: 'neutral', score: 0 }
-  }
-  return inferMarketMoodLabel(marketView)
-}
-
-function normalizeStructuredAction(value) {
-  const text = normalizeSearchText(value)
-  if (!text) return ''
-  if (text.includes('comprar_mais') || text.includes('comprar mais') || text === 'compra') return 'buy_more'
-  if (text.includes('segurar') || text.includes('manter')) return 'hold'
-  if (text.includes('reduzir') || text.includes('vender')) return 'reduce'
-  if (text.includes('observar') || text.includes('aguardar') || text.includes('monitorar')) return 'watch'
-  return ''
-}
-
-function structuredActionLabel(value) {
-  const normalized = normalizeStructuredAction(value)
-  if (normalized === 'buy_more') return 'Comprar mais'
-  if (normalized === 'hold') return 'Segurar'
-  if (normalized === 'reduce') return 'Vender ou reduzir'
-  if (normalized === 'watch') return 'Observar'
-  return ''
-}
-
-function buildPositionDecision({ asset, position, enrichmentPayload }) {
-  const currentPrice = Number(asset?.price || 0)
-  const avgPrice = Number(position?.avg_price || 0)
-  const shares = Number(position?.shares || 0)
-  const openPnlPct = Number(position?.open_pnl_pct || 0)
-  const marketView = String(enrichmentPayload?.visao_do_mercado || '').trim()
-  const structuredMood = String(enrichmentPayload?.humor_do_mercado || '').trim()
-  const openClawAction = String(enrichmentPayload?.acao_sugerida || '').trim()
-  const openClawActionWhy = String(enrichmentPayload?.justificativa_da_acao || '').trim()
-  const mood = marketMoodPresentation(structuredMood, marketView)
-  const priceGapPct = avgPrice > 0 ? ((currentPrice - avgPrice) / avgPrice) * 100 : null
-  const reasons = []
-
-  if (structuredMood) {
-    reasons.push(`OpenClaw classificou o humor como ${structuredMood}`)
-  } else if (marketView) {
-    reasons.push(mood.label)
-  } else {
-    reasons.push('OpenClaw ainda nao trouxe leitura de mercado')
-  }
-
-  if (openClawAction) {
-    reasons.push(`OpenClaw sugeriu ${structuredActionLabel(openClawAction) || openClawAction}`)
-  }
-
-  if (avgPrice > 0 && priceGapPct !== null) {
-    const direction = priceGapPct >= 0 ? 'acima' : 'abaixo'
-    reasons.push(`Preco atual ${Math.abs(priceGapPct).toFixed(2)}% ${direction} do seu preco medio`)
-  }
-
-  if (shares > 0) {
-    const pnlDirection = openPnlPct >= 0 ? 'acima' : 'abaixo'
-    reasons.push(`Posicao ${Math.abs(openPnlPct).toFixed(2)}% ${pnlDirection} do zero`)
-  }
-
-  if (shares <= 0 || avgPrice <= 0) {
-    if (mood.tone === 'positive') {
-      return {
-        mood,
-        action: 'Observar compra',
-        actionTone: 'up',
-        openClawActionLabel: structuredActionLabel(openClawAction),
-        openClawActionWhy,
-        reasons,
-        priceGapPct,
-        summary: 'O mercado parece construtivo, mas voce ainda nao tem preco medio relevante nessa posicao.',
-      }
-    }
-    if (mood.tone === 'negative') {
-      return {
-        mood,
-        action: 'Aguardar',
-        actionTone: 'down',
-        openClawActionLabel: structuredActionLabel(openClawAction),
-        openClawActionWhy,
-        reasons,
-        priceGapPct,
-        summary: 'A leitura atual nao sugere pressa para montar ou aumentar posicao.',
-      }
-    }
-    return {
-      mood,
-      action: 'Monitorar',
-      actionTone: '',
-      openClawActionLabel: structuredActionLabel(openClawAction),
-      openClawActionWhy,
-      reasons,
-      priceGapPct,
-      summary: 'Sem uma posicao formada, faz mais sentido monitorar antes de agir.',
-    }
-  }
-
-  if (mood.tone === 'positive') {
-    if (priceGapPct <= -7) {
-      return {
-        mood,
-        action: 'Comprar mais',
-        actionTone: 'up',
-        openClawActionLabel: structuredActionLabel(openClawAction),
-        openClawActionWhy,
-        reasons,
-        priceGapPct,
-        summary: 'O mercado segue favoravel e o preco esta abaixo do seu custo medio.',
-      }
-    }
-    return {
-      mood,
-      action: 'Segurar',
-      actionTone: '',
-      openClawActionLabel: structuredActionLabel(openClawAction),
-      openClawActionWhy,
-      reasons,
-      priceGapPct,
-      summary: 'A leitura segue boa, mas o preco ja nao oferece desconto claro contra o seu custo medio.',
-    }
-  }
-
-  if (mood.tone === 'negative') {
-    if (priceGapPct >= 8 || openPnlPct >= 10) {
-      return {
-        mood,
-        action: 'Vender ou reduzir',
-        actionTone: 'down',
-        openClawActionLabel: structuredActionLabel(openClawAction),
-        openClawActionWhy,
-        reasons,
-        priceGapPct,
-        summary: 'O humor do mercado piorou e a posicao ainda tem gordura para realizar ou reduzir risco.',
-      }
-    }
-    return {
-      mood,
-      action: 'Segurar',
-      actionTone: '',
-      openClawActionLabel: structuredActionLabel(openClawAction),
-      openClawActionWhy,
-      reasons,
-      priceGapPct,
-      summary: 'A leitura esta mais cautelosa, mas o preco nao abre uma saida tao confortavel agora.',
-    }
-  }
-
-  if (priceGapPct <= -10) {
-    return {
-      mood,
-      action: 'Segurar',
-      actionTone: '',
-      openClawActionLabel: structuredActionLabel(openClawAction),
-      openClawActionWhy,
-      reasons,
-      priceGapPct,
-      summary: 'O preco caiu abaixo do seu medio, mas sem melhora clara no humor do mercado ainda faz sentido evitar aumentar no escuro.',
-    }
-  }
-
-  if (priceGapPct >= 12 && openPnlPct > 0) {
-    return {
-      mood,
-      action: 'Segurar',
-      actionTone: '',
-      openClawActionLabel: structuredActionLabel(openClawAction),
-      openClawActionWhy,
-      reasons,
-      priceGapPct,
-      summary: 'A posicao esta andando bem, mas sem sinal forte do mercado a leitura segue de manutencao.',
-    }
-  }
-
-  return {
-    mood,
-    action: 'Segurar',
-    actionTone: '',
-    openClawActionLabel: structuredActionLabel(openClawAction),
-    openClawActionWhy,
-    reasons,
-    priceGapPct,
-    summary: 'Nao ha sinal forte o bastante para aumentar ou reduzir agora.',
-  }
+function AssetPageSkeleton() {
+  return (
+    <section className="asset-terminal-page">
+      <div className="hero-actions asset-terminal-back">
+        <Link to="/carteira" className="btn-primary btn-link">Voltar para Renda Variavel</Link>
+      </div>
+      <header className="card asset-terminal-hero">
+        <small className="asset-terminal-eyebrow">Asset terminal</small>
+        <Skeleton variant="text" width={260} height={40} />
+        <Skeleton variant="text" width={160} height={20} />
+        <div className="asset-terminal-meta-strip">
+          {Array.from({ length: 4 }).map((_, idx) => (
+            <div className="asset-terminal-meta-item" key={`asset-hero-skeleton-${idx}`}>
+              <Skeleton variant="text" width={60} height={16} />
+              <Skeleton variant="text" width={90} height={22} />
+            </div>
+          ))}
+        </div>
+      </header>
+      <article className="card detail-card asset-price-card">
+        <Skeleton variant="text" width={180} height={26} />
+        <Skeleton variant="rectangular" height={300} style={{ borderRadius: 12, marginTop: 12 }} />
+      </article>
+      <AssetKpiSkeleton count={4} />
+      <AssetKpiSkeleton count={4} />
+    </section>
+  )
 }
 
 function AssetPage({ selectedPortfolioIds }) {
@@ -362,6 +145,7 @@ function AssetPage({ selectedPortfolioIds }) {
   const [enrichment, setEnrichment] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [assetRefreshKey, setAssetRefreshKey] = useState(0)
   const [syncMessage, setSyncMessage] = useState('')
   const [syncing, setSyncing] = useState(false)
   const [enriching, setEnriching] = useState(false)
@@ -390,7 +174,7 @@ function AssetPage({ selectedPortfolioIds }) {
     return () => {
       active = false
     }
-  }, [ticker, selectedPortfolioIds])
+  }, [ticker, selectedPortfolioIds, assetRefreshKey])
 
   useEffect(() => {
     let active = true
@@ -476,6 +260,7 @@ function AssetPage({ selectedPortfolioIds }) {
     )
   )
   const hasSavedEnrichment = hasAnyEnrichment
+  const hasPosition = Number(position.shares || 0) > 0
   const positionDecision = useMemo(
     () => buildPositionDecision({ asset, position, enrichmentPayload }),
     [asset, position, enrichmentPayload]
@@ -556,9 +341,30 @@ function AssetPage({ selectedPortfolioIds }) {
     ],
   }), [priceHistory.labels, priceHistory.prices])
 
-  if (loading) return <p>Carregando...</p>
-  if (error) return <p className="error">{error}</p>
-  if (!payload) return <p>Sem dados.</p>
+  if (loading) return <AssetPageSkeleton />
+  if (error) {
+    return (
+      <section className="asset-terminal-page">
+        <div className="hero-actions asset-terminal-back">
+          <Link to="/carteira" className="btn-primary btn-link">Voltar para Renda Variavel</Link>
+        </div>
+        <StatePanel
+          eyebrow="Asset terminal"
+          title={`Nao foi possivel carregar ${String(ticker || '').toUpperCase()}`}
+          description={error}
+          actionLabel="Tentar novamente"
+          onAction={() => setAssetRefreshKey((current) => current + 1)}
+        />
+      </section>
+    )
+  }
+  if (!payload) {
+    return (
+      <section className="asset-terminal-page">
+        <StatePanel title="Sem dados para este ativo." />
+      </section>
+    )
+  }
 
   return (
     <section className="asset-terminal-page">
@@ -592,7 +398,7 @@ function AssetPage({ selectedPortfolioIds }) {
           </div>
           <div className="asset-terminal-meta-item">
             <span>Dia</span>
-            <strong className={Number(asset.variation_day || 0) >= 0 ? 'up' : 'down'}>{signedPct(asset.variation_day)}</strong>
+            <strong><Trend value={asset.variation_day}>{signedPct(asset.variation_day)}</Trend></strong>
           </div>
           <div className="asset-terminal-meta-item">
             <span>Provider</span>
@@ -632,13 +438,13 @@ function AssetPage({ selectedPortfolioIds }) {
         <p>
           <strong>{brl(asset.price)}</strong>{' '}
           {priceHistory.change_pct !== null && priceHistory.change_pct !== undefined && (
-            <span className={Number(priceHistory.change_pct || 0) >= 0 ? 'up' : 'down'}>
-              {pct(priceHistory.change_pct)} (PERIODO {selectedRangeLabel})
-            </span>
+            <Trend value={priceHistory.change_pct}>
+              {signedPct(priceHistory.change_pct)} (PERIODO {selectedRangeLabel})
+            </Trend>
           )}
         </p>
         {priceHistoryLoading ? (
-          <p className="subtitle">Carregando historico...</p>
+          <Skeleton variant="rectangular" height={300} style={{ borderRadius: 12 }} />
         ) : (priceHistory.labels || []).length > 0 ? (
           <div className="chart-canvas-wrap">
             <Line data={chartData} options={{ responsive: true, maintainAspectRatio: false }} />
@@ -650,32 +456,64 @@ function AssetPage({ selectedPortfolioIds }) {
         )}
       </article>
 
-      <div className="cards asset-kpi-grid">
-        <article className="card"><h3>Preco</h3><p>{brl(asset.price)}</p></article>
-        <article className="card"><h3>Dividend Yield</h3><p>{pct(asset.dy)}</p></article>
-        <article className="card"><h3>P/L</h3><p>{Number(asset.pl || 0).toFixed(2)}</p></article>
-        <article className="card"><h3>P/VP</h3><p>{Number(asset.pvp || 0).toFixed(2)}</p></article>
-      </div>
+      {hasPosition && (
+        <article className="card asset-position-hero" aria-label={`Resumo da posicao em ${asset.ticker}`}>
+          <div className="hero-primary">
+            <span className="section-kicker">Valor de mercado da posicao</span>
+            <span className="hero-value">{brl(position.market_value)}</span>
+            <span className="subtitle">Investido: {brl(position.total_value)}</span>
+          </div>
+          <div className="hero-secondary">
+            <span className="section-kicker">Resultado em aberto</span>
+            <span className="hero-value">
+              <Trend value={position.open_pnl_value}>{brl(position.open_pnl_value)}</Trend>
+            </span>
+            <Trend value={position.open_pnl_pct}>{signedPct(position.open_pnl_pct)}</Trend>
+          </div>
+          <div className="hero-meta">
+            <div>
+              <span className="section-kicker">Quantidade</span>
+              <strong>{Number(position.shares || 0).toFixed(4)}</strong>
+            </div>
+            <div>
+              <span className="section-kicker">Preco medio</span>
+              <strong>{brl(position.avg_price)}</strong>
+            </div>
+            <div>
+              <span className="section-kicker">Proventos 12m</span>
+              <strong>{brl(position.incomes_12m)}</strong>
+            </div>
+            <div>
+              <span className="section-kicker">Proventos total</span>
+              <strong>{brl(position.total_incomes)}</strong>
+            </div>
+          </div>
+        </article>
+      )}
 
-      <div className="cards asset-kpi-grid">
-        <article className="card"><h3>Quantidade em carteira</h3><p>{Number(position.shares || 0).toFixed(4)}</p></article>
-        <article className="card"><h3>Preco medio</h3><p>{brl(position.avg_price)}</p></article>
-        <article className="card"><h3>Valor total investido</h3><p>{brl(position.total_value)}</p></article>
-        <article className="card"><h3>Valor de mercado da posicao</h3><p>{brl(position.market_value)}</p></article>
-      </div>
+      <section className="asset-kpi-section">
+        <h2 className="asset-kpi-section-title">Fundamentos</h2>
+        <div className="cards asset-kpi-grid">
+          <article className="card"><h3>Preco</h3><p>{brl(asset.price)}</p></article>
+          <article className="card"><h3>Dividend Yield</h3><p>{pct(asset.dy)}</p></article>
+          <article className="card"><h3>P/L</h3><p>{Number(asset.pl || 0).toFixed(2)}</p></article>
+          <article className="card"><h3>P/VP</h3><p>{Number(asset.pvp || 0).toFixed(2)}</p></article>
+        </div>
+      </section>
 
-      <div className="cards asset-kpi-grid asset-kpi-grid-wide">
-        <article className="card"><h3>Resultado em aberto (R$)</h3><p className={Number(position.open_pnl_value || 0) >= 0 ? 'up' : 'down'}>{brl(position.open_pnl_value)}</p></article>
-        <article className="card"><h3>Resultado em aberto (%)</h3><p className={Number(position.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>{pct(position.open_pnl_pct)}</p></article>
-        <article className="card"><h3>Proventos mes atual</h3><p>{brl(position.incomes_current_month)}</p></article>
-        <article className="card"><h3>Proventos 3 meses</h3><p>{brl(position.incomes_3m)}</p></article>
-        <article className="card"><h3>Proventos 12 meses</h3><p>{brl(position.incomes_12m)}</p></article>
-        <article className="card"><h3>Proventos total</h3><p>{brl(position.total_incomes)}</p></article>
-      </div>
+      <section className="asset-kpi-section">
+        <h2 className="asset-kpi-section-title">Proventos</h2>
+        <div className="cards asset-kpi-grid">
+          <article className="card"><h3>Mes atual</h3><p>{brl(position.incomes_current_month)}</p></article>
+          <article className="card"><h3>3 meses</h3><p>{brl(position.incomes_3m)}</p></article>
+          <article className="card"><h3>12 meses</h3><p>{brl(position.incomes_12m)}</p></article>
+          <article className="card"><h3>Total</h3><p>{brl(position.total_incomes)}</p></article>
+        </div>
+      </section>
 
       <article className="card detail-card asset-summary-card">
         <h3>Resumo</h3>
-        <p>Variacao no dia (provider): <strong className={Number(asset.variation_day || 0) >= 0 ? 'up' : 'down'}>{pct(asset.variation_day)}</strong></p>
+        <p>Variacao no dia (provider): <strong><Trend value={asset.variation_day}>{signedPct(asset.variation_day)}</Trend></strong></p>
         <p>Valor de mercado: R$ {Number(asset.market_cap_bi || 0).toFixed(2)} bi</p>
         <p>
           Fonte/candle: {' '}
@@ -711,8 +549,8 @@ function AssetPage({ selectedPortfolioIds }) {
           </div>
           <div className="analysis-strip-item">
             <span className="analysis-label">Resultado aberto</span>
-            <strong className={Number(position.open_pnl_pct || 0) >= 0 ? 'up' : 'down'}>
-              {pct(position.open_pnl_pct)}
+            <strong>
+              <Trend value={position.open_pnl_pct}>{signedPct(position.open_pnl_pct)}</Trend>
             </strong>
           </div>
         </div>

@@ -7,6 +7,7 @@ function Trend({ value, children, className = '' }) {
   return (
     <span className={`trend ${tone}${className ? ` ${className}` : ''}`}>
       <span className="trend-arrow" aria-hidden="true">{positive ? '▲' : '▼'}</span>
+      <span className="sr-only">{positive ? 'em alta' : 'em baixa'}</span>
       {' '}
       {children}
     </span>

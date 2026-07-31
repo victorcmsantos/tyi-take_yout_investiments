@@ -5,7 +5,7 @@ import 'chart.js/auto'
 import { Line } from 'react-chartjs-2'
 import { apiGet, apiPost } from '../api'
 import { formatAgeFromNow, formatDateTimeLocal, parseApiDate } from '../datetime'
-import { formatCurrencyBRL, formatPercent } from '../formatters'
+import { formatCurrencyBRL, formatPercent, formatQuantity, toFiniteNumber } from '../formatters'
 import StatePanel from '../components/StatePanel'
 import Trend from '../components/Trend'
 import { buildPositionDecision, normalizeStructuredMarketMood, structuredActionLabel } from '../lib/positionDecision'
@@ -24,13 +24,21 @@ const enrichmentStaleDays = Number.isFinite(rawEnrichmentStaleDays) && rawEnrich
   : 3
 const ENRICHMENT_STALE_AFTER_MS = enrichmentStaleDays * 24 * 60 * 60 * 1000
 
-const brl = (value) => formatCurrencyBRL(value, 'R$ 0,00')
-const pct = (value) => formatPercent(value, 2, { fallback: '0,00%' })
+const brl = (value) => formatCurrencyBRL(value, '-')
+const pct = (value) => formatPercent(value, 2, { fallback: '-' })
 const signedPct = (value) => formatPercent(value, 2, { signed: true, fallback: '0,00%' })
+const ratio = (value) => formatQuantity(value, { minDigits: 2, maxDigits: 2, trim: false })
+const qty = (value) => formatQuantity(value, { maxDigits: 4 })
+const marketCapBi = (value) => {
+  const num = toFiniteNumber(value, null)
+  if (num == null || num <= 0) return '-'
+  return `R$ ${formatQuantity(num, { minDigits: 2, maxDigits: 2, trim: false })} bi`
+}
 const money = (value, currency = 'BRL') => {
+  const code = String(currency || 'BRL').trim().toUpperCase() || 'BRL'
+  if (code === 'BRL') return formatCurrencyBRL(value, '-')
   const num = Number(value)
   if (!Number.isFinite(num)) return '-'
-  const code = String(currency || 'BRL').trim().toUpperCase() || 'BRL'
   try {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: code }).format(num)
   } catch (_) {
@@ -50,12 +58,12 @@ const marketDataSummary = (marketData) => {
   const ageLabel = formatAgeFromNow(marketData.updated_at, '-')
   if (marketData.is_stale) {
     if (updatedAtLabel) {
-      return `Cotacao possivelmente antiga. Ultimo sucesso via ${source}. Candle: ${updatedAtLabel}. Idade: ${ageLabel}.`
+      return `Cotação possivelmente antiga. Último sucesso via ${source}. Candle: ${updatedAtLabel}. Idade: ${ageLabel}.`
     }
-    return 'Cotacao sem sincronizacao recente confirmada.'
+    return 'Cotação sem sincronização recente confirmada.'
   }
   if (updatedAtLabel) {
-    return `Ultima atualizacao confirmada via ${source}. Candle: ${updatedAtLabel}. Idade: ${ageLabel}.`
+    return `Última atualização confirmada via ${source}. Candle: ${updatedAtLabel}. Idade: ${ageLabel}.`
   }
   return ''
 }
@@ -108,7 +116,7 @@ function AssetPageSkeleton() {
   return (
     <section className="asset-terminal-page">
       <div className="hero-actions asset-terminal-back">
-        <Link to="/carteira" className="btn-primary btn-link">Voltar para Renda Variavel</Link>
+        <Link to="/carteira" className="btn-link asset-back-link">Voltar para Renda Variável</Link>
       </div>
       <header className="card asset-terminal-hero">
         <small className="asset-terminal-eyebrow">Asset terminal</small>
@@ -147,9 +155,11 @@ function AssetPage({ selectedPortfolioIds }) {
   const [error, setError] = useState('')
   const [assetRefreshKey, setAssetRefreshKey] = useState(0)
   const [syncMessage, setSyncMessage] = useState('')
+  const [syncStatus, setSyncStatus] = useState('warn')
   const [syncing, setSyncing] = useState(false)
   const [enriching, setEnriching] = useState(false)
   const [enrichMessage, setEnrichMessage] = useState('')
+  const [enrichStatus, setEnrichStatus] = useState('warn')
 
   useEffect(() => {
     let active = true
@@ -205,20 +215,23 @@ function AssetPage({ selectedPortfolioIds }) {
     if (!ticker) return
     setSyncing(true)
     setSyncMessage('')
+    setSyncStatus('warn')
     try {
       const response = await apiPost(`/api/sync/market-data/${ticker}`, {})
       if (response?.success === false) {
-        setSyncMessage(String(response?.message || 'Sincronizacao adiada: existe outro scan em andamento.'))
+        setSyncStatus('warn')
+        setSyncMessage(String(response?.message || 'Sincronização adiada: existe outro scan em andamento.'))
         return
       }
       const sourceLabel = String(response?.source || '').trim().toUpperCase()
       const updatedLabel = formatDateTimeLocal(response?.updated_at)
+      setSyncStatus('ok')
       if (sourceLabel && updatedLabel) {
-        setSyncMessage(`Atualizacao concluida via ${sourceLabel} em ${updatedLabel}.`)
+        setSyncMessage(`Atualização concluída via ${sourceLabel} em ${updatedLabel}.`)
       } else if (sourceLabel) {
-        setSyncMessage(`Atualizacao concluida via ${sourceLabel}.`)
+        setSyncMessage(`Atualização concluída via ${sourceLabel}.`)
       } else {
-        setSyncMessage('Atualizacao concluida via scanner.')
+        setSyncMessage('Atualização concluída via scanner.')
       }
       const data = await apiGet(`/api/assets/${ticker}`, {
         portfolio_id: selectedPortfolioIds,
@@ -226,6 +239,7 @@ function AssetPage({ selectedPortfolioIds }) {
       setPayload(data)
       setPriceHistoryRefreshKey((current) => current + 1)
     } catch (err) {
+      setSyncStatus('warn')
       setSyncMessage(err.message)
     } finally {
       setSyncing(false)
@@ -271,8 +285,8 @@ function AssetPage({ selectedPortfolioIds }) {
     ? ''
     : (positionDecision.priceGapPct >= 0 ? 'up' : 'down')
   const decisionPriceGapLabel = positionDecision.priceGapPct === null
-    ? 'Sem preco medio'
-    : `${signedPct(positionDecision.priceGapPct)} vs preco medio`
+    ? 'Sem preço médio'
+    : `${signedPct(positionDecision.priceGapPct)} vs preço médio`
   const selectedRangeLabel = (CHART_RANGES.find((opt) => opt.key === rangeKey)?.label || String(rangeKey || '').toUpperCase())
   const openClawMoodLabel = String(enrichmentPayload?.humor_do_mercado || '').trim()
   const openClawMoodClass = openClawMoodLabel
@@ -293,15 +307,18 @@ function AssetPage({ selectedPortfolioIds }) {
 
     autoEnrichedTickersRef.current.add(tickerKey)
     setEnriching(true)
-    setEnrichMessage(hasAnyEnrichment ? 'Atualizando resumo automatico via OpenClaw...' : 'Gerando resumo automatico via OpenClaw...')
+    setEnrichStatus('warn')
+    setEnrichMessage(hasAnyEnrichment ? 'Atualizando resumo automático via OpenClaw...' : 'Gerando resumo automático via OpenClaw...')
 
     ;(async () => {
       try {
         const data = await apiPost(`/api/assets/${tickerKey}/enrich/openclaw`)
-        setEnrichMessage(data?.message || 'OK')
+        setEnrichStatus('ok')
+        setEnrichMessage(data?.message || 'Resumo atualizado.')
         setEnrichment(data?.enrichment || null)
         setPayload((current) => (current ? { ...current, enrichment_history: data?.enrichment_history || [] } : current))
       } catch (err) {
+        setEnrichStatus('warn')
         setEnrichMessage(err.message)
       } finally {
         setEnriching(false)
@@ -313,13 +330,16 @@ function AssetPage({ selectedPortfolioIds }) {
     if (!ticker) return
     autoEnrichedTickersRef.current.add(String(ticker || '').trim().toUpperCase())
     setEnriching(true)
+    setEnrichStatus('warn')
     setEnrichMessage('')
     try {
       const data = await apiPost(`/api/assets/${ticker}/enrich/openclaw`)
-      setEnrichMessage(data?.message || 'OK')
+      setEnrichStatus('ok')
+      setEnrichMessage(data?.message || 'Resumo atualizado.')
       setEnrichment(data?.enrichment || null)
       setPayload((current) => (current ? { ...current, enrichment_history: data?.enrichment_history || [] } : current))
     } catch (err) {
+      setEnrichStatus('warn')
       setEnrichMessage(err.message)
     } finally {
       setEnriching(false)
@@ -330,7 +350,7 @@ function AssetPage({ selectedPortfolioIds }) {
     labels: priceHistory.labels || [],
     datasets: [
       {
-        label: 'Cotacao',
+        label: 'Cotação',
         data: priceHistory.prices || [],
         borderColor: '#a57f39',
         backgroundColor: 'rgba(165, 127, 57, 0.12)',
@@ -346,11 +366,11 @@ function AssetPage({ selectedPortfolioIds }) {
     return (
       <section className="asset-terminal-page">
         <div className="hero-actions asset-terminal-back">
-          <Link to="/carteira" className="btn-primary btn-link">Voltar para Renda Variavel</Link>
+          <Link to="/carteira" className="btn-link asset-back-link">Voltar para Renda Variável</Link>
         </div>
         <StatePanel
           eyebrow="Asset terminal"
-          title={`Nao foi possivel carregar ${String(ticker || '').toUpperCase()}`}
+          title={`Não foi possível carregar ${String(ticker || '').toUpperCase()}`}
           description={error}
           actionLabel="Tentar novamente"
           onAction={() => setAssetRefreshKey((current) => current + 1)}
@@ -369,8 +389,8 @@ function AssetPage({ selectedPortfolioIds }) {
   return (
     <section className="asset-terminal-page">
       <div className="hero-actions asset-terminal-back">
-        <Link to="/carteira" className="btn-primary btn-link">
-          Voltar para Renda Variavel
+        <Link to="/carteira" className="btn-link asset-back-link">
+          Voltar para Renda Variável
         </Link>
       </div>
 
@@ -386,7 +406,7 @@ function AssetPage({ selectedPortfolioIds }) {
             </div>
             <p className="subtitle">Setor: {asset.sector}</p>
           </div>
-          <button type="button" className="btn-primary" onClick={onSyncTicker} disabled={syncing}>
+          <button type="button" className="btn-secondary" onClick={onSyncTicker} disabled={syncing}>
             {syncing ? 'Atualizando...' : 'Atualizar market data'}
           </button>
         </div>
@@ -410,24 +430,25 @@ function AssetPage({ selectedPortfolioIds }) {
           </div>
         </div>
 
-        {!!syncMessage && <p className="notice-warn">{syncMessage}</p>}
+        {!!syncMessage && <p className={syncStatus === 'ok' ? 'notice-ok' : 'notice-warn'}>{syncMessage}</p>}
         {!!marketDataSummary(marketData) && (
           <p className={marketData.is_stale ? 'notice-warn' : 'notice-ok'}>
             {marketDataSummary(marketData)}
-            {marketData.last_error ? ` Ultimo erro: ${marketData.last_error}.` : ''}
+            {marketData.last_error ? ` Último erro: ${marketData.last_error}.` : ''}
           </p>
         )}
       </header>
 
       <article className="card detail-card asset-price-card">
         <div className="hero-line">
-          <h3>Cotacao {asset.ticker}</h3>
-          <div className="range-tabs">
+          <h2>Cotação {asset.ticker}</h2>
+          <div className="range-tabs" role="group" aria-label="Período do gráfico de cotação">
             {CHART_RANGES.map((opt) => (
               <button
                 key={opt.key}
                 type="button"
                 className={`range-tab ${rangeKey === opt.key ? 'active' : ''}`}
+                aria-pressed={rangeKey === opt.key}
                 onClick={() => setRangeKey(opt.key)}
               >
                 {opt.label}
@@ -435,31 +456,38 @@ function AssetPage({ selectedPortfolioIds }) {
             ))}
           </div>
         </div>
-        <p>
-          <strong>{brl(asset.price)}</strong>{' '}
+        <p className="asset-chart-price">
+          <strong className="asset-chart-price-value">{brl(asset.price)}</strong>
           {priceHistory.change_pct !== null && priceHistory.change_pct !== undefined && (
             <Trend value={priceHistory.change_pct}>
-              {signedPct(priceHistory.change_pct)} (PERIODO {selectedRangeLabel})
+              {signedPct(priceHistory.change_pct)} (período {selectedRangeLabel})
             </Trend>
           )}
         </p>
         {priceHistoryLoading ? (
           <Skeleton variant="rectangular" height={300} style={{ borderRadius: 12 }} />
         ) : (priceHistory.labels || []).length > 0 ? (
-          <div className="chart-canvas-wrap">
-            <Line data={chartData} options={{ responsive: true, maintainAspectRatio: false }} />
+          <div
+            className="chart-canvas-wrap"
+            role="img"
+            aria-label={`Gráfico de cotação de ${asset.ticker} no período ${selectedRangeLabel}. Preço atual ${brl(asset.price)}, variação de ${signedPct(priceHistory.change_pct)} no período.`}
+          >
+            <Line
+              data={chartData}
+              options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }}
+            />
           </div>
         ) : (
           <p className="notice-warn">
-            {priceHistoryError || 'Nao foi possivel carregar historico para este periodo.'}
+            {priceHistoryError || 'Não foi possível carregar histórico para este período.'}
           </p>
         )}
       </article>
 
       {hasPosition && (
-        <article className="card asset-position-hero" aria-label={`Resumo da posicao em ${asset.ticker}`}>
+        <article className="card asset-position-hero" aria-label={`Resumo da posição em ${asset.ticker}`}>
           <div className="hero-primary">
-            <span className="section-kicker">Valor de mercado da posicao</span>
+            <span className="section-kicker">Valor de mercado da posição</span>
             <span className="hero-value">{brl(position.market_value)}</span>
             <span className="subtitle">Investido: {brl(position.total_value)}</span>
           </div>
@@ -469,14 +497,17 @@ function AssetPage({ selectedPortfolioIds }) {
               <Trend value={position.open_pnl_value}>{brl(position.open_pnl_value)}</Trend>
             </span>
             <Trend value={position.open_pnl_pct}>{signedPct(position.open_pnl_pct)}</Trend>
+            <span className={`analysis-pill asset-position-decision ${decisionActionClass}`}>
+              Leitura: {positionDecision.action}
+            </span>
           </div>
           <div className="hero-meta">
             <div>
               <span className="section-kicker">Quantidade</span>
-              <strong>{Number(position.shares || 0).toFixed(4)}</strong>
+              <strong>{qty(position.shares)}</strong>
             </div>
             <div>
-              <span className="section-kicker">Preco medio</span>
+              <span className="section-kicker">Preço médio</span>
               <strong>{brl(position.avg_price)}</strong>
             </div>
             <div>
@@ -491,46 +522,10 @@ function AssetPage({ selectedPortfolioIds }) {
         </article>
       )}
 
-      <section className="asset-kpi-section">
-        <h2 className="asset-kpi-section-title">Fundamentos</h2>
-        <div className="cards asset-kpi-grid">
-          <article className="card"><h3>Preco</h3><p>{brl(asset.price)}</p></article>
-          <article className="card"><h3>Dividend Yield</h3><p>{pct(asset.dy)}</p></article>
-          <article className="card"><h3>P/L</h3><p>{Number(asset.pl || 0).toFixed(2)}</p></article>
-          <article className="card"><h3>P/VP</h3><p>{Number(asset.pvp || 0).toFixed(2)}</p></article>
-        </div>
-      </section>
-
-      <section className="asset-kpi-section">
-        <h2 className="asset-kpi-section-title">Proventos</h2>
-        <div className="cards asset-kpi-grid">
-          <article className="card"><h3>Mes atual</h3><p>{brl(position.incomes_current_month)}</p></article>
-          <article className="card"><h3>3 meses</h3><p>{brl(position.incomes_3m)}</p></article>
-          <article className="card"><h3>12 meses</h3><p>{brl(position.incomes_12m)}</p></article>
-          <article className="card"><h3>Total</h3><p>{brl(position.total_incomes)}</p></article>
-        </div>
-      </section>
-
-      <article className="card detail-card asset-summary-card">
-        <h3>Resumo</h3>
-        <p>Variacao no dia (provider): <strong><Trend value={asset.variation_day}>{signedPct(asset.variation_day)}</Trend></strong></p>
-        <p>Valor de mercado: R$ {Number(asset.market_cap_bi || 0).toFixed(2)} bi</p>
-        <p>
-          Fonte/candle: {' '}
-          <strong>
-            {(String(marketData?.source || '').trim().toUpperCase() || 'MARKET_SCANNER')}
-            {' | '}
-            {formatDateTimeLocal(marketData?.updated_at, '-')}
-            {' | '}
-            {formatAgeFromNow(marketData?.updated_at, '-')}
-          </strong>
-        </p>
-      </article>
-
       <article className="card detail-card tactical-card asset-terminal-panel">
         <div className="analysis-head">
           <div>
-            <h3>Leitura tática</h3>
+            <h2>Leitura tática</h2>
             <p className="subtitle">Ponderação entre a leitura do OpenClaw, preço atual e seu custo médio.</p>
           </div>
           <span className={`analysis-pill ${positionDecision.actionTone || 'neutral'}`}>
@@ -545,7 +540,7 @@ function AssetPage({ selectedPortfolioIds }) {
           </div>
           <div className="analysis-strip-item">
             <span className="analysis-label">Preço médio</span>
-            <strong>{Number(position.avg_price || 0) > 0 ? brl(position.avg_price) : 'Nao calculado'}</strong>
+            <strong>{Number(position.avg_price || 0) > 0 ? brl(position.avg_price) : 'Não calculado'}</strong>
           </div>
           <div className="analysis-strip-item">
             <span className="analysis-label">Resultado aberto</span>
@@ -592,19 +587,43 @@ function AssetPage({ selectedPortfolioIds }) {
         </p>
       </article>
 
+      <section className="asset-kpi-section">
+        <h2 className="asset-kpi-section-title">Fundamentos</h2>
+        <div className="cards asset-kpi-grid">
+          <article className="card"><h3>Dividend Yield</h3><p>{pct(asset.dy)}</p></article>
+          <article className="card"><h3>P/L</h3><p>{ratio(asset.pl)}</p></article>
+          <article className="card"><h3>P/VP</h3><p>{ratio(asset.pvp)}</p></article>
+          <article className="card"><h3>Valor de mercado</h3><p>{marketCapBi(asset.market_cap_bi)}</p></article>
+        </div>
+      </section>
+
+      <section className="asset-kpi-section">
+        <h2 className="asset-kpi-section-title">Proventos</h2>
+        {Number(position.total_incomes || 0) > 0 ? (
+          <div className="cards asset-kpi-grid">
+            <article className="card"><h3>Mês atual</h3><p>{brl(position.incomes_current_month)}</p></article>
+            <article className="card"><h3>3 meses</h3><p>{brl(position.incomes_3m)}</p></article>
+            <article className="card"><h3>12 meses</h3><p>{brl(position.incomes_12m)}</p></article>
+            <article className="card"><h3>Total</h3><p>{brl(position.total_incomes)}</p></article>
+          </div>
+        ) : (
+          <StatePanel compact title="Sem proventos registrados para este ativo." />
+        )}
+      </section>
+
       <article className="card detail-card openclaw-card asset-terminal-panel">
         <div className="hero-line">
           <div>
-            <h3>OpenClaw</h3>
+            <h2>OpenClaw</h2>
             <p className="subtitle">Atualização automática a cada {enrichmentStaleDays} dia(s). O botão ignora o cache.</p>
           </div>
-          <button type="button" className="btn-primary" onClick={onEnrichOpenClaw} disabled={enriching}>
-            {enriching ? 'Atualizando...' : (hasSavedEnrichment ? 'Forcar atualizacao' : 'Gerar com OpenClaw')}
+          <button type="button" className="btn-secondary" onClick={onEnrichOpenClaw} disabled={enriching}>
+            {enriching ? 'Atualizando...' : (hasSavedEnrichment ? 'Forçar atualização' : 'Gerar com OpenClaw')}
           </button>
         </div>
 
         {!!enrichMessage && (
-          <p className={enrichMessage === 'OK' || enrichMessage.includes('OK') ? 'notice-ok' : 'notice-warn'}>
+          <p className={enrichStatus === 'ok' ? 'notice-ok' : 'notice-warn'}>
             {enrichMessage}
           </p>
         )}
@@ -719,8 +738,8 @@ function AssetPage({ selectedPortfolioIds }) {
       <article className="card detail-card asset-terminal-panel">
         <div className="hero-line">
           <div>
-            <h3>Historico de leitura</h3>
-            <p className="subtitle">Evolucao das leituras do OpenClaw para este ativo.</p>
+            <h2>Histórico de leitura</h2>
+            <p className="subtitle">Evolução das leituras do OpenClaw para este ativo.</p>
           </div>
         </div>
 
@@ -729,11 +748,11 @@ function AssetPage({ selectedPortfolioIds }) {
             <table className="asset-table history-table">
               <thead>
                 <tr>
-                  <th>Data</th>
-                  <th>Preco</th>
-                  <th>Humor</th>
-                  <th>Acao</th>
-                  <th>Resumo</th>
+                  <th scope="col">Data</th>
+                  <th scope="col">Preço</th>
+                  <th scope="col">Humor</th>
+                  <th scope="col">Ação</th>
+                  <th scope="col">Resumo</th>
                 </tr>
               </thead>
               <tbody>
@@ -756,23 +775,23 @@ function AssetPage({ selectedPortfolioIds }) {
             </table>
           </div>
         ) : (
-          <p className="subtitle">Sem historico salvo ainda. Ele passa a ser criado nas proximas atualizacoes do OpenClaw.</p>
+          <p className="subtitle">Sem histórico salvo ainda. Ele passa a ser criado nas próximas atualizações do OpenClaw.</p>
         )}
       </article>
 
       <article className="card detail-card asset-terminal-panel">
-        <h3>Proventos futuros (estimativa)</h3>
+        <h2>Proventos futuros (estimativa)</h2>
         <p className="subtitle">Fonte: Yahoo Finance (yfinance). Datas e valores podem mudar até a data com.</p>
         {upcomingIncomes.length > 0 ? (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Data com (ex)</th>
-                  <th>Pagamento</th>
-                  <th>Valor por cota</th>
-                  <th>Moeda</th>
-                  <th>Fonte</th>
+                  <th scope="col">Data com (ex)</th>
+                  <th scope="col">Pagamento</th>
+                  <th scope="col">Valor por cota</th>
+                  <th scope="col">Moeda</th>
+                  <th scope="col">Fonte</th>
                 </tr>
               </thead>
               <tbody>
@@ -793,65 +812,71 @@ function AssetPage({ selectedPortfolioIds }) {
         )}
       </article>
 
-      <div className="table-wrap asset-ledger-table">
-        <table>
-          <thead>
-            <tr>
-              <th>Carteira</th>
-              <th>Data</th>
-              <th>Tipo</th>
-              <th>Valor</th>
-            </tr>
-          </thead>
-          <tbody>
-            {incomes.map((item, idx) => (
-              <tr key={`${item.date}-${item.income_type}-${idx}`}>
-                <td>{item.portfolio_name}</td>
-                <td>{dateBr(item.date)}</td>
-                <td>{String(item.income_type || '').toUpperCase()}</td>
-                <td>{brl(item.amount)}</td>
-              </tr>
-            ))}
-            {incomes.length === 0 && (
+      <section className="asset-kpi-section">
+        <h2 className="asset-kpi-section-title">Proventos recebidos</h2>
+        <div className="table-wrap asset-ledger-table">
+          <table>
+            <thead>
               <tr>
-                <td colSpan={4}>Esse ativo ainda nao possui proventos.</td>
+                <th scope="col">Carteira</th>
+                <th scope="col">Data</th>
+                <th scope="col">Tipo</th>
+                <th scope="col">Valor</th>
               </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {incomes.map((item, idx) => (
+                <tr key={`${item.date}-${item.income_type}-${idx}`}>
+                  <td>{item.portfolio_name}</td>
+                  <td>{dateBr(item.date)}</td>
+                  <td>{String(item.income_type || '').toUpperCase()}</td>
+                  <td>{brl(item.amount)}</td>
+                </tr>
+              ))}
+              {incomes.length === 0 && (
+                <tr>
+                  <td colSpan={4}>Esse ativo ainda não possui proventos.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
-      <div className="table-wrap asset-ledger-table">
-        <table>
-          <thead>
-            <tr>
-              <th>Carteira</th>
-              <th>Data</th>
-              <th>Tipo</th>
-              <th>Qtd</th>
-              <th>Preco</th>
-              <th>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {transactions.map((tx, idx) => (
-              <tr key={`${tx.date}-${tx.tx_type}-${idx}`}>
-                <td>{tx.portfolio_name}</td>
-                <td>{dateBr(tx.date)}</td>
-                <td>{tx.tx_type === 'buy' ? 'Compra' : 'Venda'}</td>
-                <td>{Number(tx.shares || 0).toFixed(4)}</td>
-                <td>{brl(tx.price)}</td>
-                <td>{brl(tx.total_value)}</td>
-              </tr>
-            ))}
-            {transactions.length === 0 && (
+      <section className="asset-kpi-section">
+        <h2 className="asset-kpi-section-title">Transações</h2>
+        <div className="table-wrap asset-ledger-table">
+          <table>
+            <thead>
               <tr>
-                <td colSpan={6}>Esse ativo ainda nao possui transacoes.</td>
+                <th scope="col">Carteira</th>
+                <th scope="col">Data</th>
+                <th scope="col">Tipo</th>
+                <th scope="col">Qtd</th>
+                <th scope="col">Preço</th>
+                <th scope="col">Total</th>
               </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {transactions.map((tx, idx) => (
+                <tr key={`${tx.date}-${tx.tx_type}-${idx}`}>
+                  <td>{tx.portfolio_name}</td>
+                  <td>{dateBr(tx.date)}</td>
+                  <td>{tx.tx_type === 'buy' ? 'Compra' : 'Venda'}</td>
+                  <td>{qty(tx.shares)}</td>
+                  <td>{brl(tx.price)}</td>
+                  <td>{brl(tx.total_value)}</td>
+                </tr>
+              ))}
+              {transactions.length === 0 && (
+                <tr>
+                  <td colSpan={6}>Esse ativo ainda não possui transações.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </section>
   )
 }

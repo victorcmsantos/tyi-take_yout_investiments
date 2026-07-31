@@ -124,7 +124,7 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
   } else if (marketView) {
     reasons.push(mood.label)
   } else {
-    reasons.push('OpenClaw ainda nao trouxe leitura de mercado')
+    reasons.push('OpenClaw ainda não trouxe leitura de mercado')
   }
 
   if (openClawAction) {
@@ -133,12 +133,12 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
 
   if (avgPrice > 0 && priceGapPct !== null) {
     const direction = priceGapPct >= 0 ? 'acima' : 'abaixo'
-    reasons.push(`Preco atual ${Math.abs(priceGapPct).toFixed(2)}% ${direction} do seu preco medio`)
+    reasons.push(`Preço atual ${Math.abs(priceGapPct).toFixed(2)}% ${direction} do seu preço médio`)
   }
 
   if (shares > 0) {
     const pnlDirection = openPnlPct >= 0 ? 'acima' : 'abaixo'
-    reasons.push(`Posicao ${Math.abs(openPnlPct).toFixed(2)}% ${pnlDirection} do zero`)
+    reasons.push(`Posição ${Math.abs(openPnlPct).toFixed(2)}% ${pnlDirection} do zero`)
   }
 
   if (shares <= 0 || avgPrice <= 0) {
@@ -151,7 +151,7 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
         openClawActionWhy,
         reasons,
         priceGapPct,
-        summary: 'O mercado parece construtivo, mas voce ainda nao tem preco medio relevante nessa posicao.',
+        summary: 'O mercado parece construtivo, mas você ainda não tem preço médio relevante nessa posição.',
       }
     }
     if (mood.tone === 'negative') {
@@ -163,7 +163,7 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
         openClawActionWhy,
         reasons,
         priceGapPct,
-        summary: 'A leitura atual nao sugere pressa para montar ou aumentar posicao.',
+        summary: 'A leitura atual não sugere pressa para montar ou aumentar posição.',
       }
     }
     return {
@@ -174,7 +174,7 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
       openClawActionWhy,
       reasons,
       priceGapPct,
-      summary: 'Sem uma posicao formada, faz mais sentido monitorar antes de agir.',
+      summary: 'Sem uma posição formada, faz mais sentido monitorar antes de agir.',
     }
   }
 
@@ -188,7 +188,7 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
         openClawActionWhy,
         reasons,
         priceGapPct,
-        summary: 'O mercado segue favoravel e o preco esta abaixo do seu custo medio.',
+        summary: 'O mercado segue favorável e o preço está abaixo do seu custo médio.',
       }
     }
     return {
@@ -199,7 +199,7 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
       openClawActionWhy,
       reasons,
       priceGapPct,
-      summary: 'A leitura segue boa, mas o preco ja nao oferece desconto claro contra o seu custo medio.',
+      summary: 'A leitura segue boa, mas o preço já não oferece desconto claro contra o seu custo médio.',
     }
   }
 
@@ -213,7 +213,7 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
         openClawActionWhy,
         reasons,
         priceGapPct,
-        summary: 'O humor do mercado piorou e a posicao ainda tem gordura para realizar ou reduzir risco.',
+        summary: 'O humor do mercado piorou e a posição ainda tem gordura para realizar ou reduzir risco.',
       }
     }
     return {
@@ -224,7 +224,7 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
       openClawActionWhy,
       reasons,
       priceGapPct,
-      summary: 'A leitura esta mais cautelosa, mas o preco nao abre uma saida tao confortavel agora.',
+      summary: 'A leitura está mais cautelosa, mas o preço não abre uma saída tão confortável agora.',
     }
   }
 
@@ -237,7 +237,7 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
       openClawActionWhy,
       reasons,
       priceGapPct,
-      summary: 'O preco caiu abaixo do seu medio, mas sem melhora clara no humor do mercado ainda faz sentido evitar aumentar no escuro.',
+      summary: 'O preço caiu abaixo do seu médio, mas sem melhora clara no humor do mercado ainda faz sentido evitar aumentar no escuro.',
     }
   }
 
@@ -250,7 +250,7 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
       openClawActionWhy,
       reasons,
       priceGapPct,
-      summary: 'A posicao esta andando bem, mas sem sinal forte do mercado a leitura segue de manutencao.',
+      summary: 'A posição está andando bem, mas sem sinal forte do mercado a leitura segue de manutenção.',
     }
   }
 
@@ -262,6 +262,6 @@ export function buildPositionDecision({ asset, position, enrichmentPayload }) {
     openClawActionWhy,
     reasons,
     priceGapPct,
-    summary: 'Nao ha sinal forte o bastante para aumentar ou reduzir agora.',
+    summary: 'Não há sinal forte o bastante para aumentar ou reduzir agora.',
   }
 }

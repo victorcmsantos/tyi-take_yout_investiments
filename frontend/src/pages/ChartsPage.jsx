@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Chart as ChartJS } from 'chart.js/auto'
 import { Bar, Doughnut, Line } from 'react-chartjs-2'
 import ChartDataLabels from 'chartjs-plugin-datalabels'
@@ -292,6 +293,37 @@ function buildDonutOptions({ total, centerLabel, minPct = 6 }) {
   }
 }
 
+function ChartDataTable({ chartData, formatter = brlFull }) {
+  const labels = chartData?.labels || []
+  const datasets = chartData?.datasets || []
+  const single = datasets.length === 1
+  const values = single ? (datasets[0].data || []).map((v) => Number(v || 0)) : []
+  const total = values.reduce((acc, v) => acc + v, 0)
+  const showShare = single && total > 0 && values.every((v) => v >= 0)
+  return (
+    <div className="table-wrap chart-table-view">
+      <table className="monthly-table">
+        <thead>
+          <tr>
+            <th>item</th>
+            {datasets.map((dataset, idx) => <th key={idx}>{dataset.label || `serie ${idx + 1}`}</th>)}
+            {showShare ? <th>participação</th> : null}
+          </tr>
+        </thead>
+        <tbody>
+          {labels.map((label, idx) => (
+            <tr key={`${label}-${idx}`}>
+              <td>{label}</td>
+              {datasets.map((dataset, dsIdx) => <td key={dsIdx}>{formatter(Number(dataset.data?.[idx] || 0))}</td>)}
+              {showShare ? <td>{formatPct(values[idx], total)}</td> : null}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function normalizeChoice(value, options, fallback) {
   return options.includes(value) ? value : fallback
 }
@@ -370,6 +402,8 @@ function ChartsPage({ selectedPortfolioIds }) {
   const [patrimonyTypeRange, setPatrimonyTypeRange] = usePersistedState('charts.patrimony-type-range.v1', '12m')
   const [patrimonyTypeMetric, setPatrimonyTypeMetric] = usePersistedState('charts.patrimony-type-metric.v2', 'net')
   const [hiddenBlocks, setHiddenBlocks] = usePersistedState('charts.hidden-blocks.v1', [])
+  const [resultMetric, setResultMetric] = usePersistedState('charts.result-metric.v1', 'value')
+  const [tableBlocks, setTableBlocks] = usePersistedState('charts.table-blocks.v1', [])
   const [loadingMessage, setLoadingMessage] = useState('Atualizando graficos...')
   const [showLayoutControls, setShowLayoutControls] = useState(false)
   const [hoveredPatrimonySeriesKey, setHoveredPatrimonySeriesKey] = useState('')
@@ -387,6 +421,22 @@ function ChartsPage({ selectedPortfolioIds }) {
   const patrimonyTypeRangeValue = normalizeChoice(patrimonyTypeRange, ['6m', '12m', '24m', '60m'], '12m')
   const patrimonyTypeMetricValue = normalizeChoice(patrimonyTypeMetric, ['value', 'pnl', 'net'], 'net')
   const hiddenBlocksValue = Array.isArray(hiddenBlocks) ? hiddenBlocks.filter((item) => typeof item === 'string') : []
+  const resultMetricValue = normalizeChoice(resultMetric, ['value', 'pct'], 'value')
+  const tableBlocksValue = Array.isArray(tableBlocks) ? tableBlocks.filter((item) => typeof item === 'string') : []
+  const navigate = useNavigate()
+
+  // Clique em barra de ticker navega para a pagina do ativo; com interaction
+  // mode 'index' a linha inteira vira alvo de clique.
+  const tickerClickHandlers = (labels) => ({
+    onClick: (_event, elements) => {
+      const ticker = labels?.[elements?.[0]?.index]
+      if (ticker) navigate(`/ativo/${encodeURIComponent(ticker)}`)
+    },
+    onHover: (event, elements) => {
+      const target = event?.native?.target
+      if (target) target.style.cursor = elements?.length ? 'pointer' : 'default'
+    },
+  })
   const {
     data: corePayload,
     loading: loadingCore,
@@ -668,12 +718,19 @@ function ChartsPage({ selectedPortfolioIds }) {
     }],
   }
 
+  const resultMetricIsPct = resultMetricValue === 'pct'
+  const resultMetricSeries = resultMetricIsPct
+    ? (resultByCategoryChart.pcts || [])
+    : (resultByCategoryChart.values || [])
+  const formatResultMetric = (value) => (resultMetricIsPct
+    ? `${Number(value || 0).toFixed(1).replace('.', ',')}%`
+    : brlCompact(value))
   const resultByCategoryData = {
     labels: resultByCategoryChart.labels || [],
     datasets: [{
-      label: 'Resultado',
-      data: resultByCategoryChart.values || [],
-      backgroundColor: (resultByCategoryChart.values || []).map((v) => (Number(v || 0) >= 0 ? DIVERGING_POS : DIVERGING_NEG)),
+      label: resultMetricIsPct ? 'Resultado %' : 'Resultado',
+      data: resultMetricSeries,
+      backgroundColor: resultMetricSeries.map((v) => (Number(v || 0) >= 0 ? DIVERGING_POS : DIVERGING_NEG)),
       maxBarThickness: 26,
       borderRadius: 4,
       borderSkipped: 'start',
@@ -815,16 +872,25 @@ function ChartsPage({ selectedPortfolioIds }) {
   }
 
   const allocationCharts = allocationByGroupCharts.map((item, idx) => {
-    const colors = (item.values || []).map((_, colorIdx) => TERMINAL_PALETTE[colorIdx % TERMINAL_PALETTE.length])
+    // Ordena por valor decrescente (o ranking e a informacao do grafico) e usa
+    // UMA cor por grupo: categoria nominal nao ganha cor por barra.
+    const rows = (item.labels || [])
+      .map((label, i) => ({
+        label,
+        value: Number(item.values?.[i] || 0),
+        weight: Number(item.weights?.[i] || 0),
+      }))
+      .sort((a, b) => b.value - a.value)
+    const groupColor = TERMINAL_PALETTE[idx % TERMINAL_PALETTE.length]
     return {
       key: `allocation-${idx}`,
       title: item.title,
-      labels: item.labels || [],
-      values: item.values || [],
-      weights: item.weights || [],
+      labels: rows.map((row) => row.label),
+      values: rows.map((row) => row.value),
+      weights: rows.map((row) => row.weight),
       data: {
-        labels: item.labels || [],
-        datasets: [{ label: 'Patrimonio', data: item.values || [], backgroundColor: colors, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 22 }],
+        labels: rows.map((row) => row.label),
+        datasets: [{ label: 'Patrimonio', data: rows.map((row) => row.value), backgroundColor: groupColor, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 22 }],
       },
     }
   })
@@ -835,7 +901,7 @@ function ChartsPage({ selectedPortfolioIds }) {
 
   // Barras horizontais divergentes: categorias sempre legiveis no eixo e
   // rotulos de valor nas pontas, sem colisao perto do zero.
-  const resultBaseOptions = buildCartesianOptions({ yScale: moneyScale, legend: false, indexAxis: 'y' })
+  const resultBaseOptions = buildCartesianOptions({ yScale: resultMetricIsPct ? percentScale : moneyScale, legend: false, indexAxis: 'y' })
   const resultByCategoryOptions = {
     ...resultBaseOptions,
     layout: { padding: { right: 74, left: 8 } },
@@ -856,7 +922,7 @@ function ChartsPage({ selectedPortfolioIds }) {
       tooltip: {
         ...chartTooltip,
         callbacks: {
-          label: (ctx) => ` ${brlFull(ctx.parsed.x)}`,
+          label: (ctx) => ` ${resultMetricIsPct ? `${Number(ctx.parsed.x || 0).toFixed(2).replace('.', ',')}%` : brlFull(ctx.parsed.x)}`,
         },
       },
       datalabels: {
@@ -866,33 +932,35 @@ function ChartsPage({ selectedPortfolioIds }) {
         offset: 4,
         clamp: true,
         clip: false,
-        formatter: (value) => brlCompact(value),
+        formatter: (value) => formatResultMetric(value),
         font: { weight: '700', size: 10, family: TERMINAL_MONO },
       },
     },
   }
 
-  const consolidatedBaseOptions = buildCartesianOptions({ yScale: moneyScale, legend: false })
-  const consolidatedOptions = {
-    ...consolidatedBaseOptions,
-    scales: {
-      ...consolidatedBaseOptions.scales,
-      y: { ...consolidatedBaseOptions.scales.y, grace: '10%' },
+  const cardsPatrimony = Number(cardsChart.values?.[0] || 0)
+  const cardsInvested = Number(cardsChart.values?.[1] || 0)
+  const cardsIncomes = Number(cardsChart.values?.[2] || 0)
+  const cardsOpenPnl = cardsPatrimony - cardsInvested
+  const consolidatedTiles = [
+    {
+      label: cardsChart.labels?.[0] || 'Patrimonio',
+      value: brlFull(cardsPatrimony),
+      meta: `resultado aberto: ${cardsOpenPnl >= 0 ? '+' : ''}${brlCompact(cardsOpenPnl)}`,
     },
-    plugins: {
-      ...consolidatedBaseOptions.plugins,
-      datalabels: {
-        color: () => TERMINAL_INK,
-        anchor: 'end',
-        align: 'end',
-        offset: 4,
-        clamp: true,
-        clip: false,
-        formatter: (value) => brlCompact(value),
-        font: { weight: '700', size: 10, family: TERMINAL_MONO },
-      },
+    {
+      label: cardsChart.labels?.[1] || 'Investido em aberto',
+      value: brlFull(cardsInvested),
+      meta: 'custo das posições ainda em carteira',
     },
-  }
+    {
+      label: cardsChart.labels?.[2] || 'Proventos totais',
+      value: brlFull(cardsIncomes),
+      meta: cardsInvested > 0
+        ? `${((cardsIncomes / cardsInvested) * 100).toFixed(1).replace('.', ',')}% sobre o investido`
+        : '',
+    },
+  ]
 
   const benchmarkOptions = buildCartesianOptions({ yScale: percentScale, legend: true })
   const incomeLineOptions = buildCartesianOptions({ yScale: moneyScale, legend: true })
@@ -941,6 +1009,7 @@ function ChartsPage({ selectedPortfolioIds }) {
   // Ranking sem ticker nao se le: forca todos os rotulos no eixo do Top 10.
   const topAssetsOptions = {
     ...barMoneyOptions,
+    ...tickerClickHandlers(topAssetsChart.labels),
     scales: {
       ...barMoneyOptions.scales,
       x: {
@@ -984,6 +1053,7 @@ function ChartsPage({ selectedPortfolioIds }) {
   }
   const allocationBarOptionsFor = (chart) => ({
     ...buildCartesianOptions({ yScale: moneyScale, legend: false, indexAxis: 'y' }),
+    ...tickerClickHandlers(chart.labels),
     layout: { padding: { right: 96 } },
     plugins: {
       ...buildCartesianOptions({ yScale: moneyScale, legend: false, indexAxis: 'y' }).plugins,
@@ -1099,6 +1169,20 @@ function ChartsPage({ selectedPortfolioIds }) {
     else delete chartRefs.current[key]
   }
 
+  const isTableMode = (key) => tableBlocksValue.includes(key)
+  const toggleTableMode = (key) => {
+    setTableBlocks((current) => {
+      const list = Array.isArray(current) ? current : []
+      return list.includes(key) ? list.filter((item) => item !== key) : [...list, key]
+    })
+  }
+
+  const renderChartBody = (key, data, canvas, { formatter = brlFull, refreshing = refreshingCore } = {}) => (
+    isTableMode(key)
+      ? <ChartDataTable chartData={data} formatter={formatter} />
+      : <div className={`chart-canvas-wrap${refreshing ? ' chart-refreshing' : ''}`}>{canvas}</div>
+  )
+
   const annualLedgerRows = annualSummary.months.map((month, monthIdx) => [
     month,
     ...annualSummary.years.flatMap((year) => [
@@ -1160,12 +1244,17 @@ function ChartsPage({ selectedPortfolioIds }) {
       <button type="button" className="icon-btn" onClick={() => exportChartDataAsCsv(`${filenameBase}.csv`, chartData)}>
         CSV
       </button>
-      <button
-        type="button"
-        className="icon-btn"
-        onClick={() => exportChartAsImage(`${filenameBase}.png`, chartRefs.current[key])}
-      >
-        PNG
+      {!isTableMode(key) && (
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={() => exportChartAsImage(`${filenameBase}.png`, chartRefs.current[key])}
+        >
+          PNG
+        </button>
+      )}
+      <button type="button" className="icon-btn" onClick={() => toggleTableMode(key)}>
+        {isTableMode(key) ? 'Gráfico' : 'Tabela'}
       </button>
       <button type="button" className="icon-btn" onClick={() => toggleBlockVisibility(key)}>
         Ocultar
@@ -1352,9 +1441,8 @@ function ChartsPage({ selectedPortfolioIds }) {
                 subtitle={`Soma consolidada: ${brlFull(classesTotal)}`}
                 actions={makeChartActions('classesPie', 'renda-variavel-vs-fixa', classesData)}
               >
-                <div className="chart-canvas-wrap">
-                  <Doughnut ref={registerChartRef('classesPie')} aria-label="Grafico de rosca: renda variavel x renda fixa" data={classesData} options={classesDonutOptions} />
-                </div>
+                {renderChartBody('classesPie', classesData,
+                  <Doughnut ref={registerChartRef('classesPie')} aria-label="Grafico de rosca: renda variavel x renda fixa" data={classesData} options={classesDonutOptions} />)}
               </ChartPanel>
             ) : null}
 
@@ -1364,9 +1452,8 @@ function ChartsPage({ selectedPortfolioIds }) {
                 subtitle="Peso relativo por classe dentro da carteira."
                 actions={makeChartActions('categoryDonut', 'distribuicao-por-tipo', categoryData)}
               >
-                <div className="chart-canvas-wrap">
-                  <Doughnut ref={registerChartRef('categoryDonut')} aria-label="Grafico de rosca: distribuicao por tipo de ativo" data={categoryData} options={categoryDonutOptions} />
-                </div>
+                {renderChartBody('categoryDonut', categoryData,
+                  <Doughnut ref={registerChartRef('categoryDonut')} aria-label="Grafico de rosca: distribuicao por tipo de ativo" data={categoryData} options={categoryDonutOptions} />)}
               </ChartPanel>
             ) : null}
 
@@ -1374,11 +1461,22 @@ function ChartsPage({ selectedPortfolioIds }) {
               <ChartPanel
                 title="Resultado por categoria"
                 subtitle="Comparativo de ganho ou perda por agrupamento."
+                controls={(
+                  <div className="inline-filters chart-inline-controls">
+                    <label>
+                      Métrica
+                      <select value={resultMetricValue} onChange={(e) => setResultMetric(e.target.value)}>
+                        <option value="value">R$ absoluto</option>
+                        <option value="pct">% sobre investido</option>
+                      </select>
+                    </label>
+                  </div>
+                )}
                 actions={makeChartActions('resultCategory', 'resultado-por-categoria', resultByCategoryData)}
               >
-                <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('resultCategory')} aria-label="Grafico de barras: resultado por categoria" data={resultByCategoryData} options={resultByCategoryOptions} />
-                </div>
+                {renderChartBody('resultCategory', resultByCategoryData,
+                  <Bar ref={registerChartRef('resultCategory')} aria-label="Grafico de barras: resultado por categoria" data={resultByCategoryData} options={resultByCategoryOptions} />,
+                  { formatter: formatResultMetric })}
               </ChartPanel>
             ) : null}
 
@@ -1386,10 +1484,25 @@ function ChartsPage({ selectedPortfolioIds }) {
               <ChartPanel
                 title="Consolidado da carteira"
                 subtitle="Resumo absoluto de valor por grande bloco."
-                actions={makeChartActions('cardsBar', 'consolidado-carteira', cardsData)}
+                actions={(
+                  <div className="dashboard-pref-actions">
+                    <button type="button" className="icon-btn" onClick={() => exportChartDataAsCsv('consolidado-carteira.csv', cardsData)}>
+                      CSV
+                    </button>
+                    <button type="button" className="icon-btn" onClick={() => toggleBlockVisibility('cardsBar')}>
+                      Ocultar
+                    </button>
+                  </div>
+                )}
               >
-                <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('cardsBar')} aria-label="Grafico de barras: consolidado da carteira" data={cardsData} options={consolidatedOptions} />
+                <div className="charts-terminal-meta-strip chart-kpi-strip">
+                  {consolidatedTiles.map((tile) => (
+                    <div key={tile.label} className="charts-terminal-meta-item">
+                      <span>{tile.label}</span>
+                      <strong>{tile.value}</strong>
+                      {tile.meta ? <small>{tile.meta}</small> : null}
+                    </div>
+                  ))}
                 </div>
               </ChartPanel>
             ) : null}
@@ -1400,9 +1513,8 @@ function ChartsPage({ selectedPortfolioIds }) {
                 subtitle="Ranking de concentração por patrimônio atual."
                 actions={makeChartActions('topAssets', 'top-ativos-por-valor', topAssetsData)}
               >
-                <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('topAssets')} aria-label="Grafico de barras: top 10 ativos por valor em carteira" data={topAssetsData} options={topAssetsOptions} />
-                </div>
+                {renderChartBody('topAssets', topAssetsData,
+                  <Bar ref={registerChartRef('topAssets')} aria-label="Grafico de barras: top 10 ativos por valor em carteira" data={topAssetsData} options={topAssetsOptions} />)}
               </ChartPanel>
             ) : null}
 
@@ -1414,9 +1526,8 @@ function ChartsPage({ selectedPortfolioIds }) {
                   subtitle="Distribuição interna por agrupamento em barra horizontal."
                   actions={makeChartActions(item.key, `${item.key}-alocacao`, item.data)}
                 >
-                  <div className="chart-canvas-wrap">
-                    <Bar ref={registerChartRef(item.key)} aria-label="Grafico de barras: distribuicao interna por agrupamento" data={item.data} options={allocationBarOptionsFor(item)} />
-                  </div>
+                  {renderChartBody(item.key, item.data,
+                    <Bar ref={registerChartRef(item.key)} aria-label="Grafico de barras: distribuicao interna por agrupamento" data={item.data} options={allocationBarOptionsFor(item)} />)}
                 </ChartPanel>
               ) : null
             ))}
@@ -1455,11 +1566,11 @@ function ChartsPage({ selectedPortfolioIds }) {
             )}
             actions={makeChartActions('benchmark', 'benchmark-comparado', benchmarkData)}
           >
-            {(loadingBenchmark || refreshingBenchmark) && <p className="subtitle">Atualizando benchmark...</p>}
+            {loadingBenchmark && <p className="subtitle">Carregando benchmark...</p>}
             {benchmarkError && <p className="error">{benchmarkError}</p>}
-            <div className="chart-canvas-wrap">
-              <Line ref={registerChartRef('benchmark')} aria-label="Grafico de linha: rentabilidade comparada com indices" data={benchmarkData} options={benchmarkOptions} />
-            </div>
+            {renderChartBody('benchmark', benchmarkData,
+              <Line ref={registerChartRef('benchmark')} aria-label="Grafico de linha: rentabilidade comparada com indices" data={benchmarkData} options={benchmarkOptions} />,
+              { formatter: (value) => `${Number(value || 0).toFixed(2).replace('.', ',')}%`, refreshing: refreshingBenchmark })}
           </ChartPanel>
         ) : null}
 
@@ -1470,9 +1581,8 @@ function ChartsPage({ selectedPortfolioIds }) {
             className="chart-card-feature"
             actions={makeChartActions('monthlyIncome', 'proventos-mensais', monthlyIncomeData)}
           >
-            <div className="chart-canvas-wrap">
-              <Line ref={registerChartRef('monthlyIncome')} aria-label="Grafico de linha: proventos mes a mes" data={monthlyIncomeData} options={incomeLineOptions} />
-            </div>
+            {renderChartBody('monthlyIncome', monthlyIncomeData,
+              <Line ref={registerChartRef('monthlyIncome')} aria-label="Grafico de linha: proventos mes a mes" data={monthlyIncomeData} options={incomeLineOptions} />)}
           </ChartPanel>
         ) : null}
       </div>
@@ -1503,7 +1613,7 @@ function ChartsPage({ selectedPortfolioIds }) {
             </div>
           )}
         >
-          {(loadingPatrimonyByType || refreshingPatrimonyByType) && <p className="subtitle">Atualizando evolução patrimonial...</p>}
+          {loadingPatrimonyByType && <p className="subtitle">Carregando evolução patrimonial...</p>}
           {patrimonyByTypeError && <p className="error">{patrimonyByTypeError}</p>}
           {patrimonyByTypeData.labels.length > 0 && patrimonyByTypeData.datasets.length > 0 ? (
             <ChartPanel
@@ -1519,7 +1629,7 @@ function ChartsPage({ selectedPortfolioIds }) {
                   : `${hoveredPatrimonySeriesLabel ? `Destaque: ${hoveredPatrimonySeriesLabel}. ` : ''}Resultado líquido acumulado por série, incluindo realizado e posição aberta. Linhas sólidas = renda variável; tracejadas = renda fixa.`}
               actions={null}
             >
-              <div className="chart-canvas-wrap">
+              <div className={`chart-canvas-wrap${refreshingPatrimonyByType ? ' chart-refreshing' : ''}`}>
                 <Line
                   ref={registerChartRef('patrimonyByType')} aria-label="Grafico: evolucao patrimonial por tipo"
                   data={patrimonyByTypeData}
@@ -1546,9 +1656,8 @@ function ChartsPage({ selectedPortfolioIds }) {
                 subtitle="Volume aplicado por recorte do book fixo."
                 actions={makeChartActions('fixedInvestment', 'investimento-renda-fixa', fixedInvestmentData)}
               >
-                <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('fixedInvestment')} aria-label="Grafico de barras: aplicacao em renda fixa" data={fixedInvestmentData} options={barMoneyOptions} />
-                </div>
+                {renderChartBody('fixedInvestment', fixedInvestmentData,
+                  <Bar ref={registerChartRef('fixedInvestment')} aria-label="Grafico de barras: aplicacao em renda fixa" data={fixedInvestmentData} options={barMoneyOptions} />)}
               </ChartPanel>
             ) : null}
 
@@ -1558,9 +1667,8 @@ function ChartsPage({ selectedPortfolioIds }) {
                 subtitle="Quem está concentrando a distribuição da carteira."
                 actions={makeChartActions('fixedDistributor', 'distribuidor-renda-fixa', fixedDistributorData)}
               >
-                <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('fixedDistributor')} aria-label="Grafico de barras: distribuidor de renda fixa" data={fixedDistributorData} options={barMoneyOptions} />
-                </div>
+                {renderChartBody('fixedDistributor', fixedDistributorData,
+                  <Bar ref={registerChartRef('fixedDistributor')} aria-label="Grafico de barras: distribuidor de renda fixa" data={fixedDistributorData} options={barMoneyOptions} />)}
               </ChartPanel>
             ) : null}
 
@@ -1570,9 +1678,8 @@ function ChartsPage({ selectedPortfolioIds }) {
                 subtitle="Separação entre principal investido e rendimento por emissor."
                 actions={makeChartActions('fixedIssuer', 'emissor-renda-fixa', fixedIssuerData)}
               >
-                <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('fixedIssuer')} aria-label="Grafico de barras: emissor de renda fixa" data={fixedIssuerData} options={fixedIssuerOptions} />
-                </div>
+                {renderChartBody('fixedIssuer', fixedIssuerData,
+                  <Bar ref={registerChartRef('fixedIssuer')} aria-label="Grafico de barras: emissor de renda fixa" data={fixedIssuerData} options={fixedIssuerOptions} />)}
               </ChartPanel>
             ) : null}
           </div>

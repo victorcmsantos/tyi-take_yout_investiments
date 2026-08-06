@@ -5,7 +5,8 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
+from time import monotonic
 from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
@@ -1564,6 +1565,42 @@ def _start_scanner_manual_scan(user: dict):
     }
 
 
+# Cache em memoria (por worker) do payload de graficos: o snapshot da carteira
+# e caro e trava o worker do gunicorn. Fingerprint de transactions/incomes
+# invalida na hora apos lancamentos do usuario; mudancas so de preco ficam
+# defasadas por ate CHARTS_CORE_CACHE_TTL_SECONDS.
+_CHARTS_CORE_CACHE = {}
+_CHARTS_CORE_CACHE_LOCK = Lock()
+_CHARTS_CORE_CACHE_TTL_SECONDS = 120
+
+
+def _charts_core_fingerprint():
+    row = get_db().execute(
+        """
+        SELECT
+          (SELECT COALESCE(MAX(id), 0) FROM transactions) AS tx_max,
+          (SELECT COUNT(*) FROM transactions) AS tx_count,
+          (SELECT COALESCE(MAX(id), 0) FROM incomes) AS inc_max,
+          (SELECT COUNT(*) FROM incomes) AS inc_count
+        """
+    ).fetchone()
+    return (row["tx_max"], row["tx_count"], row["inc_max"], row["inc_count"])
+
+
+def _build_charts_core_payload_cached(portfolio_ids):
+    key = tuple(sorted(int(pid) for pid in (portfolio_ids or [])))
+    fingerprint = _charts_core_fingerprint()
+    now = monotonic()
+    with _CHARTS_CORE_CACHE_LOCK:
+        entry = _CHARTS_CORE_CACHE.get(key)
+        if entry and entry["fingerprint"] == fingerprint and (now - entry["at"]) < _CHARTS_CORE_CACHE_TTL_SECONDS:
+            return entry["payload"]
+    payload = _build_charts_core_payload(portfolio_ids)
+    with _CHARTS_CORE_CACHE_LOCK:
+        _CHARTS_CORE_CACHE[key] = {"payload": payload, "fingerprint": fingerprint, "at": monotonic()}
+    return payload
+
+
 def _build_charts_core_payload(portfolio_ids):
     portfolio = get_portfolio_snapshot(portfolio_ids, sort_by="name", sort_dir="asc")
     fixed_income_payload = get_fixed_income_payload_cached(
@@ -1634,6 +1671,13 @@ def _build_charts_core_payload(portfolio_ids):
             round(float(portfolio["group_summaries"]["fiis"]["open_pnl_value"]), 2),
             round(float(portfolio["group_summaries"]["br_stocks"]["open_pnl_value"]), 2),
             round(float(portfolio["group_summaries"]["crypto"]["open_pnl_value"]), 2),
+        ],
+        "pcts": [
+            round(float(portfolio["group_summaries"]["us_stocks"]["open_pnl_pct"]), 2),
+            round(float(portfolio["group_summaries"]["etfs"]["open_pnl_pct"]), 2),
+            round(float(portfolio["group_summaries"]["fiis"]["open_pnl_pct"]), 2),
+            round(float(portfolio["group_summaries"]["br_stocks"]["open_pnl_pct"]), 2),
+            round(float(portfolio["group_summaries"]["crypto"]["open_pnl_pct"]), 2),
         ],
     }
 
@@ -2742,7 +2786,7 @@ def charts_benchmark():
 @api_bp.route("/charts/core", methods=["GET"])
 def charts_core():
     portfolio_ids = _selected_portfolio_ids_from_request()
-    return _json_ok(_build_charts_core_payload(portfolio_ids))
+    return _json_ok(_build_charts_core_payload_cached(portfolio_ids))
 
 
 @api_bp.route("/charts/ticker-summary", methods=["GET"])
@@ -2771,7 +2815,7 @@ def charts_dashboard():
     portfolio_ids = _selected_portfolio_ids_from_request()
     benchmark_range = (request.args.get("range") or "12m").strip().lower()
     benchmark_scope = (request.args.get("scope") or "all").strip().lower()
-    payload = _build_charts_core_payload(portfolio_ids)
+    payload = dict(_build_charts_core_payload_cached(portfolio_ids))
     payload["monthly_ticker_summary"] = get_monthly_ticker_summary(portfolio_ids, months=8)
     payload["benchmark_chart"] = get_benchmark_comparison(
         portfolio_ids,

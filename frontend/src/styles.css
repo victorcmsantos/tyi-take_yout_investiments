@@ -3154,6 +3154,28 @@ table tbody tr:hover td {
   padding-top: 8px;
 }
 
+.chart-refreshing {
+  opacity: 0.55;
+  transition: opacity 0.35s ease;
+}
+
+.charts-terminal-meta-strip.chart-kpi-strip {
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.chart-kpi-strip .charts-terminal-meta-item strong {
+  font-size: 22px;
+  margin-bottom: 6px;
+}
+
+.chart-table-view {
+  margin-top: 12px;
+  max-height: 340px;
+  overflow: auto;
+}
+
 .inline-filters label,
 .subtitle,
 .metric-label {

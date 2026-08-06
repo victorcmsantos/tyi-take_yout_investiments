@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Chart as ChartJS } from 'chart.js/auto'
-import { Bar, Doughnut, Line, Pie } from 'react-chartjs-2'
+import { Bar, Doughnut, Line } from 'react-chartjs-2'
 import ChartDataLabels from 'chartjs-plugin-datalabels'
 import StatePanel from '../components/StatePanel'
 import { useApiQuery } from '../hooks/useApiQuery'
@@ -8,6 +8,13 @@ import { usePersistedState } from '../persistedState'
 import { downloadTextFile, exportRowsAsCsv } from '../exporters'
 
 const brl = (value) => `R$ ${Number(value || 0).toFixed(2)}`
+const brlFull = (value) => `R$ ${Number(value || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+// Na escala de milhoes, 2 casas escondem dezenas de milhares; usa 3 casas.
+const brlCompactCenter = (value) => {
+  const amount = Number(value || 0)
+  const digits = Math.abs(amount) >= 1e6 ? 3 : 2
+  return `R$ ${amount.toLocaleString('pt-BR', { notation: 'compact', minimumFractionDigits: digits, maximumFractionDigits: digits })}`
+}
 const brlCompact = (value) => `R$ ${Number(value || 0).toLocaleString('pt-BR', { notation: 'compact', maximumFractionDigits: 2 })}`
 const MONTH_ORDER = [
   ['JAN', 'jan'],
@@ -64,7 +71,44 @@ function getCountdownParts(now = new Date(), target = COUNTDOWN_TARGET) {
   return { years, months, days }
 }
 
-ChartJS.register(ChartDataLabels)
+// Texto central dos donuts (total consolidado). So desenha quando o chart
+// declara options.plugins.donutCenterText — inofensivo para os demais.
+const donutCenterTextPlugin = {
+  id: 'donutCenterText',
+  afterDatasetsDraw(chart) {
+    const cfg = chart.options.plugins?.donutCenterText
+    const { ctx, chartArea } = chart
+    if (!cfg?.value || !chartArea) return
+    const cx = (chartArea.left + chartArea.right) / 2
+    const cy = (chartArea.top + chartArea.bottom) / 2
+    ctx.save()
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    if (cfg.label) {
+      ctx.fillStyle = TERMINAL_TEXT
+      ctx.font = `700 10px ${TERMINAL_MONO}`
+      ctx.fillText(String(cfg.label).toUpperCase(), cx, cy - 13)
+    }
+    ctx.fillStyle = TERMINAL_INK
+    ctx.font = `700 16px ${TERMINAL_MONO}`
+    ctx.fillText(cfg.value, cx, cy + (cfg.label ? 7 : 0))
+    ctx.restore()
+  },
+}
+
+ChartJS.register(ChartDataLabels, donutCenterTextPlugin)
+
+// Rotulo dentro de fatia/barra: tinta escolhida pela luminancia do preenchimento
+// para manter contraste em qualquer slot da paleta (ex.: amarelo pede tinta escura).
+function sliceInk(color) {
+  if (!/^#[0-9a-f]{6}$/i.test(color || '')) return '#ffffff'
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16) / 255)
+  const lin = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+  const lum = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+  return lum > 0.38 ? '#10202f' : '#ffffff'
+}
+
+const formatPct = (value, total) => (total > 0 ? `${((Number(value || 0) / total) * 100).toFixed(1).replace('.', ',')}%` : '0%')
 
 // Cores de eixo/grade: mutaveis porque os construtores de options abaixo (nivel
 // de modulo) as referenciam por nome; syncChartTheme() as ajusta ao tema atual a
@@ -72,7 +116,15 @@ ChartJS.register(ChartDataLabels)
 let TERMINAL_TEXT = '#4a5b70'
 let TERMINAL_GRID = 'rgba(74, 91, 112, 0.14)'
 let TERMINAL_ZERO = 'rgba(74, 91, 112, 0.5)'
-const TERMINAL_PALETTE = ['#0f8a77', '#1f6feb', '#c48b2d', '#d95f2f', '#cf3f5b', '#6c63ff', '#2bb0c9', '#708090']
+let TERMINAL_INK = '#16324a'
+// Paleta categorica em ordem FIXA (nunca reciclar/reordenar): a ordem e o
+// mecanismo de seguranca para daltonismo — validada por script (ΔE adjacente
+// >= 8 sob protan/deutan) contra as superficies claro/escuro do app.
+const SERIES_LIGHT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948']
+const SERIES_DARK = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767']
+let TERMINAL_PALETTE = SERIES_LIGHT
+let DIVERGING_POS = '#2a78d6'
+let DIVERGING_NEG = '#e34948'
 const TERMINAL_MONO = 'IBM Plex Mono, SFMono-Regular, monospace'
 
 function syncChartTheme(mode) {
@@ -80,6 +132,10 @@ function syncChartTheme(mode) {
   TERMINAL_TEXT = dark ? '#8096ad' : '#4a5b70'
   TERMINAL_GRID = dark ? 'rgba(128, 150, 173, 0.16)' : 'rgba(74, 91, 112, 0.14)'
   TERMINAL_ZERO = dark ? 'rgba(219, 232, 245, 0.32)' : 'rgba(74, 91, 112, 0.5)'
+  TERMINAL_INK = dark ? '#dce9f5' : '#16324a'
+  TERMINAL_PALETTE = dark ? SERIES_DARK : SERIES_LIGHT
+  DIVERGING_POS = dark ? '#3987e5' : '#2a78d6'
+  DIVERGING_NEG = dark ? '#e66767' : '#e34948'
 }
 
 function readThemeMode() {
@@ -144,57 +200,94 @@ function makeScale(ticksConfig) {
 }
 
 function buildCartesianOptions({ yScale, legend = true, stacked = false, indexAxis = 'x' } = {}) {
+  const categoryAxis = {
+    ticks: {
+      color: TERMINAL_TEXT,
+      maxRotation: 45,
+      autoSkipPadding: 6,
+      font: { size: 11, family: TERMINAL_MONO },
+    },
+    grid: {
+      display: false,
+      drawBorder: false,
+    },
+    border: {
+      display: false,
+    },
+    stacked,
+  }
+  const valueAxis = { ...yScale, stacked }
   return {
     responsive: true,
     maintainAspectRatio: false,
     indexAxis,
     interaction: { intersect: false, mode: 'index' },
-    scales: {
-      x: {
-        ticks: {
-          color: TERMINAL_TEXT,
-          maxRotation: 0,
-          autoSkipPadding: 14,
-          font: { size: 11, family: TERMINAL_MONO },
-        },
-        grid: {
-          display: false,
-          drawBorder: false,
-        },
-        border: {
-          display: false,
-        },
-        stacked,
-      },
-      y: {
-        ...yScale,
-        stacked,
-      },
-    },
+    // Em barras horizontais (indexAxis 'y') o eixo de valores e o X; sem o swap
+    // o eixo de categorias herdava formatacao monetaria ("R$ 0, R$ 4, ...").
+    scales: indexAxis === 'y'
+      ? { x: valueAxis, y: categoryAxis }
+      : { x: categoryAxis, y: valueAxis },
     plugins: {
       legend: chartLegend(legend),
       tooltip: chartTooltip,
+      // datalabels registrado globalmente exibe valor cru em todo grafico se
+      // nao for desligado aqui; quem quiser rotulo direto sobrescreve.
+      datalabels: { display: false },
     },
   }
 }
 
-function formatSliceLabel({ label, value, total, minPct = 8 }) {
-  const amount = Number(value || 0)
-  const sum = Number(total || 0)
-  if (!Number.isFinite(amount) || !Number.isFinite(sum) || sum <= 0) return ''
-  const pct = (amount / sum) * 100
-  if (pct < minPct) return ''
-  return `${label} ${pct.toFixed(1)}%`
+function donutLegend() {
+  const base = chartLegend(true)
+  return {
+    ...base,
+    position: 'bottom',
+    labels: {
+      ...base.labels,
+      padding: 12,
+      generateLabels: (chart) => {
+        const dataset = chart.data.datasets?.[0] || {}
+        const values = dataset.data || []
+        const total = values.reduce((acc, value) => acc + Number(value || 0), 0)
+        return (chart.data.labels || []).map((label, index) => ({
+          text: `${label} · ${formatPct(values[index], total)}`,
+          fillStyle: Array.isArray(dataset.backgroundColor) ? dataset.backgroundColor[index] : dataset.backgroundColor,
+          strokeStyle: 'rgba(0, 0, 0, 0)',
+          fontColor: TERMINAL_TEXT,
+          pointStyle: 'circle',
+          hidden: !chart.getDataVisibility(index),
+          index,
+        }))
+      },
+    },
+  }
 }
 
-function buildCircularOptions({ legend = false, datalabels }) {
+function buildDonutOptions({ total, centerLabel, minPct = 6 }) {
   return {
     responsive: true,
     maintainAspectRatio: false,
+    cutout: '64%',
     plugins: {
-      legend: chartLegend(legend),
-      tooltip: chartTooltip,
-      datalabels,
+      legend: donutLegend(),
+      tooltip: {
+        ...chartTooltip,
+        callbacks: {
+          label: (ctx) => ` ${ctx.label}: ${brlFull(ctx.parsed)} (${formatPct(ctx.parsed, total)})`,
+        },
+      },
+      donutCenterText: { label: centerLabel, value: brlCompactCenter(total) },
+      datalabels: {
+        color: (ctx) => {
+          const bg = ctx.dataset.backgroundColor
+          return sliceInk(Array.isArray(bg) ? bg[ctx.dataIndex] : bg)
+        },
+        formatter: (value) => {
+          const pct = total > 0 ? (Number(value || 0) / total) * 100 : 0
+          return pct >= minPct ? formatPct(value, total) : ''
+        },
+        font: { weight: '700', size: 11, family: TERMINAL_MONO },
+      },
     },
   }
 }
@@ -372,9 +465,10 @@ function ChartsPage({ selectedPortfolioIds }) {
   }
 
   const moneyScale = useMemo(() => makeScale({
-    callback: (value) => brl(value),
+    callback: (value) => brlCompact(value),
     color: TERMINAL_TEXT,
     font: { size: 11, family: TERMINAL_MONO },
+    maxTicksLimit: 6,
   }), [themeMode])
 
   const percentScale = useMemo(() => makeScale({
@@ -533,7 +627,7 @@ function ChartsPage({ selectedPortfolioIds }) {
 
   const classesTotal = (classesChart.values || []).reduce((acc, value) => acc + Number(value || 0), 0)
   const categoryTotal = (categoryChart.values || []).reduce((acc, value) => acc + Number(value || 0), 0)
-  const donutColors = ['#0f8a77', '#1f6feb', '#7b5cd6', '#c48b2d', '#d95f2f']
+  const donutColors = (categoryChart.values || []).map((_, idx) => TERMINAL_PALETTE[idx % TERMINAL_PALETTE.length])
 
   const benchmarkData = {
     labels: benchmarkChart.labels || [],
@@ -552,12 +646,26 @@ function ChartsPage({ selectedPortfolioIds }) {
 
   const classesData = {
     labels: classesChart.labels || [],
-    datasets: [{ label: 'Valor', data: classesChart.values || [], backgroundColor: ['#1f6feb', '#0f8a77'] }],
+    datasets: [{
+      label: 'Valor',
+      data: classesChart.values || [],
+      backgroundColor: [TERMINAL_PALETTE[0], TERMINAL_PALETTE[2]],
+      borderWidth: 0,
+      spacing: 3,
+      borderRadius: 5,
+    }],
   }
 
   const categoryData = {
     labels: categoryChart.labels || [],
-    datasets: [{ label: 'Valor', data: categoryChart.values || [], backgroundColor: donutColors, borderWidth: 1 }],
+    datasets: [{
+      label: 'Valor',
+      data: categoryChart.values || [],
+      backgroundColor: donutColors,
+      borderWidth: 0,
+      spacing: 3,
+      borderRadius: 5,
+    }],
   }
 
   const resultByCategoryData = {
@@ -565,7 +673,10 @@ function ChartsPage({ selectedPortfolioIds }) {
     datasets: [{
       label: 'Resultado',
       data: resultByCategoryChart.values || [],
-      backgroundColor: (resultByCategoryChart.values || []).map((v) => (Number(v || 0) >= 0 ? '#1f6feb' : '#cf3f5b')),
+      backgroundColor: (resultByCategoryChart.values || []).map((v) => (Number(v || 0) >= 0 ? DIVERGING_POS : DIVERGING_NEG)),
+      maxBarThickness: 26,
+      borderRadius: 4,
+      borderSkipped: 'start',
     }],
   }
 
@@ -574,7 +685,10 @@ function ChartsPage({ selectedPortfolioIds }) {
     datasets: [{
       label: 'Valor',
       data: cardsChart.values || [],
-      backgroundColor: ['#0f8a77', '#1f6feb', '#c48b2d'],
+      backgroundColor: (cardsChart.values || []).map((_, idx) => TERMINAL_PALETTE[idx % TERMINAL_PALETTE.length]),
+      maxBarThickness: 26,
+      borderRadius: 4,
+      borderSkipped: 'start',
     }],
   }
 
@@ -604,7 +718,14 @@ function ChartsPage({ selectedPortfolioIds }) {
 
   const topAssetsData = {
     labels: topAssetsChart.labels || [],
-    datasets: [{ label: 'Valor', data: topAssetsChart.values || [], backgroundColor: '#1f6feb' }],
+    datasets: [{
+      label: 'Valor',
+      data: topAssetsChart.values || [],
+      backgroundColor: TERMINAL_PALETTE[0],
+      maxBarThickness: 26,
+      borderRadius: 4,
+      borderSkipped: 'start',
+    }],
   }
 
   const fixedInvestmentData = {
@@ -703,69 +824,72 @@ function ChartsPage({ selectedPortfolioIds }) {
       weights: item.weights || [],
       data: {
         labels: item.labels || [],
-        datasets: [{ label: 'Patrimonio', data: item.values || [], backgroundColor: colors, borderRadius: 8, borderSkipped: false }],
+        datasets: [{ label: 'Patrimonio', data: item.values || [], backgroundColor: colors, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 22 }],
       },
     }
   })
 
-  const pieValueInsideOptions = buildCircularOptions({
-    legend: true,
-    datalabels: {
-      color: '#ffffff',
-      anchor: 'center',
-      align: 'center',
-      formatter: (value, ctx) => formatSliceLabel({
-        label: classesData.labels?.[ctx.dataIndex] || '',
-        value,
-        total: classesTotal,
-        minPct: 12,
-      }),
-      font: { weight: '700', size: 11 },
-    },
-  })
+  const classesDonutOptions = buildDonutOptions({ total: classesTotal, centerLabel: 'Carteira' })
 
-  const categoryDonutOptions = buildCircularOptions({
-    legend: false,
-    datalabels: {
-      color: TERMINAL_TEXT,
-      anchor: 'end',
-      align: 'end',
-      offset: 6,
-      formatter: (value, ctx) => {
-        const label = categoryData.labels?.[ctx.dataIndex] || ''
-        const sliceLabel = formatSliceLabel({ label, value, total: categoryTotal, minPct: 9 })
-        if (!sliceLabel) return ''
-        return `${sliceLabel} | ${brlCompact(value)}`
-      },
-      font: { size: 9, weight: '600' },
-    },
-  })
+  const categoryDonutOptions = buildDonutOptions({ total: categoryTotal, centerLabel: 'Soma' })
 
+  // Barras horizontais divergentes: categorias sempre legiveis no eixo e
+  // rotulos de valor nas pontas, sem colisao perto do zero.
+  const resultBaseOptions = buildCartesianOptions({ yScale: moneyScale, legend: false, indexAxis: 'y' })
   const resultByCategoryOptions = {
-    ...buildCartesianOptions({ yScale: moneyScale, legend: false }),
+    ...resultBaseOptions,
+    layout: { padding: { right: 74, left: 8 } },
+    scales: {
+      ...resultBaseOptions.scales,
+      x: {
+        ...resultBaseOptions.scales.x,
+        grace: '15%',
+        grid: {
+          color: (ctx) => (Number(ctx.tick?.value || 0) === 0 ? TERMINAL_ZERO : TERMINAL_GRID),
+          lineWidth: (ctx) => (Number(ctx.tick?.value || 0) === 0 ? 1.4 : 1),
+          drawBorder: false,
+        },
+      },
+    },
     plugins: {
-      ...buildCartesianOptions({ yScale: moneyScale, legend: false }).plugins,
+      ...resultBaseOptions.plugins,
+      tooltip: {
+        ...chartTooltip,
+        callbacks: {
+          label: (ctx) => ` ${brlFull(ctx.parsed.x)}`,
+        },
+      },
       datalabels: {
-        color: (ctx) => (Number(ctx.raw || 0) >= 0 ? '#255eb5' : '#b63838'),
+        color: () => TERMINAL_INK,
         anchor: (ctx) => (Number(ctx.raw || 0) >= 0 ? 'end' : 'start'),
-        align: (ctx) => (Number(ctx.raw || 0) >= 0 ? 'end' : 'start'),
+        align: (ctx) => (Number(ctx.raw || 0) >= 0 ? 'right' : 'left'),
         offset: 4,
+        clamp: true,
+        clip: false,
         formatter: (value) => brlCompact(value),
-        font: { weight: '700', size: 11 },
+        font: { weight: '700', size: 10, family: TERMINAL_MONO },
       },
     },
   }
 
+  const consolidatedBaseOptions = buildCartesianOptions({ yScale: moneyScale, legend: false })
   const consolidatedOptions = {
-    ...buildCartesianOptions({ yScale: moneyScale, legend: false }),
+    ...consolidatedBaseOptions,
+    scales: {
+      ...consolidatedBaseOptions.scales,
+      y: { ...consolidatedBaseOptions.scales.y, grace: '10%' },
+    },
     plugins: {
-      ...buildCartesianOptions({ yScale: moneyScale, legend: false }).plugins,
+      ...consolidatedBaseOptions.plugins,
       datalabels: {
-        color: '#ffffff',
-        anchor: 'center',
-        align: 'center',
+        color: () => TERMINAL_INK,
+        anchor: 'end',
+        align: 'end',
+        offset: 4,
+        clamp: true,
+        clip: false,
         formatter: (value) => brlCompact(value),
-        font: { weight: '700', size: 11 },
+        font: { weight: '700', size: 10, family: TERMINAL_MONO },
       },
     },
   }
@@ -814,6 +938,17 @@ function ChartsPage({ selectedPortfolioIds }) {
     },
   }
   const barMoneyOptions = buildCartesianOptions({ yScale: moneyScale, legend: false })
+  // Ranking sem ticker nao se le: forca todos os rotulos no eixo do Top 10.
+  const topAssetsOptions = {
+    ...barMoneyOptions,
+    scales: {
+      ...barMoneyOptions.scales,
+      x: {
+        ...barMoneyOptions.scales.x,
+        ticks: { ...barMoneyOptions.scales.x.ticks, autoSkip: false, maxRotation: 60, minRotation: 45 },
+      },
+    },
+  }
   const fixedIssuerOptions = {
     ...buildCartesianOptions({ yScale: moneyScale, legend: true, stacked: true }),
     plugins: {
@@ -849,6 +984,7 @@ function ChartsPage({ selectedPortfolioIds }) {
   }
   const allocationBarOptionsFor = (chart) => ({
     ...buildCartesianOptions({ yScale: moneyScale, legend: false, indexAxis: 'y' }),
+    layout: { padding: { right: 96 } },
     plugins: {
       ...buildCartesianOptions({ yScale: moneyScale, legend: false, indexAxis: 'y' }).plugins,
       datalabels: {
@@ -856,6 +992,8 @@ function ChartsPage({ selectedPortfolioIds }) {
         anchor: 'end',
         align: 'right',
         offset: 6,
+        clamp: true,
+        clip: false,
         formatter: (value, ctx) => {
           const i = ctx.dataIndex
           const label = chart.labels?.[i] || ''
@@ -863,7 +1001,7 @@ function ChartsPage({ selectedPortfolioIds }) {
           if (weight < 4) return ''
           return `${label} ${weight.toFixed(1)}%`
         },
-        font: { size: 10, weight: '700' },
+        font: { size: 10, weight: '700', family: TERMINAL_MONO },
       },
     },
   })
@@ -900,8 +1038,8 @@ function ChartsPage({ selectedPortfolioIds }) {
     },
   ]
   const baseSectionLinks = [
-    { href: '#patrimonio', label: 'Patrimônio' },
     { href: '#composicao', label: 'Composição' },
+    { href: '#patrimonio', label: 'Patrimônio' },
     { href: '#renda-fixa', label: 'Renda fixa' },
     { href: '#ledger-anual', label: 'Ledger anual' },
     { href: '#ticker-ledger', label: 'Ticker ledger' },
@@ -1196,6 +1334,96 @@ function ChartsPage({ selectedPortfolioIds }) {
         </section>
       ) : null}
 
+      {(isVisible('classesPie')
+        || isVisible('categoryDonut')
+        || isVisible('resultCategory')
+        || isVisible('cardsBar')
+        || isVisible('topAssets')
+        || allocationCharts.some((item) => isVisible(item.key))) ? (
+        <DataSection
+          id="composicao"
+          title="Composição da carteira"
+          subtitle="Leitura macro de alocação, mix de classes e concentração."
+        >
+          <div className="charts-grid charts-grid-analytics">
+            {isVisible('classesPie') ? (
+              <ChartPanel
+                title="Renda Variavel x Renda Fixa"
+                subtitle={`Soma consolidada: ${brlFull(classesTotal)}`}
+                actions={makeChartActions('classesPie', 'renda-variavel-vs-fixa', classesData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Doughnut ref={registerChartRef('classesPie')} aria-label="Grafico de rosca: renda variavel x renda fixa" data={classesData} options={classesDonutOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {isVisible('categoryDonut') ? (
+              <ChartPanel
+                title="Distribuicao por tipo de ativo"
+                subtitle="Peso relativo por classe dentro da carteira."
+                actions={makeChartActions('categoryDonut', 'distribuicao-por-tipo', categoryData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Doughnut ref={registerChartRef('categoryDonut')} aria-label="Grafico de rosca: distribuicao por tipo de ativo" data={categoryData} options={categoryDonutOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {isVisible('resultCategory') ? (
+              <ChartPanel
+                title="Resultado por categoria"
+                subtitle="Comparativo de ganho ou perda por agrupamento."
+                actions={makeChartActions('resultCategory', 'resultado-por-categoria', resultByCategoryData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Bar ref={registerChartRef('resultCategory')} aria-label="Grafico de barras: resultado por categoria" data={resultByCategoryData} options={resultByCategoryOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {isVisible('cardsBar') ? (
+              <ChartPanel
+                title="Consolidado da carteira"
+                subtitle="Resumo absoluto de valor por grande bloco."
+                actions={makeChartActions('cardsBar', 'consolidado-carteira', cardsData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Bar ref={registerChartRef('cardsBar')} aria-label="Grafico de barras: consolidado da carteira" data={cardsData} options={consolidatedOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {isVisible('topAssets') ? (
+              <ChartPanel
+                title="Top 10 ativos por valor em carteira"
+                subtitle="Ranking de concentração por patrimônio atual."
+                actions={makeChartActions('topAssets', 'top-ativos-por-valor', topAssetsData)}
+              >
+                <div className="chart-canvas-wrap">
+                  <Bar ref={registerChartRef('topAssets')} aria-label="Grafico de barras: top 10 ativos por valor em carteira" data={topAssetsData} options={topAssetsOptions} />
+                </div>
+              </ChartPanel>
+            ) : null}
+
+            {allocationCharts.map((item) => (
+              isVisible(item.key) ? (
+                <ChartPanel
+                  key={item.key}
+                  title={item.title}
+                  subtitle="Distribuição interna por agrupamento em barra horizontal."
+                  actions={makeChartActions(item.key, `${item.key}-alocacao`, item.data)}
+                >
+                  <div className="chart-canvas-wrap">
+                    <Bar ref={registerChartRef(item.key)} aria-label="Grafico de barras: distribuicao interna por agrupamento" data={item.data} options={allocationBarOptionsFor(item)} />
+                  </div>
+                </ChartPanel>
+              ) : null
+            ))}
+          </div>
+        </DataSection>
+      ) : null}
+
       <div className="charts-feature-grid">
         {isVisible('benchmark') ? (
           <ChartPanel
@@ -1302,96 +1530,6 @@ function ChartsPage({ selectedPortfolioIds }) {
           ) : (
             <p className="subtitle">Sem dados suficientes para montar a evolução patrimonial por tipo no período selecionado.</p>
           )}
-        </DataSection>
-      ) : null}
-
-      {(isVisible('classesPie')
-        || isVisible('categoryDonut')
-        || isVisible('resultCategory')
-        || isVisible('cardsBar')
-        || isVisible('topAssets')
-        || allocationCharts.some((item) => isVisible(item.key))) ? (
-        <DataSection
-          id="composicao"
-          title="Composição da carteira"
-          subtitle="Leitura macro de alocação, mix de classes e concentração."
-        >
-          <div className="charts-grid charts-grid-analytics">
-            {isVisible('classesPie') ? (
-              <ChartPanel
-                title="Renda Variavel x Renda Fixa"
-                subtitle={`Soma consolidada: ${brl(classesTotal)}`}
-                actions={makeChartActions('classesPie', 'renda-variavel-vs-fixa', classesData)}
-              >
-                <div className="chart-canvas-wrap">
-                  <Pie ref={registerChartRef('classesPie')} aria-label="Grafico de pizza: renda variavel x renda fixa" data={classesData} options={pieValueInsideOptions} />
-                </div>
-              </ChartPanel>
-            ) : null}
-
-            {isVisible('categoryDonut') ? (
-              <ChartPanel
-                title="Distribuicao por tipo de ativo"
-                subtitle="Peso relativo por classe dentro da carteira."
-                actions={makeChartActions('categoryDonut', 'distribuicao-por-tipo', categoryData)}
-              >
-                <div className="chart-canvas-wrap">
-                  <Doughnut ref={registerChartRef('categoryDonut')} aria-label="Grafico de rosca: distribuicao por tipo de ativo" data={categoryData} options={categoryDonutOptions} />
-                </div>
-              </ChartPanel>
-            ) : null}
-
-            {isVisible('resultCategory') ? (
-              <ChartPanel
-                title="Resultado por categoria"
-                subtitle="Comparativo de ganho ou perda por agrupamento."
-                actions={makeChartActions('resultCategory', 'resultado-por-categoria', resultByCategoryData)}
-              >
-                <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('resultCategory')} aria-label="Grafico de barras: resultado por categoria" data={resultByCategoryData} options={resultByCategoryOptions} />
-                </div>
-              </ChartPanel>
-            ) : null}
-
-            {isVisible('cardsBar') ? (
-              <ChartPanel
-                title="Consolidado da carteira"
-                subtitle="Resumo absoluto de valor por grande bloco."
-                actions={makeChartActions('cardsBar', 'consolidado-carteira', cardsData)}
-              >
-                <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('cardsBar')} aria-label="Grafico de barras: consolidado da carteira" data={cardsData} options={consolidatedOptions} />
-                </div>
-              </ChartPanel>
-            ) : null}
-
-            {isVisible('topAssets') ? (
-              <ChartPanel
-                title="Top 10 ativos por valor em carteira"
-                subtitle="Ranking de concentração por patrimônio atual."
-                actions={makeChartActions('topAssets', 'top-ativos-por-valor', topAssetsData)}
-              >
-                <div className="chart-canvas-wrap">
-                  <Bar ref={registerChartRef('topAssets')} aria-label="Grafico de barras: top 10 ativos por valor em carteira" data={topAssetsData} options={barMoneyOptions} />
-                </div>
-              </ChartPanel>
-            ) : null}
-
-            {allocationCharts.map((item) => (
-              isVisible(item.key) ? (
-                <ChartPanel
-                  key={item.key}
-                  title={item.title}
-                  subtitle="Distribuição interna por agrupamento em barra horizontal."
-                  actions={makeChartActions(item.key, `${item.key}-alocacao`, item.data)}
-                >
-                  <div className="chart-canvas-wrap">
-                    <Bar ref={registerChartRef(item.key)} aria-label="Grafico de barras: distribuicao interna por agrupamento" data={item.data} options={allocationBarOptionsFor(item)} />
-                  </div>
-                </ChartPanel>
-              ) : null
-            ))}
-          </div>
         </DataSection>
       ) : null}
 

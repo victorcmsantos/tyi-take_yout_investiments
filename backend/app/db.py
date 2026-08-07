@@ -757,6 +757,20 @@ def ensure_schema_upgrades():
         """
     )
 
+    # Cache da narrativa IA do overview diario da carteira, chaveada pelo
+    # escopo de carteiras selecionado; os fatos sao recalculados a cada leitura.
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS portfolio_daily_overview (
+            scope_key TEXT PRIMARY KEY,
+            ref_date TEXT NOT NULL DEFAULT '',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            raw_reply TEXT NOT NULL DEFAULT '',
+            generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
     # Cache dos insights financeiros proativos (IA) por mes de referencia
     # (YYYY-MM), gerados a partir do overview do Pierre.
     db.execute(

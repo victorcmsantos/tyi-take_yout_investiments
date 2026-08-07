@@ -72,6 +72,9 @@ from .services import (
     enrich_assets_with_openclaw_batch,
     analyze_portfolio_with_openclaw,
     get_portfolio_analysis,
+    build_daily_overview_facts,
+    generate_daily_overview,
+    get_daily_overview,
     generate_finance_insights,
     get_finance_insights,
     update_metric_formula,
@@ -2586,6 +2589,32 @@ def portfolio_analysis_read():
         return _json_error("Nao autenticado.", status=401)
     portfolio_ids = _selected_portfolio_ids_from_request()
     return _json_ok({"analysis": get_portfolio_analysis(portfolio_ids)})
+
+
+@api_bp.route("/portfolio/daily-overview", methods=["GET"])
+def portfolio_daily_overview_read():
+    """Fatos do dia calculados ao vivo + narrativa IA cacheada (sem OpenClaw)."""
+    if not get_current_user():
+        return _json_error("Nao autenticado.", status=401)
+    portfolio_ids = _selected_portfolio_ids_from_request()
+    return _json_ok(
+        {
+            "facts": build_daily_overview_facts(portfolio_ids),
+            "ai": get_daily_overview(portfolio_ids),
+        }
+    )
+
+
+@api_bp.route("/portfolio/daily-overview/openclaw", methods=["POST"])
+def portfolio_daily_overview_generate():
+    """Gera/atualiza a narrativa IA do overview do dia via OpenClaw."""
+    if not get_current_user():
+        return _json_error("Nao autenticado.", status=401)
+    portfolio_ids = _selected_portfolio_ids_from_request()
+    ok, message, overview = generate_daily_overview(portfolio_ids)
+    if not ok:
+        return _json_error(message, status=502)
+    return _json_ok({"message": message, "ai": overview})
 
 
 @api_bp.route("/portfolio/analyze/openclaw", methods=["POST"])

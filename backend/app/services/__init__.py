@@ -26,6 +26,11 @@ from .finance_ai import (
     generate_finance_insights,
     get_finance_insights,
 )
+from .portfolio_daily_overview import (
+    build_daily_overview_facts,
+    generate_daily_overview,
+    get_daily_overview,
+)
 from .portfolio import (
     add_fixed_income,
     add_income,
@@ -75,6 +80,9 @@ __all__ = [
     "delete_transactions",
     "enrich_asset_with_openclaw",
     "enrich_assets_with_openclaw_batch",
+    "build_daily_overview_facts",
+    "generate_daily_overview",
+    "get_daily_overview",
     "generate_finance_insights",
     "get_asset",
     "get_asset_upcoming_incomes",

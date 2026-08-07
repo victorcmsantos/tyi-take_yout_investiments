@@ -3,6 +3,7 @@ import { Skeleton } from '@mui/material'
 import { formatCompactBrl, formatCurrencyBRL, formatPercent } from '../formatters'
 import DashboardCustomizerPanel from '../components/DashboardCustomizerPanel'
 import HighlightsCards from '../components/HighlightsCards'
+import DailyOverviewCard from '../components/DailyOverviewCard'
 import AssetsTable from '../components/AssetsTable'
 import SectorsTable from '../components/SectorsTable'
 import UpcomingIncomesTable from '../components/UpcomingIncomesTable'
@@ -446,6 +447,8 @@ function HomePage({ selectedPortfolioIds }) {
         cards={visibleHighlightCards}
         onResetHiddenCards={resetDashboardPrefs}
       />
+
+      <DailyOverviewCard selectedPortfolioIds={selectedPortfolioIds} />
 
       {showHealthModal && (
         <div className="health-modal-backdrop" role="presentation" onClick={() => setShowHealthModal(false)}>

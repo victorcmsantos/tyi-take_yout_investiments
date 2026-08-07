@@ -3159,6 +3159,119 @@ table tbody tr:hover td {
   transition: opacity 0.35s ease;
 }
 
+.daily-overview-headline {
+  margin: 12px 0 6px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.daily-overview-headline small {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft, #6e8298);
+}
+
+.daily-overview-headline.up,
+.daily-overview-class-row .up {
+  color: #1e6642;
+}
+
+.daily-overview-headline.down,
+.daily-overview-class-row .down {
+  color: #a83a4e;
+}
+
+html[data-theme='dark'] .daily-overview-headline.up,
+html[data-theme='dark'] .daily-overview-class-row .up {
+  color: #9de0be;
+}
+
+html[data-theme='dark'] .daily-overview-headline.down,
+html[data-theme='dark'] .daily-overview-class-row .down {
+  color: #f2a2b0;
+}
+
+.daily-overview-classes {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 14px;
+}
+
+.daily-overview-class-row {
+  display: grid;
+  grid-template-columns: 96px 76px 120px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(114, 136, 160, 0.16);
+  font-size: 13px;
+}
+
+.daily-overview-class-label {
+  font-weight: 700;
+}
+
+.daily-overview-class-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.daily-overview-movers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.daily-overview-mover {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(114, 136, 160, 0.22);
+}
+
+.daily-overview-mover.up {
+  color: #1e6642;
+  background: rgba(30, 102, 66, 0.08);
+}
+
+.daily-overview-mover.down {
+  color: #a83a4e;
+  background: rgba(168, 58, 78, 0.08);
+}
+
+html[data-theme='dark'] .daily-overview-mover.up {
+  color: #9de0be;
+  background: rgba(157, 224, 190, 0.1);
+}
+
+html[data-theme='dark'] .daily-overview-mover.down {
+  color: #f2a2b0;
+  background: rgba(242, 162, 176, 0.1);
+}
+
+.daily-overview-fixed {
+  margin-bottom: 12px;
+}
+
+@media (max-width: 720px) {
+  .daily-overview-class-row {
+    grid-template-columns: 1fr auto;
+    grid-auto-flow: row;
+  }
+
+  .daily-overview-movers {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
+
 .charts-terminal-meta-strip.chart-kpi-strip {
   grid-template-columns: 1fr;
   gap: 12px;

@@ -3175,44 +3175,59 @@ table tbody tr:hover td {
 }
 
 .daily-overview-headline.up,
-.daily-overview-class-row .up {
+.daily-overview-class-tile .up {
   color: #1e6642;
 }
 
 .daily-overview-headline.down,
-.daily-overview-class-row .down {
+.daily-overview-class-tile .down {
   color: #a83a4e;
 }
 
 html[data-theme='dark'] .daily-overview-headline.up,
-html[data-theme='dark'] .daily-overview-class-row .up {
+html[data-theme='dark'] .daily-overview-class-tile .up {
   color: #9de0be;
 }
 
 html[data-theme='dark'] .daily-overview-headline.down,
-html[data-theme='dark'] .daily-overview-class-row .down {
+html[data-theme='dark'] .daily-overview-class-tile .down {
   color: #f2a2b0;
 }
 
-.daily-overview-classes {
+.daily-overview-class-grid {
   display: grid;
-  gap: 6px;
-  margin: 10px 0 14px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  margin: 12px 0 14px;
 }
 
-.daily-overview-class-row {
+.daily-overview-class-tile {
   display: grid;
-  grid-template-columns: 96px 76px 120px 1fr;
-  gap: 10px;
-  align-items: center;
-  padding: 8px 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(114, 136, 160, 0.16);
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(114, 136, 160, 0.18);
   font-size: 13px;
+}
+
+.daily-overview-class-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.daily-overview-class-head strong {
+  font-size: 17px;
+  letter-spacing: -0.01em;
 }
 
 .daily-overview-class-label {
   font-weight: 700;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft, #6e8298);
 }
 
 .daily-overview-class-value {
@@ -3224,7 +3239,23 @@ html[data-theme='dark'] .daily-overview-class-row .down {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  justify-content: flex-end;
+}
+
+.daily-overview-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.daily-overview-columns .openclaw-section {
+  margin: 0;
+}
+
+@media (max-width: 980px) {
+  .daily-overview-columns {
+    grid-template-columns: 1fr;
+  }
 }
 
 .daily-overview-mover {
@@ -3260,17 +3291,7 @@ html[data-theme='dark'] .daily-overview-mover.down {
   margin-bottom: 12px;
 }
 
-@media (max-width: 720px) {
-  .daily-overview-class-row {
-    grid-template-columns: 1fr auto;
-    grid-auto-flow: row;
-  }
 
-  .daily-overview-movers {
-    grid-column: 1 / -1;
-    justify-content: flex-start;
-  }
-}
 
 .charts-terminal-meta-strip.chart-kpi-strip {
   grid-template-columns: 1fr;

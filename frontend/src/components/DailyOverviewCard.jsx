@@ -102,13 +102,15 @@ function DailyOverviewCard({ selectedPortfolioIds }) {
           </p>
 
           {classes.length > 0 && (
-            <div className="daily-overview-classes">
+            <div className="daily-overview-class-grid">
               {classes.map((cls) => (
-                <div key={cls.key} className="daily-overview-class-row">
-                  <span className="daily-overview-class-label">{cls.label}</span>
-                  <strong className={Number(cls.day_change_pct) >= 0 ? 'up' : 'down'}>
-                    {signedPct(cls.day_change_pct)}
-                  </strong>
+                <div key={cls.key} className="daily-overview-class-tile">
+                  <div className="daily-overview-class-head">
+                    <span className="daily-overview-class-label">{cls.label}</span>
+                    <strong className={Number(cls.day_change_pct) >= 0 ? 'up' : 'down'}>
+                      {signedPct(cls.day_change_pct)}
+                    </strong>
+                  </div>
                   <span className={`daily-overview-class-value ${Number(cls.change_value) >= 0 ? 'up' : 'down'}`}>
                     {signedBrl(cls.change_value)}
                   </span>
@@ -123,31 +125,31 @@ function DailyOverviewCard({ selectedPortfolioIds }) {
             </div>
           )}
 
-          {fixed && (fixed.future_count > 0 || upcoming.length > 0) && (
-            <section className="openclaw-section daily-overview-fixed">
-              <span className="section-kicker">Vencimentos de renda fixa</span>
-              <div className="openclaw-meta">
-                <span className={`analysis-pill ${Number(fixed.maturing_30d_total) > 0 ? 'down' : ''}`}>
-                  30 dias: {brlCompact(fixed.maturing_30d_total)}
-                </span>
-                <span className="analysis-pill">90 dias: {brlCompact(fixed.maturing_90d_total)}</span>
-                <span className="meta-chip">{fixed.future_count} título(s) a vencer</span>
-              </div>
-              {upcoming.length > 0 && (
-                <ul className="analysis-list">
-                  {upcoming.map((item, idx) => (
-                    <li key={`venc-${idx}`}>
-                      {item.issuer} {item.investment_type} · {brlFull(item.amount)} · vence {dateBr(item.maturity_date)} (em {item.days_left} dia{item.days_left === 1 ? '' : 's'})
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          )}
+          <div className="daily-overview-columns">
+            {fixed && (fixed.future_count > 0 || upcoming.length > 0) && (
+              <section className="openclaw-section daily-overview-fixed">
+                <span className="section-kicker">Vencimentos de renda fixa</span>
+                <div className="openclaw-meta">
+                  <span className={`analysis-pill ${Number(fixed.maturing_30d_total) > 0 ? 'down' : ''}`}>
+                    30 dias: {brlCompact(fixed.maturing_30d_total)}
+                  </span>
+                  <span className="analysis-pill">90 dias: {brlCompact(fixed.maturing_90d_total)}</span>
+                  <span className="meta-chip">{fixed.future_count} título(s) a vencer</span>
+                </div>
+                {upcoming.length > 0 && (
+                  <ul className="analysis-list">
+                    {upcoming.map((item, idx) => (
+                      <li key={`venc-${idx}`}>
+                        {item.issuer} {item.investment_type} · {brlFull(item.amount)} · vence {dateBr(item.maturity_date)} (em {item.days_left} dia{item.days_left === 1 ? '' : 's'})
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            )}
 
-          {hasAi ? (
-            <div className="openclaw-grid">
-              <section className="openclaw-section openclaw-section-wide openclaw-section-lead">
+            {hasAi ? (
+              <section className="openclaw-section openclaw-section-lead daily-overview-ai">
                 <div className="openclaw-meta">
                   <span className={`analysis-pill ${tone.tone}`}>{tone.label}</span>
                   {!!ai?.generated_at && <span className="meta-chip">Leitura gerada em {ai.generated_at}</span>}
@@ -165,10 +167,13 @@ function DailyOverviewCard({ selectedPortfolioIds }) {
                 )}
                 {!!aiPayload.alerta_renda_fixa && <p><strong>Renda fixa:</strong> {aiPayload.alerta_renda_fixa}</p>}
               </section>
-            </div>
-          ) : (
-            <p className="subtitle">Sem leitura IA ainda. Clique em “Gerar leitura IA” para a narrativa do dia.</p>
-          )}
+            ) : (
+              <section className="openclaw-section daily-overview-ai">
+                <span className="section-kicker">Leitura IA</span>
+                <p className="subtitle">Sem leitura IA ainda. Clique em “Gerar leitura IA” para a narrativa do dia.</p>
+              </section>
+            )}
+          </div>
         </>
       ) : (
         <p className="subtitle">Sem dados suficientes para montar o overview do dia.</p>

@@ -443,12 +443,12 @@ function HomePage({ selectedPortfolioIds }) {
         />
       )}
 
+      <DailyOverviewCard selectedPortfolioIds={selectedPortfolioIds} />
+
       <HighlightsCards
         cards={visibleHighlightCards}
         onResetHiddenCards={resetDashboardPrefs}
       />
-
-      <DailyOverviewCard selectedPortfolioIds={selectedPortfolioIds} />
 
       {showHealthModal && (
         <div className="health-modal-backdrop" role="presentation" onClick={() => setShowHealthModal(false)}>

@@ -4,13 +4,17 @@ container; the API key never leaves it.
 """
 
 import json
+import logging
 import os
 import sqlite3
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
+
+log = logging.getLogger("pierre")
 
 
 class PierreNotConfigured(RuntimeError):
@@ -126,6 +130,26 @@ def _cache_write(key, payload):
 _REFRESH_INFLIGHT = set()
 _REFRESH_LOCK = threading.Lock()
 
+# Pierre's API rate-limits aggressively and answers throttled calls with
+# 401 invalid_api_key ("try again later"), not 429. Retrying right away only
+# burns the quota, so background refreshes back off (delays below) and, after
+# any throttled response, ALL refresh attempts pause for a shared cooldown.
+_REFRESH_RETRY_DELAYS = (0, 300, 900, 1800)  # seconds before attempts 1..4
+_THROTTLE_COOLDOWN = 600
+_THROTTLE_LOCK = threading.Lock()
+_throttled_until = 0.0
+
+
+def _mark_throttled():
+    global _throttled_until
+    with _THROTTLE_LOCK:
+        _throttled_until = max(_throttled_until, time.time() + _THROTTLE_COOLDOWN)
+
+
+def _throttle_remaining():
+    with _THROTTLE_LOCK:
+        return max(_throttled_until - time.time(), 0.0)
+
 
 def _live_get(path, params):
     url = _base_url() + path
@@ -140,8 +164,13 @@ def _live_get(path, params):
             "User-Agent": "tyi-pierre-service",
         },
     )
-    with urllib.request.urlopen(request, timeout=_timeout_seconds()) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=_timeout_seconds()) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 429):
+            _mark_throttled()
+        raise
 
 
 def _refresh_async(key, path, params):
@@ -152,11 +181,24 @@ def _refresh_async(key, path, params):
 
     def _worker():
         try:
-            payload = _live_get(path, params)
-            if isinstance(payload, dict) and payload.get("success") is not False:
-                _cache_write(key, payload)
-        except Exception:
-            pass
+            for attempt, delay in enumerate(_REFRESH_RETRY_DELAYS, start=1):
+                wait = delay + _throttle_remaining()
+                if wait:
+                    time.sleep(wait)
+                try:
+                    payload = _live_get(path, params)
+                except Exception as exc:
+                    log.warning(
+                        "refresh de %s falhou (tentativa %d/%d): %s",
+                        key, attempt, len(_REFRESH_RETRY_DELAYS), exc,
+                    )
+                    continue
+                if isinstance(payload, dict) and payload.get("success") is not False:
+                    _cache_write(key, payload)
+                    if attempt > 1:
+                        log.warning("refresh de %s ok na tentativa %d", key, attempt)
+                    return
+                log.warning("refresh de %s retornou success=false; mantendo cache", key)
         finally:
             with _REFRESH_LOCK:
                 _REFRESH_INFLIGHT.discard(key)

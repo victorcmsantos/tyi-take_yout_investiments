@@ -5796,7 +5796,8 @@ html[data-theme='dark'] .asset-table tbody tr:hover .sticky-col-ticker {
 .fin2-rhythm { grid-column: 2 / 3; grid-row: 1 / 3; }
 .fin2-rhythm canvas { margin-top: 14px; }
 
-.fin2-acc-list, .fin2-cat-list, .fin2-tx-list { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 12px; }
+.fin2-acc-list, .fin2-cat-list, .fin2-tx-list { list-style: none; margin: 16px 0 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.fin2-acc-list li, .fin2-cat-list li, .fin2-tx-list li { min-width: 0; }
 .fin2-acc-list li { display: flex; align-items: center; gap: 12px; }
 .fin2-acc-list img { width: 34px; height: 34px; border-radius: 9px; object-fit: cover; background: #fff; }
 .fin2-acc-dot { width: 34px; height: 34px; border-radius: 9px; background: var(--fin-card2); border: 1px solid var(--fin-line); }

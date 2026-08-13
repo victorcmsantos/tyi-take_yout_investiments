@@ -364,7 +364,7 @@ def _inter_category(t, incoming, text):
         return "Investimentos"
     if "DARF" in kind or "IMPOSTO" in kind or kind == "DAS":
         return "Impostos"
-    if "DARF" in text or "IMPOSTO" in text or " DAS " in f" {text} " or "TRIBUTO" in text:
+    if "DARF" in text or "IMPOSTO" in text or " DAS " in f" {text} " or "TRIBUTO" in text or "PREFEITURA" in text or "PMSP" in text:
         return "Impostos"
     if kind in ("TARIFA", "TAXA"):
         return "Serviços"

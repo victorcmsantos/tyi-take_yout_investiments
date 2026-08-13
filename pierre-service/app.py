@@ -9,6 +9,7 @@ from datetime import date
 from flask import Flask, jsonify, request
 
 import cashflow
+import datasource
 import manual
 import overrides
 import overview
@@ -18,6 +19,12 @@ import recurring
 import settings
 
 app = Flask(__name__)
+
+
+@app.before_request
+def _pick_finance_source():
+    # ?source=pluggy|pierre força a fonte nesta requisição (default: env/pierre)
+    datasource.set_request_source(request.args.get("source"))
 
 
 def _ok(payload=None, status=200):
@@ -65,6 +72,16 @@ def pluggy_status():
     return _guard_pluggy(pluggy_api.status)
 
 
+@app.get("/inter-status")
+def inter_status():
+    import inter_api
+
+    try:
+        return _ok(inter_api.status())
+    except Exception as exc:  # noqa: BLE001
+        return _err(f"Falha ao consultar Inter: {exc}", status=502)
+
+
 @app.get("/pluggy-transactions")
 def pluggy_transactions():
     account_id = request.args.get("accountId")
@@ -81,7 +98,7 @@ def pluggy_transactions():
 
 @app.get("/accounts")
 def accounts():
-    return _guard(pierre.get_accounts)
+    return _guard(datasource.get_accounts)
 
 
 @app.get("/balance")
@@ -92,7 +109,7 @@ def balance():
 @app.get("/transactions")
 def transactions():
     return _guard(
-        lambda: pierre.get_transactions(
+        lambda: datasource.get_transactions(
             start_date=request.args.get("startDate"),
             end_date=request.args.get("endDate"),
             account_type=request.args.get("accountType"),
@@ -103,13 +120,13 @@ def transactions():
 
 @app.get("/bills")
 def bills():
-    return _guard(lambda: pierre.get_bills(request.args.get("accountId")))
+    return _guard(lambda: datasource.get_bills(request.args.get("accountId")))
 
 
 @app.get("/installments")
 def installments():
     return _guard(
-        lambda: pierre.get_installments(
+        lambda: datasource.get_installments(
             start_date=request.args.get("startDate"),
             end_date=request.args.get("endDate"),
         )
@@ -144,12 +161,26 @@ def ledger_route():
     return _guard(_build)
 
 
+@app.get("/accounts-activity")
+def accounts_activity_route():
+    def _build():
+        raw = request.args.get("month") or ""
+        try:
+            year, month = (int(p) for p in raw.split("-")[:2])
+        except (ValueError, TypeError):
+            today = date.today()
+            year, month = today.year, today.month
+        return overview.build_accounts_activity(year, month)
+
+    return _guard(_build)
+
+
 @app.get("/cashflow")
 def cashflow_route():
     def _build():
         # inject first, then overrides, so recategorization rules apply to manual
         # transactions too (e.g. a manual ECS transfer marked as Investimentos).
-        payload = manual.inject(pierre.get_transactions(
+        payload = manual.inject(datasource.get_transactions(
             start_date=request.args.get("startDate"),
             end_date=request.args.get("endDate"),
             account_type=request.args.get("accountType"),

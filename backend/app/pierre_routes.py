@@ -17,7 +17,7 @@ _ALLOWED = {
     "status", "accounts", "balance", "transactions", "bills", "installments",
     "cashflow", "overview", "ledger", "overrides",
     "manual-accounts", "manual-transactions", "recurring-items", "settings",
-    "pluggy-status", "pluggy-transactions",
+    "pluggy-status", "pluggy-transactions", "inter-status", "accounts-activity",
 }
 _WRITABLE = {"overrides", "manual-accounts", "manual-transactions", "recurring-items", "settings"}
 

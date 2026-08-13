@@ -9,6 +9,7 @@ import unicodedata
 from datetime import date, timedelta
 
 import cashflow
+import datasource
 import manual
 import overrides
 import pierre
@@ -207,7 +208,7 @@ def build_ledger(year, month):
     follow the INVOICE that is due in month M (so they match the Cartões tab and
     the cash-flow model: purchases land in the month their statement is paid)."""
     start, end, _ = _month_bounds(year, month)
-    acc_raw = _acc_list(pierre.get_accounts())
+    acc_raw = _acc_list(datasource.get_accounts())
     logo_fn = _make_logo_fn(acc_raw)
     # overrides applied AFTER manual.inject (below) so rules reach manual txs too.
     card_by_id = {}
@@ -247,7 +248,7 @@ def build_ledger(year, month):
 
     # Account movements: calendar month. inject first, then overrides (so rules
     # recategorize manual transactions too).
-    tx = overrides.apply(manual.inject(pierre.get_transactions(start_date=start, end_date=end), start, end))
+    tx = overrides.apply(manual.inject(datasource.get_transactions(start_date=start, end_date=end), start, end))
     accounts = ((tx.get("data") or {}).get("transactions") or {}).get("accounts") or {}
     for a in accounts.values():
         if not isinstance(a, dict):
@@ -263,7 +264,7 @@ def build_ledger(year, month):
     _wins = [_win_for(a) for a in credit_accounts]
     fetch_start = min((w[0] for w in _wins), default=_cycle_window(year, month)[0])
     fetch_end = max((w[1] for w in _wins), default=_cycle_window(year, month)[1])
-    cyc = overrides.apply(pierre.get_transactions(start_date=fetch_start, end_date=fetch_end, account_type="CREDIT"))
+    cyc = overrides.apply(datasource.get_transactions(start_date=fetch_start, end_date=fetch_end, account_type="CREDIT"))
     cyc_accounts = ((cyc.get("data") or {}).get("transactions") or {}).get("accounts") or {}
     for a in cyc_accounts.values():
         if not isinstance(a, dict):
@@ -283,7 +284,7 @@ def build_ledger(year, month):
     # billed on the statement that closes in M (paid the 1st of M+1).
     cur_ym = f"{year:04d}-{month:02d}"
     try:
-        inst_raw = pierre.get_installments(start_date=f"{year - 2}-01-01", end_date=end)
+        inst_raw = datasource.get_installments(start_date=f"{year - 2}-01-01", end_date=end)
         inst_purchases = ((inst_raw.get("data") or {}).get("purchases")) or []
     except Exception:
         inst_purchases = []
@@ -316,9 +317,9 @@ def build_overview(year, month):
 
     # overrides AFTER manual.inject so recategorization rules also apply to manual
     # transactions (e.g. "Eliane -> Investimentos" on a manual ECS transfer).
-    cur_tx = overrides.apply(manual.inject(pierre.get_transactions(start_date=cur_start, end_date=cur_end), cur_start, cur_end))
-    prev_tx = overrides.apply(manual.inject(pierre.get_transactions(start_date=prev_start, end_date=prev_end), prev_start, prev_end))
-    accounts_raw = pierre.get_accounts()
+    cur_tx = overrides.apply(manual.inject(datasource.get_transactions(start_date=cur_start, end_date=cur_end), cur_start, cur_end))
+    prev_tx = overrides.apply(manual.inject(datasource.get_transactions(start_date=prev_start, end_date=prev_end), prev_start, prev_end))
+    accounts_raw = datasource.get_accounts()
 
     cur_s = _summary(cur_tx)
     prev_s = _summary(prev_tx)
@@ -358,7 +359,7 @@ def build_overview(year, month):
     _wins = [_win_for(a) for a in credit_accounts]
     fetch_start = min((w[0] for w in _wins), default=_cycle_window(year, month)[0])
     fetch_end = max((w[1] for w in _wins), default=_cycle_window(year, month)[1])
-    cycle_tx = overrides.apply(pierre.get_transactions(start_date=fetch_start, end_date=fetch_end))
+    cycle_tx = overrides.apply(datasource.get_transactions(start_date=fetch_start, end_date=fetch_end))
     card_accounts_tx = ((cycle_tx.get("data") or {}).get("transactions") or {}).get("accounts") or {}
 
     # The invoice for the window = upfront purchases made in the window + the
@@ -405,7 +406,7 @@ def build_overview(year, month):
     # statement of May, paid 01/06).
     cur_ym = f"{year:04d}-{month:02d}"
     try:
-        inst_raw = pierre.get_installments(start_date=f"{year - 2}-01-01", end_date=cur_end)
+        inst_raw = datasource.get_installments(start_date=f"{year - 2}-01-01", end_date=cur_end)
         inst_purchases = ((inst_raw.get("data") or {}).get("purchases")) or []
     except Exception:
         inst_purchases = []
@@ -439,7 +440,7 @@ def build_overview(year, month):
     month_key = f"{ny:04d}-{nm:02d}"
     bill_by_acct = {}
     try:
-        bills_raw = pierre.get_bills()
+        bills_raw = datasource.get_bills()
         bdata = (bills_raw or {}).get("data")
         if isinstance(bdata, dict):
             bdata = bdata.get("data")
@@ -720,3 +721,92 @@ def build_overview(year, month):
         "recent_card": card_items[:6],
         "recent_account": acct_items[:6],
     }
+
+
+def build_accounts_activity(year, month):
+    """Movimentação de cada conta bancária no mês — para a aba Contas (mesmo
+    espírito da aba Cartões: um card expansível por conta com o extrato)."""
+    start, end, _ = _month_bounds(year, month)
+    acc_raw = _acc_list(datasource.get_accounts())
+    tx = overrides.apply(manual.inject(datasource.get_transactions(start_date=start, end_date=end), start, end))
+    groups = ((tx.get("data") or {}).get("transactions") or {}).get("accounts") or {}
+
+    meta_by_label = {}
+    for a in acc_raw:
+        if a.get("type") != "BANK":
+            continue
+        label = a.get("connectorName") or a.get("name") or "Conta"
+        entry = meta_by_label.setdefault(label, {"balance": 0.0, "logo": a.get("connectorImageUrl") or "", "numbers": []})
+        try:
+            entry["balance"] += float(a.get("balance") or 0.0)
+        except (TypeError, ValueError):
+            pass
+        if a.get("number"):
+            entry["numbers"].append(str(a.get("number")))
+    # Contas manuais: o inject agrupa por chave interna "manual:<id>"; mapeia de
+    # volta para nome/logo/saldo, e só cria card por NOME quando não há grupo.
+    manual_names = {}
+    for m in manual.bank_accounts_for_overview():
+        key = f"manual:{m['id']}"
+        manual_names[key] = m
+        if key not in groups:
+            meta_by_label.setdefault(m["name"], {
+                "balance": float(m.get("balance") or 0.0),
+                "logo": m.get("logo") or "",
+                "numbers": [],
+                "manual": True,
+            })
+
+    accounts = []
+    for label in set(groups) | set(meta_by_label):
+        g = groups.get(label) or {}
+        mm = manual_names.get(label)
+        if mm is not None:
+            meta_by_label[label] = {
+                "balance": float(mm.get("balance") or 0.0),
+                "logo": mm.get("logo") or "",
+                "numbers": [],
+                "manual": True,
+            }
+            display_name = mm["name"]
+        else:
+            display_name = label
+        movs = []
+        for it in g.get("received") or []:
+            movs.append({
+                "date": it.get("date"),
+                "description": it.get("description") or it.get("merchant") or it.get("category"),
+                "category": it.get("category"),
+                "amount": round(_amt(it), 2),
+                "flow": "in",
+            })
+        for it in g.get("bank_transfer") or []:
+            movs.append({
+                "date": it.get("date"),
+                "description": it.get("description") or it.get("merchant") or it.get("category"),
+                "category": it.get("category"),
+                "amount": round(_amt(it), 2),
+                "flow": "out",
+            })
+        meta = meta_by_label.get(label)
+        if not movs and meta is None:
+            continue
+        # grupo só de cartões (sem conta bancária nem movimentação) não entra
+        if not movs and meta is not None and not meta.get("numbers") and not meta.get("manual") and not meta.get("balance"):
+            continue
+        movs.sort(key=lambda x: x.get("date") or "", reverse=True)
+        total_in = round(sum(m["amount"] for m in movs if m["flow"] == "in"), 2)
+        total_out = round(sum(m["amount"] for m in movs if m["flow"] == "out"), 2)
+        accounts.append({
+            "name": display_name,
+            "logo": (meta or {}).get("logo") or "",
+            "balance": round((meta or {}).get("balance") or 0.0, 2) if meta else None,
+            "number": ((meta or {}).get("numbers") or [None])[0],
+            "manual": bool((meta or {}).get("manual")),
+            "total_in": total_in,
+            "total_out": total_out,
+            "net": round(total_in - total_out, 2),
+            "transactions": movs,
+        })
+    accounts.sort(key=lambda a: -(a["total_in"] + a["total_out"]))
+    return {"month": f"{year:04d}-{month:02d}", "accounts": accounts}

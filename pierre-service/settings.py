@@ -112,3 +112,16 @@ def closing_for(connector, last4=None, ym=None):
         if key and key in name:
             return day
     return card_closing_day()
+
+
+def card_labels_by_last4():
+    """Map of card last4 -> apelido ("Victor", "Eliane"). Rotula o plástico que
+    fez a compra na quebra por cartão da fatura."""
+    raw = get("card_labels_by_last4")
+    if raw:
+        try:
+            return {str(k).strip()[-4:]: str(v).strip()[:24]
+                    for k, v in json.loads(raw).items() if str(v).strip()}
+        except Exception:
+            pass
+    return {}

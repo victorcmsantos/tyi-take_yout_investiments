@@ -6332,3 +6332,21 @@ html[data-theme='dark'] .asset-back-link {
     grid-template-columns: 1fr;
   }
 }
+
+/* quebra da fatura por cartão físico (titular + adicionais) */
+.fin2-cardsplit { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.fin2-cardsplit-item {
+  flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+  background: var(--fin-card2); border: 1px solid var(--fin-line); border-radius: 12px;
+  padding: 9px 11px; font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.fin2-cardsplit-item:hover { border-color: rgba(255,255,255,0.22); }
+.fin2-cardsplit-item.active { border-color: rgba(47,212,126,0.55); background: rgba(47,212,126,0.08); }
+.fin2-cardsplit-item strong { font-size: 15px; }
+.fin2-cardsplit-item small { color: var(--fin-muted); font-size: 11px; }
+.fin2-cardsplit-alias {
+  margin-top: 4px; width: 100%; height: 26px; border-radius: 7px;
+  border: 1px solid var(--fin-line); background: transparent; color: var(--fin-txt);
+  padding: 0 8px; font: inherit; font-size: 12px;
+}
+.fin2-cardsplit-alias::placeholder { color: var(--fin-muted); opacity: 0.7; }

@@ -250,6 +250,10 @@ def _tx_item(t, account, group_name, transaction_type):
             item["purchase_date"] = str(cc.get("purchaseDate"))[:10]
         if cc.get("billForecastDate"):
             item["bill_forecast_date"] = cc.get("billForecastDate")
+        # Final do PLÁSTICO que fez a compra (titular ou adicional). Só as
+        # quitações de fatura ("Pagamento recebido") vêm sem ele.
+        if cc.get("cardNumber"):
+            item["card_last4"] = str(cc.get("cardNumber"))[-4:]
     return item
 
 
@@ -499,6 +503,7 @@ def get_installments(start_date=None, end_date=None):
             g["installments"].append({
                 "description": t.get("description"),
                 "amount": abs(float(in_account if in_account is not None else (t.get("amount") or 0.0))),
+                "cardLast4": str(cc.get("cardNumber"))[-4:] if cc.get("cardNumber") else None,
                 "installmentNumber": cc.get("installmentNumber"),
                 "totalInstallments": int(total),
                 "dueDate": due,

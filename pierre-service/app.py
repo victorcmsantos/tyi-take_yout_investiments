@@ -312,6 +312,7 @@ def settings_get():
     data["card_closing_days"] = settings.card_closing_days()
     data["card_closing_by_last4"] = settings.card_closing_by_last4()
     data["card_closing_overrides"] = settings.card_closing_overrides()
+    data["card_labels_by_last4"] = settings.card_labels_by_last4()
     return _ok(data)
 
 

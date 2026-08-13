@@ -71,7 +71,7 @@ function FinanceInsightsCard({ monthParam }) {
         <div>
           <h3>Insights do mês (IA)</h3>
           <p className="subtitle">
-            Leitura proativa via OpenClaw sobre seus gastos do mês, ancorada nas categorias e variações reais do Pierre. O botão ignora o cache.
+            Leitura proativa via OpenClaw sobre seus gastos do mês, ancorada nas categorias e variações reais das suas contas. O botão ignora o cache.
           </p>
         </div>
         <button type="button" className="btn-primary" onClick={generate} disabled={generating}>

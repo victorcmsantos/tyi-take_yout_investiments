@@ -396,6 +396,7 @@ def build_overview(year, month):
                     "category": it.get("category"),
                     "amount": round(value, 2),
                     "source": "cartao",
+                    "card_last4": it.get("card_last4"),
                 })
 
     # 2) installment portions billed in this statement. Unlike upfront purchases
@@ -429,6 +430,7 @@ def build_overview(year, month):
                 "category": inst.get("category") or "Parcelamento",
                 "amount": round(amt, 2),
                 "source": "cartao",
+                "card_last4": inst.get("cardLast4"),
             })
 
     # Exact statement totals from the bank's CLOSED bills (get-bills). Month M's
@@ -515,6 +517,30 @@ def build_overview(year, month):
                         "logo": logo,
                         "adjustment": True,
                     })
+            # Quebra por PLÁSTICO (titular + adicionais). O número da conta nem
+            # sempre é o cartão mais usado — em várias contas todo o gasto está
+            # num adicional — então listamos por final, com apelido opcional.
+            labels = settings.card_labels_by_last4()
+            by_card = {}
+            for t in card_txs:
+                if t.get("adjustment"):
+                    continue
+                n = t.get("card_last4")
+                entry = by_card.setdefault(n, {"count": 0, "amount": 0.0})
+                entry["count"] += 1
+                entry["amount"] += t.get("amount") or 0.0
+            acct_last4 = str(a.get("number") or "")[-4:]
+            cards_breakdown = []
+            listed_total = sum(e["amount"] for e in by_card.values()) or 0.0
+            for n, e in sorted(by_card.items(), key=lambda x: -x[1]["amount"]):
+                cards_breakdown.append({
+                    "last4": n,
+                    "label": labels.get(n or ""),
+                    "is_account_card": bool(n) and n == acct_last4,
+                    "count": e["count"],
+                    "amount": round(e["amount"], 2),
+                    "pct": round((e["amount"] / listed_total) * 100.0, 1) if listed_total else None,
+                })
             total_limit += limit
             total_available += available
             total_used += used
@@ -538,6 +564,7 @@ def build_overview(year, month):
                 "logo": logo,
                 "last4": str(a.get("number") or "")[-4:],
                 "additional_cards": additional,
+                "cards_breakdown": cards_breakdown,
                 "due_date": invoice_due,
                 "transactions": card_txs,
             })

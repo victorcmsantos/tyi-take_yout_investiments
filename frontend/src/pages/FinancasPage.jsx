@@ -381,6 +381,8 @@ function CategoriasTab({ data, openCat, setOpenCat }) {
 function CartoesTab({ data, onRefetch }) {
   const credit = data.accounts?.credit || []
   const [open, setOpen] = useState(() => new Set())
+  // final do cartão selecionado por conta: filtra a lista de compras
+  const [cardFilter, setCardFilter] = useState({})
   const toggle = (i) => setOpen((s) => {
     const n = new Set(s)
     if (n.has(i)) n.delete(i); else n.add(i)
@@ -407,6 +409,16 @@ function CartoesTab({ data, onRefetch }) {
   }
   // Per-MONTH override (the cut shifts month to month). Keyed "last4|YYYY-MM";
   // empty/out-of-range removes it so the card uses its default that month.
+  // Apelido do plástico (final -> "Victor"/"Eliane"), usado na quebra por cartão.
+  const saveCardLabel = async (last4, value) => {
+    if (!last4) return
+    const map = { ...(cfg?.card_labels_by_last4 || {}) }
+    const name = String(value || '').trim().slice(0, 24)
+    if (name) map[last4] = name
+    else delete map[last4]
+    await apiPost('/api/pierre/settings', { card_labels_by_last4: map })
+    clearApiCache('/api/pierre'); refetchCfg(); if (onRefetch) onRefetch()
+  }
   const saveCardMonth = async (last4, value) => {
     if (!last4 || !ym) return
     const map = { ...(cfg?.card_closing_overrides || {}) }
@@ -442,7 +454,7 @@ function CartoesTab({ data, onRefetch }) {
               </div>
               <div className={`fin2-bignum${!c.invoice_closed && c.spent > 0 ? ' fin2-bignum-partial' : ''}`}>{formatCurrencyBRL(c.spent)}</div>
               <small className="fin2-muted">
-                {c.invoice_closed ? 'fatura fechada' : '⚠ parcial · fatura em aberto (Pierre ainda sincronizando — incompleto)'}
+                {c.invoice_closed ? 'fatura fechada' : '⚠ parcial · fatura ainda em aberto (o banco ainda não fechou o ciclo)'}
                 {c.due_date ? ` · vence ${c.due_date.split('-').reverse().join('/')}` : ''}
                 {' · '}{c.transactions?.length || 0} compras · toque para ver
               </small>
@@ -474,7 +486,42 @@ function CartoesTab({ data, onRefetch }) {
                   onClick={(e) => { e.stopPropagation(); saveCardMonth(c.last4, '') }}>✕</button>
               ) : null}
             </div>
-            {c.additional_cards?.length ? (
+            {(c.cards_breakdown || []).length > 1 ? (
+              <div className="fin2-cardbig-add">
+                <small className="fin2-muted">Gasto por cartão · toque para filtrar a fatura</small>
+                <div className="fin2-cardsplit">
+                  {c.cards_breakdown.map((b) => {
+                    const selected = cardFilter[c.last4] === b.last4
+                    return (
+                      <button
+                        key={b.last4 || 'none'}
+                        type="button"
+                        className={`fin2-cardsplit-item${selected ? ' active' : ''}`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setCardFilter((s) => ({ ...s, [c.last4]: selected ? undefined : b.last4 }))
+                          if (!isOpen) toggle(i)
+                        }}
+                      >
+                        <strong>{formatCurrencyBRL(b.amount)}</strong>
+                        <small>
+                          ••{b.last4 || '????'}{b.is_account_card ? ' · titular' : ''}
+                          {b.pct != null ? ` · ${b.pct}%` : ''} · {b.count} compras
+                        </small>
+                        <input
+                          className="fin2-cardsplit-alias"
+                          defaultValue={b.label || ''}
+                          placeholder="apelido"
+                          onClick={(e) => e.stopPropagation()}
+                          onBlur={(e) => { if (e.target.value !== (b.label || '')) saveCardLabel(b.last4, e.target.value) }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur() }}
+                        />
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : c.additional_cards?.length ? (
               <div className="fin2-cardbig-add">
                 <small className="fin2-muted">{c.additional_cards.length} cartões adicionais</small>
                 <div>{c.additional_cards.map((n) => <span key={n} className="fin2-addchip">••{n}</span>)}</div>
@@ -482,12 +529,18 @@ function CartoesTab({ data, onRefetch }) {
             ) : null}
             {isOpen ? (
               <ul className="fin2-tx-list fin2-cardbig-txs">
-                {(c.transactions || []).length === 0 ? (
+                {(c.transactions || []).filter((t) => !cardFilter[c.last4] || t.card_last4 === cardFilter[c.last4]).length === 0 ? (
                   <li className="fin2-tx-empty"><small className="fin2-muted">Sem compras no período.</small></li>
-                ) : c.transactions.map((t, j) => (
+                ) : c.transactions.filter((t) => !cardFilter[c.last4] || t.card_last4 === cardFilter[c.last4]).map((t, j) => (
                   <li key={j} className={t.adjustment ? 'fin2-tx-adjust' : ''}>
                     {t.adjustment ? <span className="fin2-acc-dot">⚙</span> : <TxLogo t={t} />}
-                    <div><strong>{t.description}</strong><small>{t.date ? `${t.date} · ` : ''}{t.category}</small></div>
+                    <div>
+                      <strong>{t.description}</strong>
+                      <small>
+                        {t.date ? `${t.date} · ` : ''}{t.category}
+                        {t.card_last4 ? ` · ••${t.card_last4}` : ''}
+                      </small>
+                    </div>
                     <span className={t.amount < 0 ? 'fin2-pos' : 'fin2-neg'}>{t.amount < 0 ? '+' : '−'}{formatCurrencyBRL(Math.abs(t.amount))}</span>
                   </li>
                 ))}
@@ -951,12 +1004,12 @@ function FinancasPage() {
       </nav>
 
       {needsOverview && loading && !data ? (
-        <StatePanel busy eyebrow="Finanças" title="Carregando fluxo de caixa" description="Buscando contas, gastos e categorias no Open Finance (Pierre)." />
+        <StatePanel busy eyebrow="Finanças" title="Carregando fluxo de caixa" description="Buscando contas, gastos e categorias no Open Finance." />
       ) : needsOverview && error ? (
         <StatePanel
           eyebrow="Finanças"
-          title={/configurad/i.test(error) ? 'Pierre ainda não conectado' : 'Não foi possível carregar'}
-          description={/configurad/i.test(error) ? 'Conecte suas contas no Pierre e configure a PIERRE_API_KEY.' : error}
+          title={/configurad/i.test(error) ? 'Open Finance ainda não conectado' : 'Não foi possível carregar'}
+          description={/configurad/i.test(error) ? 'Conecte suas contas na Pluggy e configure PLUGGY_CLIENT_ID/SECRET.' : error}
           actionLabel="Tentar novamente"
           onAction={refetch}
         />

@@ -91,6 +91,10 @@ services:
       PIERRE_CACHE_TTL_SECONDS: "${PIERRE_CACHE_TTL_SECONDS:-300}"
       PIERRE_TIMEOUT_SECONDS: "${PIERRE_TIMEOUT_SECONDS:-15}"
       PIERRE_CACHE_DB: "/data/pierre_cache.db"
+      PLUGGY_CLIENT_ID: "${PLUGGY_CLIENT_ID:-}"
+      PLUGGY_CLIENT_SECRET: "${PLUGGY_CLIENT_SECRET:-}"
+      PLUGGY_ITEM_IDS: "${PLUGGY_ITEM_IDS:-}"
+      PLUGGY_TIMEOUT_SECONDS: "${PLUGGY_TIMEOUT_SECONDS:-30}"
     volumes:
       - /srv/tyi-take_yout_investiments/pierre_data:/data
     restart: unless-stopped

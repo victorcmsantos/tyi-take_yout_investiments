@@ -13,6 +13,7 @@ import manual
 import overrides
 import overview
 import pierre
+import pluggy_api
 import recurring
 import settings
 
@@ -46,6 +47,36 @@ def health():
 @app.get("/status")
 def status():
     return _ok({"configured": pierre.is_configured()})
+
+
+def _guard_pluggy(fn):
+    try:
+        return _ok(fn())
+    except pluggy_api.PluggyNotConfigured:
+        return _err("Integracao Pluggy nao configurada (PLUGGY_CLIENT_ID/SECRET).", status=503)
+    except pluggy_api.PluggyError as exc:
+        return _err(str(exc), status=502)
+    except Exception as exc:  # noqa: BLE001
+        return _err(f"Falha ao consultar Pluggy: {exc}", status=502)
+
+
+@app.get("/pluggy-status")
+def pluggy_status():
+    return _guard_pluggy(pluggy_api.status)
+
+
+@app.get("/pluggy-transactions")
+def pluggy_transactions():
+    account_id = request.args.get("accountId")
+    if not account_id:
+        return _err("accountId obrigatorio.", status=400)
+    return _guard_pluggy(
+        lambda: pluggy_api.get_transactions(
+            account_id,
+            date_from=request.args.get("from"),
+            date_to=request.args.get("to"),
+        )
+    )
 
 
 @app.get("/accounts")

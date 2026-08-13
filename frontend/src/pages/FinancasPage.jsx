@@ -146,7 +146,7 @@ const recActive = (it, ym) => {
   if (s !== null && idx !== null && idx < s) return false
   return true
 }
-const TABS = ['Visão geral', 'Transações', 'Cartões', 'Categorias', 'Recorrentes', 'Manual']
+const TABS = ['Visão geral', 'Transações', 'Contas', 'Cartões', 'Categorias', 'Recorrentes', 'Manual']
 const TODAY_ISO = new Date().toISOString().slice(0, 10)
 const CAT_EMOJI = {
   'Vestiário': '🛍️', 'Supermercado': '🛒', 'Compras': '🛍️', 'Compras online': '🛒',
@@ -498,6 +498,67 @@ function CartoesTab({ data, onRefetch }) {
       })}
     </div>
     </>
+  )
+}
+
+function ContasTab({ monthParam }) {
+  const { data, loading, error, refetch } = useApiQuery('/api/pierre/accounts-activity', {
+    params: { month: monthParam },
+    cached: true,
+    cacheOptions: { ttlMs: 60000, staleWhileRevalidate: true },
+  })
+  const [open, setOpen] = useState(() => new Set())
+  const toggle = (name) => setOpen((s) => {
+    const n = new Set(s)
+    if (n.has(name)) n.delete(name); else n.add(name)
+    return n
+  })
+
+  if (loading && !data) return <StatePanel busy eyebrow="Finanças" title="Carregando contas" description="Buscando a movimentação de cada conta." />
+  if (error) return <StatePanel eyebrow="Finanças" title="Não foi possível carregar" description={error} actionLabel="Tentar novamente" onAction={refetch} />
+
+  const accounts = data?.accounts || []
+  return (
+    <div className="fin2-grid">
+      {accounts.length === 0 ? (
+        <article className="fin2-card"><small className="fin2-muted">Nenhuma conta com movimentação no mês.</small></article>
+      ) : accounts.map((a) => {
+        const isOpen = open.has(a.name)
+        return (
+          <article key={a.name} className={`fin2-card fin2-cardbig${isOpen ? ' open' : ''}`}>
+            <button type="button" className="fin2-cardbig-btn" onClick={() => toggle(a.name)}>
+              <div className="fin2-cardbig-head">
+                {a.logo ? <img src={a.logo} alt="" /> : <span className="fin2-acc-dot" />}
+                <div>
+                  <strong>{a.name}{a.manual ? <em className="fin2-card-level">MANUAL</em> : null}</strong>
+                  <small>{a.number ? `conta ${a.number}` : 'conta'}</small>
+                </div>
+                <span className="fin2-cardbig-chevron">{isOpen ? '⌄' : '›'}</span>
+              </div>
+              {a.balance != null ? <div className="fin2-bignum">{formatCurrencyBRL(a.balance)}</div> : null}
+              <small className="fin2-muted">
+                <span className="fin2-pos">+{formatCurrencyBRL(a.total_in)}</span>
+                {' · '}
+                <span className="fin2-neg">−{formatCurrencyBRL(a.total_out)}</span>
+                {' · '}{a.transactions?.length || 0} movimentações · toque para ver
+              </small>
+            </button>
+            {isOpen ? (
+              <ul className="fin2-tx-list fin2-cardbig-txs">
+                {(a.transactions || []).length === 0 ? (
+                  <li className="fin2-tx-empty"><small className="fin2-muted">Sem movimentação no mês.</small></li>
+                ) : a.transactions.map((t, j) => (
+                  <li key={j}>
+                    <div><strong>{t.description}</strong><small>{t.date} · {t.category}</small></div>
+                    <span className={t.flow === 'in' ? 'fin2-pos' : 'fin2-neg'}>{t.flow === 'in' ? '+' : '−'}{formatCurrencyBRL(t.amount)}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </article>
+        )
+      })}
+    </div>
   )
 }
 
@@ -874,7 +935,7 @@ function FinancasPage() {
     return { year: d.getFullYear(), month: d.getMonth() + 1 }
   })
 
-  const needsOverview = tab !== 'Transações' && tab !== 'Manual' && tab !== 'Recorrentes'
+  const needsOverview = tab !== 'Transações' && tab !== 'Manual' && tab !== 'Recorrentes' && tab !== 'Contas'
 
   return (
     <section className="fin2">
@@ -908,6 +969,8 @@ function FinancasPage() {
         <CategoriasTab data={data} openCat={openCat} setOpenCat={setOpenCat} />
       ) : tab === 'Cartões' ? (
         <CartoesTab data={data} onRefetch={refetch} />
+      ) : tab === 'Contas' ? (
+        <ContasTab monthParam={monthParam} />
       ) : tab === 'Manual' ? (
         <ManualTab />
       ) : tab === 'Recorrentes' ? (

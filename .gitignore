@@ -227,3 +227,7 @@ __marimo__/
 **/backups/
 
 *.code-workspace
+
+# SQLite sidecars (rastro de leitura local)
+*.db-shm
+*.db-wal
